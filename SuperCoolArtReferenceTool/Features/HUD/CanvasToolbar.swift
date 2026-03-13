@@ -15,12 +15,16 @@ struct CanvasToolbar: View {
     var onRedo: () -> Void
     var onAddItem: () -> Void
     
+    @Namespace private var toolNamespace
+    
     var body: some View {
         VStack(spacing: 12) {
             // Pointer tool
             ToolbarButton(
                 icon: "arrow.up.left",
-                isActive: activeTool == .pointer
+                isActive: activeTool == .pointer,
+                namespace: toolNamespace,
+                id: CanvasTool.pointer
             ) {
                 activeTool = .pointer
             }
@@ -28,7 +32,9 @@ struct CanvasToolbar: View {
             // Group tool
             ToolbarButton(
                 icon: "rectangle.dashed",
-                isActive: activeTool == .group
+                isActive: activeTool == .group,
+                namespace: toolNamespace,
+                id: CanvasTool.group
             ) {
                 activeTool = .group
             }
@@ -41,7 +47,9 @@ struct CanvasToolbar: View {
             // Undo
             ToolbarButton(
                 icon: "arrow.uturn.backward",
-                isActive: false
+                isActive: false,
+                namespace: nil,
+                id: nil
             ) {
                 onUndo()
             }
@@ -49,7 +57,9 @@ struct CanvasToolbar: View {
             // Redo
             ToolbarButton(
                 icon: "arrow.uturn.forward",
-                isActive: false
+                isActive: false,
+                namespace: nil,
+                id: nil
             ) {
                 onRedo()
             }
@@ -62,7 +72,9 @@ struct CanvasToolbar: View {
             // Add new item
             ToolbarButton(
                 icon: "plus",
-                isActive: false
+                isActive: false,
+                namespace: nil,
+                id: nil
             ) {
                 onAddItem()
             }
@@ -81,6 +93,8 @@ struct CanvasToolbar: View {
 private struct ToolbarButton: View {
     let icon: String
     let isActive: Bool
+    let namespace: Namespace.ID?
+    let id: CanvasTool?
     let action: () -> Void
     
     var body: some View {
@@ -89,17 +103,21 @@ private struct ToolbarButton: View {
                 .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(isActive ? DesignSystem.Colors.primary : DesignSystem.Colors.secondary)
                 .frame(width: 44, height: 44)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isActive ? DesignSystem.Colors.tertiary : Color.clear)
-                )
+                .background {
+                    if isActive, let namespace = namespace, let _ = id {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(DesignSystem.Colors.tertiary)
+                            .matchedGeometryEffect(id: "activeButton", in: namespace)
+                    }
+                }
         }
         .buttonStyle(.plain)
+        .animation(.smooth(duration: 0.3), value: isActive)
     }
 }
 
 /// Available canvas tools
-enum CanvasTool {
+enum CanvasTool: Equatable {
     case pointer
     case group
 }
