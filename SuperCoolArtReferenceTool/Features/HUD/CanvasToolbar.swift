@@ -107,13 +107,15 @@ enum CanvasTool {
 // MARK: - Preview
 
 #Preview("Canvas Toolbar") {
+    @Previewable @State var activeTool: CanvasTool = .pointer
+    
     ZStack(alignment: .leading) {
         // Simulated canvas background
         Color.gray.opacity(0.2)
             .ignoresSafeArea()
         
         CanvasToolbar(
-            activeTool: .constant(.pointer),
+            activeTool: $activeTool,
             onUndo: { print("Undo") },
             onRedo: { print("Redo") },
             onAddItem: { print("Add Item") }
@@ -123,12 +125,14 @@ enum CanvasTool {
 }
 
 #Preview("Canvas Toolbar - Portrait", traits: .portrait) {
+    @Previewable @State var activeTool: CanvasTool = .pointer
+    
     ZStack(alignment: .leading) {
         Color.gray.opacity(0.2)
             .ignoresSafeArea()
         
         CanvasToolbar(
-            activeTool: .constant(.pointer),
+            activeTool: $activeTool,
             onUndo: { print("Undo") },
             onRedo: { print("Redo") },
             onAddItem: { print("Add Item") }
@@ -138,12 +142,14 @@ enum CanvasTool {
 }
 
 #Preview("Canvas Toolbar - Landscape", traits: .landscapeLeft) {
+    @Previewable @State var activeTool: CanvasTool = .pointer
+    
     ZStack(alignment: .leading) {
         Color.gray.opacity(0.2)
             .ignoresSafeArea()
         
         CanvasToolbar(
-            activeTool: .constant(.pointer),
+            activeTool: $activeTool,
             onUndo: { print("Undo") },
             onRedo: { print("Redo") },
             onAddItem: { print("Add Item") }
