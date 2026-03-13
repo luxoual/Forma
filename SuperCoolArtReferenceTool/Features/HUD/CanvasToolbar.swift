@@ -25,6 +25,14 @@ struct CanvasToolbar: View {
                 activeTool = .pointer
             }
             
+            // Group tool
+            ToolbarButton(
+                icon: "rectangle.dashed",
+                isActive: activeTool == .group
+            ) {
+                activeTool = .group
+            }
+            
             Divider()
                 .background(DesignSystem.Colors.secondary)
                 .frame(height: 1)
@@ -93,6 +101,7 @@ private struct ToolbarButton: View {
 /// Available canvas tools
 enum CanvasTool {
     case pointer
+    case group
 }
 
 // MARK: - Preview
@@ -113,7 +122,7 @@ enum CanvasTool {
     }
 }
 
-#Preview("Canvas Toolbar - Portrait") {
+#Preview("Canvas Toolbar - Portrait", traits: .portrait) {
     ZStack(alignment: .leading) {
         Color.gray.opacity(0.2)
             .ignoresSafeArea()
@@ -126,10 +135,9 @@ enum CanvasTool {
         )
         .padding(.leading, 16)
     }
-    .previewInterfaceOrientation(.portrait)
 }
 
-#Preview("Canvas Toolbar - Landscape") {
+#Preview("Canvas Toolbar - Landscape", traits: .landscapeLeft) {
     ZStack(alignment: .leading) {
         Color.gray.opacity(0.2)
             .ignoresSafeArea()
@@ -142,5 +150,4 @@ enum CanvasTool {
         )
         .padding(.leading, 16)
     }
-    .previewInterfaceOrientation(.landscapeLeft)
 }
