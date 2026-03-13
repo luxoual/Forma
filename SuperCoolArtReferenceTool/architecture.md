@@ -54,6 +54,104 @@ Future documentation will include:
 
 ---
 
+## Canvas UI Overlay System
+
+Decision Status: **Implemented**
+
+### Canvas Toolbar (HUD)
+
+**Status: Implemented**
+
+The Canvas Toolbar provides tool selection and canvas actions through a persistent left-side overlay.
+
+**Components:**
+
+- `CanvasToolbar`: Main toolbar view component
+- `ToolbarButton`: Reusable button component with active state support
+- `CanvasTool`: Enum defining available tools
+
+**Visual Design:**
+
+- **Position**: Left-aligned vertical toolbar
+- **Fixed width**: 68pt (44pt button + 12pt padding each side)
+- **Styling**: 
+  - Background: `DesignSystem.Colors.primary` (#191919)
+  - Inactive icons: `DesignSystem.Colors.secondary` (#535353)
+  - Active state: `DesignSystem.Colors.tertiary` (#86B8FE) background with primary-colored icon
+  - Corner radius: 12pt (toolbar), 8pt (buttons)
+  - Shadow for depth
+- **Touch targets**: 44pt × 44pt (Apple's recommended minimum)
+
+**Tool Groups:**
+
+1. **Selection Tools** (toggleable with active state):
+   - Pointer tool (`arrow.up.left`)
+   - Group tool (`rectangle.dashed`)
+
+2. **History Actions** (single-action buttons):
+   - Undo (`arrow.uturn.backward`)
+   - Redo (`arrow.uturn.forward`)
+
+3. **Content Actions**:
+   - Add new item (`plus`)
+
+**Active State Animation:**
+
+Uses SwiftUI's `matchedGeometryEffect` to create smooth transitions between active tools:
+
+```swift
+@Namespace private var toolNamespace
+
+// Applied to active tool background
+.matchedGeometryEffect(id: "activeButton", in: toolNamespace)
+```
+
+**How it works:**
+- All selection tools share the same geometry effect ID (`"activeButton"`)
+- When active tool changes, SwiftUI recognizes the shared ID in the same namespace
+- Background smoothly **slides** from old position to new position instead of fading
+- Animation: `.smooth(duration: 0.3)`
+
+**Integration Pattern:**
+
+The toolbar takes a binding for active tool state and callbacks for actions:
+
+```swift
+CanvasToolbar(
+    activeTool: $activeTool,
+    onUndo: { /* undo logic */ },
+    onRedo: { /* redo logic */ },
+    onAddItem: { /* add item logic */ }
+)
+.padding(.leading, 16) // Position from left edge
+```
+
+**Responsive Design:**
+
+- Works in both portrait and landscape orientations
+- Uses standard SwiftUI layout that adapts automatically
+- Safe area aware when integrated with canvas views
+
+**Button Styling:**
+
+Uses `.buttonStyle(.plain)` to:
+- Remove default iOS button styling (blue tint, system highlights)
+- Ensure custom design system colors are applied exactly as specified
+- Maintain full control over visual appearance
+
+**Files:**
+
+- `Features/HUD/CanvasToolbar.swift`
+
+**Future Considerations:**
+
+- Additional tools can be added to `CanvasTool` enum
+- Toolbar position could be made configurable
+- Auto-hide behavior could be added
+- Tool-specific context menus or settings
+
+---
+
 ## Media Handling
 
 Decision Status: **Partially Implemented**
