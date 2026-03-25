@@ -6,10 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		6CC1DBA62F735E1400188778 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 6CC1DB872F735E1400188778 /* .gitignore */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXFileReference section */
 		425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SuperCoolArtReferenceTool.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6CC1DB872F735E1400188778 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
@@ -119,7 +115,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				6CC1DBA62F735E1400188778 /* .gitignore in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
