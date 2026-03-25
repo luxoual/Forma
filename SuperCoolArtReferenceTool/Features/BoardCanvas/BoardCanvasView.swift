@@ -85,16 +85,6 @@ struct BoardCanvasView: View {
                     }
 
                     ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.5)
-
-                    // Draw origin crosshair for reference
-                    let originX = 0 * s + off.width
-                    let originY = 0 * s + off.height
-                    var cross = Path()
-                    cross.move(to: CGPoint(x: originX - 8, y: originY))
-                    cross.addLine(to: CGPoint(x: originX + 8, y: originY))
-                    cross.move(to: CGPoint(x: originX, y: originY - 8))
-                    cross.addLine(to: CGPoint(x: originX, y: originY + 8))
-                    ctx.stroke(cross, with: .color(.red.opacity(0.8)), lineWidth: 1)
                 }
                 .ignoresSafeArea()
 
@@ -113,7 +103,13 @@ struct BoardCanvasView: View {
                 insertImages(atScreenPoint: point, urls: urls)
             })
             .border(Color.gray.opacity(0.4), width: 1)
-            .onAppear { canvasSize = geo.size }
+            .onAppear { 
+                canvasSize = geo.size
+                // Center the canvas on world origin (0, 0) on first appearance
+                if offset == .zero {
+                    offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
+                }
+            }
             .onChange(of: geo.size) { oldValue, newValue in
                 canvasSize = newValue
             }
