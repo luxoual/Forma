@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SuperCoolArtReferenceTool.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6CC1DB872F735E1400188778 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +35,7 @@
 			children = (
 				425F7A212F43AA8100B7E65B /* SuperCoolArtReferenceTool */,
 				425F7A202F43AA8100B7E65B /* Products */,
+				6CC1DB872F735E1400188778 /* .gitignore */,
 			);
 			sourceTree = "<group>";
 		};
@@ -77,6 +79,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
+				
 				LastSwiftUpdateCheck = 2610;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
