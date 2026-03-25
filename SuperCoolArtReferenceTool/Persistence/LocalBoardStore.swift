@@ -17,26 +17,6 @@ actor LocalBoardStore {
     private var elements: [UUID: CMElementHeader] = [:]
     private var fullElements: [UUID: CMCanvasElement] = [:]
 
-    // Simple LRU cache of resolved headers per tile
-    private final class TileCache {
-        private let capacity: Int
-        private var dict: [CMTileKey: [CMElementHeader]] = [:]
-        private var order: [CMTileKey] = []
-        init(capacity: Int) { self.capacity = max(8, capacity) }
-        func get(_ key: CMTileKey) -> [CMElementHeader]? { dict[key] }
-        func put(_ key: CMTileKey, headers: [CMElementHeader]) {
-            dict[key] = headers
-            if let idx = order.firstIndex(of: key) { order.remove(at: idx) }
-            order.append(key)
-            evictIfNeeded()
-        }
-        func remove(_ key: CMTileKey) { dict.removeValue(forKey: key); order.removeAll { $0 == key } }
-        func removeAll() { dict.removeAll(); order.removeAll() }
-        private func evictIfNeeded() {
-            while dict.count > capacity, let oldest = order.first { dict.removeValue(forKey: oldest); order.removeFirst() }
-        }
-    }
-
     private let cache = TileCache(capacity: 256)
 
     // MARK: - Public API

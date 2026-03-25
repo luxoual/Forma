@@ -6,6 +6,47 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXAggregateTarget section */
+		6C67DD9B2F72CF7000F037FD /* RepoCleanup */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = 6C67DD9C2F72CF7000F037FD /* Build configuration list for PBXAggregateTarget "RepoCleanup" */;
+			buildPhases = (
+				6C67DDA32F72D3D200F037FD /* ShellScript */,
+			);
+			dependencies = (
+			);
+			name = RepoCleanup;
+			packageProductDependencies = (
+			);
+			productName = RepoCleanup;
+		};
+		6C67DD9F2F72D02B00F037FD /* RepoCleanup1 */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = 6C67DDA02F72D02B00F037FD /* Build configuration list for PBXAggregateTarget "RepoCleanup1" */;
+			buildPhases = (
+			);
+			dependencies = (
+			);
+			name = RepoCleanup1;
+			packageProductDependencies = (
+			);
+			productName = RepoCleanup1;
+		};
+		6C67DDA42F72D6A300F037FD /* RepoCleanup Preview */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = 6C67DDA52F72D6A300F037FD /* Build configuration list for PBXAggregateTarget "RepoCleanup Preview" */;
+			buildPhases = (
+				6C67DDA82F72D7D000F037FD /* ShellScript */,
+			);
+			dependencies = (
+			);
+			name = "RepoCleanup Preview";
+			packageProductDependencies = (
+			);
+			productName = "RepoCleanup Preview";
+		};
+/* End PBXAggregateTarget section */
+
 /* Begin PBXFileReference section */
 		425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SuperCoolArtReferenceTool.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -77,11 +118,24 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
+				KnownAssetTags = (
+					New,
+					"New Run Script PHase",
+				);
 				LastSwiftUpdateCheck = 2610;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
 					425F7A1E2F43AA8100B7E65B = {
 						CreatedOnToolsVersion = 26.1.1;
+					};
+					6C67DD9B2F72CF7000F037FD = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					6C67DD9F2F72D02B00F037FD = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					6C67DDA42F72D6A300F037FD = {
+						CreatedOnToolsVersion = 26.3;
 					};
 				};
 			};
@@ -100,6 +154,9 @@
 			projectRoot = "";
 			targets = (
 				425F7A1E2F43AA8100B7E65B /* SuperCoolArtReferenceTool */,
+				6C67DD9B2F72CF7000F037FD /* RepoCleanup */,
+				6C67DD9F2F72D02B00F037FD /* RepoCleanup1 */,
+				6C67DDA42F72D6A300F037FD /* RepoCleanup Preview */,
 			);
 		};
 /* End PBXProject section */
@@ -113,6 +170,45 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		6C67DDA32F72D3D200F037FD /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\nexport PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:$PATH\"\n  bash \"$SRCROOT/scripts/repo_cleanup.sh\"\n  \n";
+		};
+		6C67DDA82F72D7D000F037FD /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\nexport PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:$PATH\"\nset -euo pipefail\n\necho \"Tracked files that match .gitignore (would be untracked by git rm --cached):\"\ngit ls-files -ci --exclude-standard || true\n\necho\necho \"Preview of git rm --cached (no changes will be made):\"\ngit rm -r --cached -n . || true\n\necho\necho \"Temporary/AI artefacts present (would be removed):\"\nls -1 TEMP.md SEARCH.md README-AI-NOTES.md \\\n      SuperCoolArtReferenceTool/Features/BoardCanvas/TEMP.md \\\n      SuperCoolArtReferenceTool/Features/BoardCanvas/SEARCH.md \\\n      SuperCoolArtReferenceTool/Features/BoardCanvas/README-AI-NOTES.md 2>/dev/null || true\n\necho\necho \"Duplicate schemes (would be removed):\"\nfind \"SuperCoolArtReferenceTool.xcodeproj/xcshareddata/xcschemes\" -type f -name \"* 1.xcscheme\" -print 2>/dev/null || true\nfind \"SuperCoolArtReferenceTool.xcodeproj/xcuserdata\" -type f -name \"* 1.xcscheme\" -print 2>/dev/null || true\n\necho\necho \".DS_Store files present (would be removed):\"\nfind . -name \".DS_Store\" -print || true\n\necho\necho \"No changes were made. This is a preview.\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		425F7A1B2F43AA8100B7E65B /* Sources */ = {
@@ -306,6 +402,56 @@
 			};
 			name = Release;
 		};
+		6C67DD9D2F72CF7000F037FD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		6C67DD9E2F72CF7000F037FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		6C67DDA12F72D02B00F037FD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = JX98H68QDZ;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		6C67DDA22F72D02B00F037FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = JX98H68QDZ;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		6C67DDA62F72D6A300F037FD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		6C67DDA72F72D6A300F037FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -323,6 +469,33 @@
 			buildConfigurations = (
 				425F7A2B2F43AA8300B7E65B /* Debug */,
 				425F7A2C2F43AA8300B7E65B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6C67DD9C2F72CF7000F037FD /* Build configuration list for PBXAggregateTarget "RepoCleanup" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6C67DD9D2F72CF7000F037FD /* Debug */,
+				6C67DD9E2F72CF7000F037FD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6C67DDA02F72D02B00F037FD /* Build configuration list for PBXAggregateTarget "RepoCleanup1" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6C67DDA12F72D02B00F037FD /* Debug */,
+				6C67DDA22F72D02B00F037FD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6C67DDA52F72D6A300F037FD /* Build configuration list for PBXAggregateTarget "RepoCleanup Preview" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6C67DDA62F72D6A300F037FD /* Debug */,
+				6C67DDA72F72D6A300F037FD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

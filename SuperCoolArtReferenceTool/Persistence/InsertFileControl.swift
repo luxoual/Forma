@@ -10,9 +10,8 @@ public struct InsertFileControl: View {
 
     private let allowedTypes: [UTType] = {
         var types: [UTType] = [.image]
-        // Explicitly include GIF and movie; GIF conforms to image but we include it for clarity
-        if let gif = UTType.gif { types.append(gif) }
-        types.append(.movie)
+        // Include GIF explicitly for clarity (it conforms to .image)
+        types.append(.gif)
         return types
     }()
 
@@ -49,7 +48,7 @@ public struct InsertFileControl: View {
             handleDrop(providers: providers)
         }
         .accessibilityLabel(Text("Insert File"))
-        .accessibilityHint(Text("Tap to choose files or drag and drop images or GIFs here."))
+        .accessibilityHint(Text("Tap to choose files or drag and drop images (including GIFs) here."))
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
@@ -136,3 +135,4 @@ private extension NSItemProvider {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(Color(.secondarySystemBackground))
 }
+

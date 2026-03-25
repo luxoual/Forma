@@ -1,0 +1,88 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+*.xcworkspace/xcuserdata
+
+# Archives and dSYMs
+*.xcarchive
+*.dSYM
+*.dSYM.zip
+*.ipa
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Packages/
+Package.pins
+# Package.resolved is often committed; uncomment to ignore it instead
+# Package.resolved
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/Build/
+Carthage/Checkouts/
+
+# Accio
+Dependencies/
+.accio/
+
+# Tuist
+Tuist/Generated
+.graphite/
+.project-schemes/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+fastlane/readme.md
+
+# Swift Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# SwiftLint
+.swiftlint_cache
+
+# Code coverage
+*.gcno
+*.gcda
+*.profraw
+*.profdata
+
+# Temporary files
+*.swp
+*.lock
+*.tmp
+
+# User-specific merges/patches
+*.orig
+
+# SPM Artifacts
+Artifacts/
+# Temporary/AI artefact Markdown files
+TEMP.md
+SEARCH.md
+README-AI-NOTES.md
+README-AI-*.md
+*AI-NOTES*.md
+
