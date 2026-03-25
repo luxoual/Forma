@@ -34,8 +34,12 @@ struct BoardCanvasView: View {
     // Zoom bounds
     private let minScale: CGFloat = 0.05
     private let maxScale: CGFloat = 8.0
+    
+    // Binding to receive external insert requests (e.g., from toolbar)
+    @Binding private var externalInsertURLs: [URL]?
 
-    init(onInsertURLs: @escaping ImportHandler = { _ in }) {
+    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }) {
+        self._externalInsertURLs = externalInsertURLs
         self.onInsertURLs = onInsertURLs
     }
 
@@ -110,8 +114,17 @@ struct BoardCanvasView: View {
             })
             .border(Color.gray.opacity(0.4), width: 1)
             .onAppear { canvasSize = geo.size }
-            .onChange(of: geo.size) { newSize in
-                canvasSize = newSize
+            .onChange(of: geo.size) { oldValue, newValue in
+                canvasSize = newValue
+            }
+            .onChange(of: externalInsertURLs) { oldValue, newValue in
+                if let urls = newValue, !urls.isEmpty {
+                    insertImagesAtCenter(urls)
+                    // Clear the binding after processing
+                    DispatchQueue.main.async {
+                        externalInsertURLs = nil
+                    }
+                }
             }
             .contentShape(Rectangle())
             // Drag to pan
