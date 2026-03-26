@@ -44,8 +44,8 @@ enum CMElementType: String, Codable, Hashable {
 Decision Status: **Implemented**
 
 **Files:**
-- `SuperCoolArtReferenceTool/SuperCoolArtReferenceTool/App/BoardExportDocument.swift`
-- `SuperCoolArtReferenceTool/SuperCoolArtReferenceTool/App/BoardArchiver.swift`
+- `SuperCoolArtReferenceTool/App/BoardExportDocument.swift`
+- `SuperCoolArtReferenceTool/App/BoardArchiver.swift`
 
 The export pipeline uses a SwiftUI `FileDocument` implementation to generate a `.refboard` package on demand. `BoardExportDocument` creates a uniquely named temp package, calls `BoardArchiver.export(elements:to:)` to write assets and `manifest.json`, then returns a `FileWrapper` for the package. This avoids filename collisions in `/tmp` and allows the system file exporter UI to present correctly.
 

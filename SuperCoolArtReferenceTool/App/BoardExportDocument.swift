@@ -26,7 +26,6 @@ struct BoardExportDocument: FileDocument {
         try? fm.removeItem(at: temp)
         let packageURL = try BoardArchiver.export(elements: elements, to: temp)
         let wrapper = try FileWrapper(url: packageURL, options: .immediate)
-        wrapper.preferredFilename = "Board.refboard"
         try? fm.removeItem(at: packageURL)
         return wrapper
     }

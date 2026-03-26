@@ -7,7 +7,6 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
-import simd
 
 struct ContentView: View {
     @EnvironmentObject private var openHandler: AppOpenHandler
@@ -24,7 +23,6 @@ struct ContentView: View {
     @State private var snapshotToken: UUID? = nil
     @State private var elementsToLoad: [CMCanvasElement]? = nil
     @State private var showingExporter = false
-    @State private var showingImporter = false
     @State private var exportDocument = BoardExportDocument(elements: [])
 
     @State private var importerMode: ImporterMode? = nil
@@ -85,7 +83,7 @@ struct ContentView: View {
                 get: { importerMode != nil },
                 set: { _ in /* keep mode until handler runs */ }
             ),
-            allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [UTType(filenameExtension: "refboard")!, .package, .folder],
+            allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard, .package, .folder],
             allowsMultipleSelection: importerMode == .images
         ) { result in
             let currentMode = importerMode
@@ -194,5 +192,6 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+        .environmentObject(AppOpenHandler())
 }
 

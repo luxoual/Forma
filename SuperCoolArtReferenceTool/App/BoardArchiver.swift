@@ -50,7 +50,9 @@ enum BoardArchiver {
         for m in manifest.elements {
             switch m.payload {
             case .image(let relativePath, let size):
-                let assetInPackage = url.appendingPathComponent(relativePath)
+                guard let assetInPackage = safeAssetURL(packageURL: url, relativePath: relativePath) else {
+                    continue
+                }
                 let finalURL: URL
                 if let importedDir {
                     let ext = assetInPackage.pathExtension.isEmpty ? "dat" : assetInPackage.pathExtension
@@ -77,6 +79,21 @@ enum BoardArchiver {
             }
         }
         return results
+    }
+
+    private static func safeAssetURL(packageURL: URL, relativePath: String) -> URL? {
+        guard !relativePath.isEmpty else { return nil }
+        if relativePath.hasPrefix("/") { return nil }
+        if relativePath.contains(":") { return nil }
+        let components = relativePath.split(separator: "/")
+        if components.contains("..") { return nil }
+        guard components.first == "assets" else { return nil }
+
+        let assetsRoot = packageURL.appendingPathComponent("assets", isDirectory: true).resolvingSymlinksInPath()
+        let candidate = packageURL.appendingPathComponent(relativePath).resolvingSymlinksInPath()
+        let rootPath = assetsRoot.path.hasSuffix("/") ? assetsRoot.path : assetsRoot.path + "/"
+        if !candidate.path.hasPrefix(rootPath) { return nil }
+        return candidate
     }
     
     /// Export elements to a `.refboard` package at the given destination URL.
