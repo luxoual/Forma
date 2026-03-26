@@ -214,7 +214,7 @@ This helps maintain a **clear separation between UI logic and system logic**.
 
 # Documentation System
 
-This project uses two primary documentation files.
+This project uses **three primary documentation files**, separated by role to avoid merge conflicts.
 
 ## context.md
 
@@ -229,41 +229,85 @@ This document should remain **high-level** and **avoid implementation details** 
 
 ---
 
-## architecture.md
+## architecture-frontend.md
 
-The `architecture.md` file documents **how the system is implemented**.
+**Maintained by Dev A (Frontend/Canvas)**
+
+The `architecture-frontend.md` file documents **how the UI and canvas systems are implemented**.
 
 Examples of content that belongs there include:
 
 - Canvas rendering strategy
-- Coordinate systems
-- Media storage strategies
-- Data models
-- Performance techniques
+- Gesture handling
+- UI component architecture
+- SwiftUI view structures
+- Visual design specifications
+- Animation implementations
 
-Unlike `context.md`, the architecture document is expected to **evolve frequently** as development progresses.
+This file is **owned by Dev A** and should not be modified by Dev B unless coordinating on integration points.
+
+---
+
+## architecture-backend.md
+
+**Maintained by Dev B (Data/Persistence)**
+
+The `architecture-backend.md` file documents **how data storage and system infrastructure is implemented**.
+
+Examples of content that belongs there include:
+
+- Data models and schemas
+- Persistence strategies
+- Storage layer architecture
+- Spatial indexing systems
+- Service layer APIs
+- Database structures
+
+This file is **owned by Dev B** and should not be modified by Dev A unless coordinating on integration points.
 
 ---
 
 # How Developers and Agents Should Update Documentation
 
-## When to update architecture.md
+## When to update architecture-frontend.md (Dev A)
 
-Update `architecture.md` when:
+Update `architecture-frontend.md` when:
 
-- A subsystem implementation becomes stable
-- A technical decision is finalized
-- The system behavior is confirmed in code
+- A UI component implementation becomes stable
+- A canvas interaction pattern is finalized
+- Visual design decisions are confirmed
+- Gesture handling is implemented
+- View architecture changes
 
 Examples:
 
-- Finalized canvas coordinate system
-- Confirmed media storage approach
-- Persistence architecture
+- Finalized canvas gesture system
+- Toolbar component specifications
+- Animation timing and transitions
+- Grid rendering implementation
 
 ---
 
-## When to update context.md
+## When to update architecture-backend.md (Dev B)
+
+Update `architecture-backend.md` when:
+
+- A data model is finalized
+- Persistence strategy is implemented
+- Storage schema is defined
+- Service APIs are established
+- Infrastructure decisions are made
+
+Examples:
+
+- Canvas element data structure
+- Tile-based indexing system
+- Persistence service API
+- Database schema
+
+---
+
+## When to update context.md (Both)
 
 Update `context.md` when:
 
@@ -271,6 +315,22 @@ Update `context.md` when:
 - Major features are added
 - Platform strategy changes
 - Core concepts evolve
+- Development roles are adjusted
+
+**Both Dev A and Dev B** may update this file, but should coordinate to avoid conflicts.
+
+---
+
+## Integration Points Documentation
+
+Both architecture files should include an **"Integration Points"** section documenting:
+
+- Where frontend and backend connect
+- Required data conversions
+- Shared protocols or interfaces
+- Coordination requirements
+
+This helps both devs understand the boundaries and dependencies.
 
 ---
 
@@ -282,7 +342,25 @@ Instead:
 
 1. Implement the feature
 2. Confirm the solution works
-3. Document the finalized approach in `architecture.md`
+3. Document the finalized approach in the appropriate architecture file
+
+---
+
+## Avoiding Merge Conflicts
+
+**By separating architecture documentation:**
+
+- Dev A can update frontend architecture independently
+- Dev B can update backend architecture independently
+- Both can work in parallel without file conflicts
+- Integration points are clearly marked in both files
+
+**Best practices:**
+
+- Only update your architecture file (unless coordinating)
+- Mark integration points clearly
+- Update context.md collaboratively when needed
+- Use clear section headers for easy navigation
 
 ---
 
