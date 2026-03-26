@@ -8,9 +8,9 @@
 import Foundation
 import simd
 
-/// Handles importing/exporting reference board data.
-/// This is a minimal stub to satisfy compilation for `.importElements(from:copyAssetsToAppSupport:)`.
-/// Implement real parsing logic as needed.
+/// Handles importing and exporting reference board data as `.refboard` directory packages.
+/// Currently supports a JSON manifest (`manifest.json`) and image-based elements, with optional
+/// copying of referenced assets into the app's Application Support directory.
 enum BoardArchiver {
     /// Import elements from a `.refboard` file URL.
     /// - Parameters:
