@@ -8,7 +8,7 @@
 import SwiftUI
 
 /// Settings button for canvas options
-/// Positioned at bottom-left, separate from main toolbar
+/// Standalone control, separate from the main toolbar so it can be positioned as needed
 /// Matches the styling and dimensions of CanvasToolbar
 struct CanvasSettingsButton: View {
     var onTap: () -> Void
