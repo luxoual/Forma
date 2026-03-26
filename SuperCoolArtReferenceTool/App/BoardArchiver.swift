@@ -16,7 +16,7 @@ enum BoardArchiver {
     /// - Parameters:
     ///   - url: Source file URL (likely a security-scoped resource when coming from `.onOpenURL`).
     ///   - copyAssetsToAppSupport: When `true`, copy any referenced assets into Application Support.
-    /// - Returns: An array of `CMCanvasElement` parsed from the file. Currently returns an empty array.
+    /// - Returns: An array of `CMCanvasElement` decoded from the package's `manifest.json`. The array may be empty if the manifest contains no elements.
     static func importElements(from url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
         guard url.pathExtension.lowercased() == "refboard" else {
             throw ImportError.unsupportedFileExtension
