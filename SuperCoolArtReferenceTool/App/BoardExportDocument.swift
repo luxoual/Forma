@@ -1,8 +1,10 @@
 import Foundation
+import SwiftUI
 import UniformTypeIdentifiers
 
 struct BoardExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.refboard] }
+    // Export-only for now; do not advertise readability.
+    static var readableContentTypes: [UTType] { [] }
     static var writableContentTypes: [UTType] { [.refboard] }
 
     let elements: [CMCanvasElement]
@@ -31,5 +33,5 @@ struct BoardExportDocument: FileDocument {
 }
 
 extension UTType {
-    static let refboard = UTType(filenameExtension: "refboard")!
+    static let refboard = UTType(exportedAs: "AxI.SuperCoolArtReferenceTool.refboard")
 }

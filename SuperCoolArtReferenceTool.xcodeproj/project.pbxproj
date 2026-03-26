@@ -6,9 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-/* End PBXBuildFile section */
-
 /* Begin PBXFileReference section */
 		425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SuperCoolArtReferenceTool.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		42D648282F758E8D00E2B842 /* architecture-frontend.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "architecture-frontend.md"; sourceTree = "<group>"; };

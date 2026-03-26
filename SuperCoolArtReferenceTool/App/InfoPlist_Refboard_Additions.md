@@ -8,7 +8,7 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>com.example.refboard</string>
+			<string>AxI.SuperCoolArtReferenceTool.refboard</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.package</string>
@@ -32,7 +32,7 @@
 			<string>Reference Board</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.example.refboard</string>
+				<string>AxI.SuperCoolArtReferenceTool.refboard</string>
 			</array>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
