@@ -6,8 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SuperCoolArtReferenceTool.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		42D648282F758E8D00E2B842 /* architecture-frontend.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "architecture-frontend.md"; sourceTree = "<group>"; };
+		42D6482A2F758EC400E2B842 /* architecture-backend.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "architecture-backend.md"; sourceTree = "<group>"; };
 		6CC1DB872F735E1400188778 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -36,6 +41,8 @@
 				425F7A212F43AA8100B7E65B /* SuperCoolArtReferenceTool */,
 				425F7A202F43AA8100B7E65B /* Products */,
 				6CC1DB872F735E1400188778 /* .gitignore */,
+				42D648282F758E8D00E2B842 /* architecture-frontend.md */,
+				42D6482A2F758EC400E2B842 /* architecture-backend.md */,
 			);
 			sourceTree = "<group>";
 		};
@@ -79,7 +86,6 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				
 				LastSwiftUpdateCheck = 2610;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
@@ -255,6 +261,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = "*.md";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -286,6 +293,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = "*.md";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
