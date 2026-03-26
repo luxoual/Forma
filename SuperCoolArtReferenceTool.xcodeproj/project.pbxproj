@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		42D648292F758E8D00E2B842 /* architecture-frontend.md in Resources */ = {isa = PBXBuildFile; fileRef = 42D648282F758E8D00E2B842 /* architecture-frontend.md */; };
-		42D6482B2F758EC400E2B842 /* architecture-backend.md in Resources */ = {isa = PBXBuildFile; fileRef = 42D6482A2F758EC400E2B842 /* architecture-backend.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -120,8 +118,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				42D648292F758E8D00E2B842 /* architecture-frontend.md in Resources */,
-				42D6482B2F758EC400E2B842 /* architecture-backend.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -265,6 +261,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = "*.md";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -296,6 +293,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = "*.md";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
