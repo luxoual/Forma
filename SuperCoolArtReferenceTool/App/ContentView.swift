@@ -23,9 +23,7 @@ struct ContentView: View {
             BoardCanvasView(
                 externalInsertURLs: $urlsToInsert,
                 showGrid: $showGrid
-            ) { urls in
-                print("Imported URLs:", urls)
-            }
+            )
             
             // Dynamic layout based on toolbar side
             if toolbarSide == .left {
