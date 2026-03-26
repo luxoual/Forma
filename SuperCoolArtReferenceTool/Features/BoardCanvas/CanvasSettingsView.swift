@@ -11,47 +11,71 @@ import SwiftUI
 struct CanvasSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     
+    @Binding var showGrid: Bool
+    @Binding var toolbarSide: ToolbarSide
+    
     var body: some View {
         NavigationView {
             List {
                 Section("Canvas") {
-                    HStack {
-                        Text("Grid")
-                        Spacer()
-                        Text("On")
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                    }
+                    Toggle("Show Grid", isOn: $showGrid)
+                        .tint(DesignSystem.Colors.tertiary)
+                        .foregroundStyle(DesignSystem.Colors.text)
                     
                     HStack {
-                        Text("Grid Spacing")
+                        Text("Toolbar Position")
+                            .foregroundStyle(DesignSystem.Colors.text)
                         Spacer()
-                        Text("128 pt")
-                            .foregroundStyle(DesignSystem.Colors.secondary)
+                        Picker("Toolbar Position", selection: $toolbarSide) {
+                            Text("Left")
+                                .tag(ToolbarSide.left)
+                            Text("Right")
+                                .tag(ToolbarSide.right)
+                        }
+                        .labelsHidden()
+                        .tint(DesignSystem.Colors.secondary)
                     }
                 }
+                .listRowBackground(DesignSystem.Colors.primary)
                 
                 Section("About") {
                     HStack {
                         Text("Version")
+                            .foregroundStyle(DesignSystem.Colors.text)
                         Spacer()
                         Text("1.0.0")
                             .foregroundStyle(DesignSystem.Colors.secondary)
                     }
                 }
+                .listRowBackground(DesignSystem.Colors.primary)
             }
+            .scrollContentBackground(.hidden)
+            .background(Color.black)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(DesignSystem.Colors.primary, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
                         dismiss()
                     }
+                    .foregroundStyle(DesignSystem.Colors.tertiary)
                 }
             }
         }
     }
 }
 
+enum ToolbarSide: String, Codable {
+    case left
+    case right
+}
+
 #Preview {
-    CanvasSettingsView()
+    @Previewable @State var showGrid = true
+    @Previewable @State var toolbarSide = ToolbarSide.left
+    
+    CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide)
 }

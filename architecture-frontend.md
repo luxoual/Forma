@@ -256,11 +256,11 @@ Uses SwiftUI's `matchedGeometryEffect` to create smooth transitions between acti
 
 **File:** `CanvasSettingsButton.swift`
 
-A standalone settings button positioned at the bottom-left of the canvas, separate from the main toolbar but matching its visual styling.
+A standalone settings button positioned dynamically at the bottom corner of the canvas (left or right based on user preference), separate from the main toolbar but matching its visual styling.
 
 **Visual Design:**
 
-- **Position**: Bottom-left corner (16pt leading padding, 16pt bottom padding)
+- **Position**: Bottom corner with 16pt padding from edges - dynamically switches sides based on `toolbarSide` setting
 - **Fixed width**: 68pt (matches toolbar width)
 - **Styling**:
   - Background: `DesignSystem.Colors.primary` (#191919)
@@ -273,7 +273,8 @@ A standalone settings button positioned at the bottom-left of the canvas, separa
 
 **Integration:**
 
-- Positioned separately from `CanvasToolbar` in `ContentView`
+- Positioned dynamically with `CanvasToolbar` in `ContentView`
+- Position controlled by `toolbarSide` setting (`.left` or `.right`)
 - Opens `.sheet` with `CanvasSettingsView` when tapped
 - `@State private var showingSettings` controls sheet presentation
 - Callback: `onTap: () -> Void`
@@ -281,10 +282,46 @@ A standalone settings button positioned at the bottom-left of the canvas, separa
 **Settings Sheet:**
 
 - **File:** `CanvasSettingsView.swift`
-- Navigation-based settings interface
-- Placeholder options (grid settings, version info)
-- "Done" button to dismiss
-- Ready for expansion with functional settings controls
+- Navigation-based settings interface with full dark theme styling
+- **Functional Settings:**
+  - **Show Grid Toggle** - Controls canvas grid visibility via binding to `BoardCanvasView`
+  - **Toolbar Position Picker** - Switches toolbar and settings button between left/right side
+- "Done" button styled with tertiary color to dismiss
+- **About Section** - Version info display
+
+**Settings Functionality:**
+
+1. **Grid Toggle:**
+   - Binding: `@Binding var showGrid: Bool`
+   - Connected to `BoardCanvasView.showGrid` binding
+   - Instantly shows/hides grid lines on canvas
+   - Default: `true`
+
+2. **Toolbar Position:**
+   - Enum: `ToolbarSide` (`.left` or `.right`)
+   - Controls position of both `CanvasToolbar` and `CanvasSettingsButton`
+   - `ContentView` uses conditional layout (`leftSideLayout` or `rightSideLayout`)
+   - Default: `.left`
+   - Changes apply immediately, persists during session
+
+**Dynamic UI Layout:**
+
+`ContentView` implements two layout variants:
+- `leftSideLayout` - Toolbar + settings on left (default)
+- `rightSideLayout` - Toolbar + settings on right (mirrored)
+- Both maintain 16pt padding from edges
+- Settings button always positioned with toolbar for consistency
+
+**Visual Styling:**
+
+Settings sheet fully integrated with design system:
+- Background: `DesignSystem.Colors.primary` + black
+- Navigation bar: Dark with primary background
+- Primary labels: `DesignSystem.Colors.text` (white)
+- Secondary text/values: `DesignSystem.Colors.secondary` (gray)
+- Interactive accents: `DesignSystem.Colors.tertiary` (blue toggles, picker tint, Done button)
+- Section rows use dark backgrounds
+- Dark color scheme applied to navigation
 
 ---
 
@@ -302,12 +339,20 @@ Central design token system for consistent styling across the application.
 DesignSystem.Colors.primary   // #191919 (25, 25, 25) - Dark gray
 DesignSystem.Colors.secondary // #535353 (83, 83, 83) - Medium gray  
 DesignSystem.Colors.tertiary  // #86B8FE (134, 184, 254) - Light blue
+DesignSystem.Colors.text      // #FFFFFF (255, 255, 255) - White
 ```
 
 **Usage:**
-- Toolbar backgrounds: `primary`
-- Inactive icons/UI elements: `secondary`
-- Active states and accents: `tertiary`
+- Backgrounds: `primary` (toolbars, settings, UI containers)
+- Secondary text/values: `secondary` (subtle information, picker options)
+- Interactive accents: `tertiary` (active states, toggles, buttons)
+- Primary text: `text` (main labels, readable content)
+
+**Color Hierarchy:**
+- **White** - Primary labels and important text for maximum readability
+- **Gray** - Secondary info, values, less prominent text
+- **Blue** - Interactive elements, active states, call-to-action buttons
+- **Dark Gray** - All backgrounds and containers
 
 **Structure:**
 - `DesignSystem` enum acts as namespace

@@ -16,7 +16,7 @@ struct BoardCanvasView: View {
     @State private var zoomStartScale: CGFloat? = nil
 
     // Grid options
-    @State private var showGrid: Bool = true
+    @Binding private var showGrid: Bool
     @State private var gridSpacingWorld: CGFloat = 128.0
 
     // Placed images
@@ -38,8 +38,9 @@ struct BoardCanvasView: View {
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
 
-    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }) {
+    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), onInsertURLs: @escaping ImportHandler = { _ in }) {
         self._externalInsertURLs = externalInsertURLs
+        self._showGrid = showGrid
         self.onInsertURLs = onInsertURLs
     }
 

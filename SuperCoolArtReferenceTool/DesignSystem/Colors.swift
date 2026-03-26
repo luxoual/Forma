@@ -17,5 +17,8 @@ extension DesignSystem{
         
         /// Tertiary color - #86B8FE (Light blue)
         static let tertiary = Color(red: 134/255, green: 184/255, blue: 254/255)
+        
+        /// Text color - #FFFFFF (White)
+        static let text = Color.white
     }
 }
