@@ -8,15 +8,15 @@
 import Foundation
 import simd
 
-/// Handles importing/exporting reference board data.
-/// This is a minimal stub to satisfy compilation for `.importElements(from:copyAssetsToAppSupport:)`.
-/// Implement real parsing logic as needed.
+/// Handles importing and exporting reference board data as `.refboard` directory packages.
+/// Currently supports a JSON manifest (`manifest.json`) and image-based elements, with optional
+/// copying of referenced assets into the app's Application Support directory.
 enum BoardArchiver {
     /// Import elements from a `.refboard` file URL.
     /// - Parameters:
     ///   - url: Source file URL (likely a security-scoped resource when coming from `.onOpenURL`).
     ///   - copyAssetsToAppSupport: When `true`, copy any referenced assets into Application Support.
-    /// - Returns: An array of `CMCanvasElement` parsed from the file. Currently returns an empty array.
+    /// - Returns: An array of `CMCanvasElement` decoded from the package's `manifest.json`. The array may be empty if the manifest contains no elements.
     static func importElements(from url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
         guard url.pathExtension.lowercased() == "refboard" else {
             throw ImportError.unsupportedFileExtension
