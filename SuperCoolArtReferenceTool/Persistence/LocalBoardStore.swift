@@ -19,6 +19,36 @@ actor LocalBoardStore {
 
     private let cache = TileCache(capacity: 256)
 
+    /// Returns all full elements currently stored, unsafely exposing internal order.
+    /// Sorted by zIndex then UUID for stable export ordering.
+    func allElements() async -> [CMCanvasElement] {
+        let values = Array(fullElements.values)
+        return values.sorted { (lhs, rhs) in
+            let a = lhs.header
+            let b = rhs.header
+            if a.zIndex == b.zIndex { return a.id.uuidString < b.id.uuidString }
+            return a.zIndex < b.zIndex
+        }
+    }
+
+    /// Replaces the entire store with the provided elements, rebuilding indices and cache.
+    func replaceAll(with newElements: [CMCanvasElement]) async {
+        // Clear existing
+        tileIndex.removeAll()
+        elements.removeAll()
+        fullElements.removeAll()
+        cache.removeAll()
+        // Insert provided elements and rebuild tile index
+        for el in newElements {
+            let header = el.header
+            elements[header.id] = header
+            fullElements[header.id] = el
+            for key in CMTileKey.keysIntersecting(rect: header.bounds) {
+                tileIndex[key, default: []].insert(header.id)
+            }
+        }
+    }
+
     // MARK: - Public API
 
     /// Insert or update element headers and update tile index.

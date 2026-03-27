@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 import ImageIO
+import simd
 
 struct BoardCanvasView: View {
     typealias ImportHandler = ([URL]) -> Void
@@ -34,14 +35,21 @@ struct BoardCanvasView: View {
     // Zoom bounds
     private let minScale: CGFloat = 0.05
     private let maxScale: CGFloat = 8.0
-    
+
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
 
-    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), onInsertURLs: @escaping ImportHandler = { _ in }) {
+    @Binding private var snapshotTrigger: UUID?
+    private let onSnapshot: (([CMCanvasElement]) -> Void)?
+    @Binding private var elementsToLoad: [CMCanvasElement]?
+
+    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
         self._externalInsertURLs = externalInsertURLs
         self._showGrid = showGrid
         self.onInsertURLs = onInsertURLs
+        self._snapshotTrigger = snapshotTrigger
+        self._elementsToLoad = loadElements
+        self.onSnapshot = onSnapshot
     }
 
     var body: some View {
@@ -104,7 +112,7 @@ struct BoardCanvasView: View {
                 insertImages(atScreenPoint: point, urls: urls)
             })
             .border(Color.gray.opacity(0.4), width: 1)
-            .onAppear { 
+            .onAppear {
                 canvasSize = geo.size
                 // Center the canvas on world origin (0, 0) on first appearance
                 if offset == .zero {
@@ -120,6 +128,21 @@ struct BoardCanvasView: View {
                     // Clear the binding after processing
                     DispatchQueue.main.async {
                         externalInsertURLs = nil
+                    }
+                }
+            }
+            .onChange(of: snapshotTrigger) { oldValue, newValue in
+                // When token changes, produce a snapshot and call back
+                guard newValue != nil else { return }
+                let elements = snapshotElements()
+                onSnapshot?(elements)
+            }
+            .onChange(of: elementsToLoad) { oldValue, newValue in
+                if let els = newValue {
+                    applyElements(els)
+                    // Clear the binding after applying
+                    DispatchQueue.main.async {
+                        elementsToLoad = nil
                     }
                 }
             }
@@ -165,6 +188,49 @@ struct BoardCanvasView: View {
 
     private func clamp(_ value: CGFloat, _ minVal: CGFloat, _ maxVal: CGFloat) -> CGFloat {
         min(max(value, minVal), maxVal)
+    }
+
+    // MARK: - Snapshot / Load Elements (Backend Bridge)
+
+    private func snapshotElements() -> [CMCanvasElement] {
+        let defaultLayer = UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID()
+        return placedImages.map { item in
+            let rect = item.worldRect
+            let header = CMElementHeader(
+                id: item.id,
+                type: .image,
+                transform: CMAffineTransform2D(),
+                bounds: CMWorldRect(
+                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                    size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+                ),
+                layerId: defaultLayer,
+                zIndex: item.zIndex
+            )
+            let payload = CMCanvasElementPayload.image(
+                url: item.url,
+                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+            )
+            return CMCanvasElement(header: header, payload: payload)
+        }
+    }
+
+    private func applyElements(_ elements: [CMCanvasElement]) {
+        placedImages.removeAll()
+        nextZIndex = 0
+        for el in elements {
+            switch el.payload {
+            case .image(let url, _):
+                let b = el.header.bounds
+                let rect = CGRect(x: CGFloat(b.origin.x), y: CGFloat(b.origin.y), width: CGFloat(b.size.x), height: CGFloat(b.size.y))
+                let z = el.header.zIndex
+                placedImages.append(PlacedImage(id: el.id, url: url, worldRect: rect, zIndex: z))
+                nextZIndex = max(nextZIndex, z + 1)
+            default:
+                // Ignore non-image payloads in this MVP view
+                continue
+            }
+        }
     }
 
     // MARK: - Image Insertion
