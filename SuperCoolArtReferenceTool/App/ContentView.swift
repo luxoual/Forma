@@ -11,6 +11,8 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var openHandler: AppOpenHandler
 
+    @Binding var initialURLs: [URL]?
+
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingFilePicker = false
     @State private var showingSettings = false
@@ -110,6 +112,12 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide)
         }
+        .onAppear {
+            if let urls = initialURLs, !urls.isEmpty {
+                urlsToInsert = urls
+                initialURLs = nil
+            }
+        }
         .onReceive(openHandler.$importedElements) { value in
             if let els = value {
                 elementsToLoad = els
@@ -191,7 +199,7 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(initialURLs: .constant(nil))
         .environmentObject(AppOpenHandler())
 }
 

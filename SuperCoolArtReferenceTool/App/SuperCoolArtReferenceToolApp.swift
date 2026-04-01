@@ -12,7 +12,7 @@ struct SuperCoolArtReferenceToolApp: App {
     @StateObject private var openHandler = AppOpenHandler()
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
                 .environmentObject(openHandler)
                 .onOpenURL { url in
                     Task {

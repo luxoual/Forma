@@ -11,7 +11,9 @@ import UniformTypeIdentifiers
 struct FilePickerView: View {
     @State private var viewModel = FilePickerViewModel()
     @State private var showingImagePicker = false
-    
+
+    @Binding var selectedURLs: [URL]?
+
     var body: some View {
         ZStack {
             // Background
@@ -82,9 +84,8 @@ struct FilePickerView: View {
         ) { result in
             switch result {
             case .success(let urls):
-                for url in urls {
-                    viewModel.addImage(from: url)
-                }
+                print("[FilePicker] Selected \(urls.count) file(s)")
+                selectedURLs = urls
             case .failure(let error):
                 print("Error selecting images: \(error.localizedDescription)")
             }
@@ -93,5 +94,5 @@ struct FilePickerView: View {
 }
 
 #Preview {
-    FilePickerView()
+    FilePickerView(selectedURLs: .constant(nil))
 }
