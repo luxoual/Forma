@@ -30,6 +30,15 @@ public struct CMWorldRect: Codable, Hashable {
         
         return !(aMax.x <= bMin.x || aMin.x >= bMax.x || aMax.y <= bMin.y || aMin.y >= bMax.y)
     }
+
+    /// Checks if the rectangle contains a point.
+    public func contains(_ point: SIMD2<Double>) -> Bool {
+        let minX = origin.x
+        let minY = origin.y
+        let maxX = origin.x + size.x
+        let maxY = origin.y + size.y
+        return point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY
+    }
     
     /// Returns the union of this rectangle with another.
     public func union(_ other: CMWorldRect) -> CMWorldRect {

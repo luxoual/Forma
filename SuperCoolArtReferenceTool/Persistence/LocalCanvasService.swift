@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// A simple CanvasService implementation backed by LocalBoardStore for demo purposes.
 public final class LocalCanvasService: CanvasService {
@@ -32,6 +33,26 @@ public final class LocalCanvasService: CanvasService {
     public func elements(in rect: CMWorldRect, layers: [UUID]?, limit: Int?) async throws -> [CMElementHeader] {
         // For demo, ignore layers and just return headers in rect
         return await store.headers(in: rect, limit: limit)
+    }
+
+    public func elements(in viewport: CMWorldRect, margin: Double, layers: [UUID]?, limit: Int?) async throws -> [CMElementHeader] {
+        // For demo, ignore layers and just return headers in expanded viewport
+        return await store.headers(in: viewport, margin: margin, limit: limit)
+    }
+
+    public func topmostElement(at point: SIMD2<Double>, layers: [UUID]?) async throws -> CMElementHeader? {
+        // For demo, ignore layers and just return topmost header at point
+        return await store.topmostHeader(at: point)
+    }
+
+    public func moveToTop(elementIDs: [UUID]) async throws {
+        await store.moveToTop(elementIDs: elementIDs)
+        changeContinuation.yield(.elementsUpserted(elementIDs))
+    }
+
+    public func moveToBottom(elementIDs: [UUID]) async throws {
+        await store.moveToBottom(elementIDs: elementIDs)
+        changeContinuation.yield(.elementsUpserted(elementIDs))
     }
 
     public func elementDetail(id: UUID) async throws -> CMCanvasElement? {
