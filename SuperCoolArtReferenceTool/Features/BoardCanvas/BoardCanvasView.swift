@@ -429,7 +429,22 @@ extension NSItemProvider {
     func loadFileURLCompat(for type: UTType) async -> URL? {
         await withCheckedContinuation { continuation in
             self.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, _ in
-                continuation.resume(returning: url)
+                guard let url else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                // The provided URL is temporary and deleted when this callback returns,
+                // so copy it to a stable temp location before resuming.
+                let ext = url.pathExtension.isEmpty ? (type.preferredFilenameExtension ?? "dat") : url.pathExtension
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString)
+                    .appendingPathExtension(ext)
+                do {
+                    try FileManager.default.copyItem(at: url, to: dest)
+                    continuation.resume(returning: dest)
+                } catch {
+                    continuation.resume(returning: nil)
+                }
             }
         }
     }
