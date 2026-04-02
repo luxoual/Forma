@@ -153,15 +153,27 @@ File loading logic is duplicated between `BoardCanvasView.swift` and `InsertFile
 
 ### Integration Points
 
+**RootView (App Router):**
+
+**File:** `RootView.swift`
+
+Lightweight root view that routes between the landing screen and the canvas.
+
+- Shows `FilePickerView` on launch; transitions to `ContentView` once files are selected
+- Uses `@State private var showCanvas: Bool` to control which screen is displayed
+- Observes `openHandler.$importedElements` so `.refboard` cold launches navigate directly to canvas
+- `ContentView` receives selected URLs as a `let initialURLs: [URL]` (not a binding)
+
 **ContentView:**
 - Hosts `BoardCanvasView` in a `ZStack`
 - Overlays `CanvasToolbar` (centered left) and `CanvasSettingsButton` (bottom-left)
 - Manages `@State private var urlsToInsert: [URL]?` binding for file picker integration
+- On `.onAppear`, forwards `initialURLs` to `urlsToInsert` for the canvas to consume
 - Presents `.fileImporter` when toolbar "Add Item" is tapped
 - Presents `.sheet` with `CanvasSettingsView` when settings button is tapped
 
 **File Picker Integration:**
-- Toolbar's `onAddItem` callback sets `showingFilePicker = true`
+- Toolbar's `onAddItem` callback sets `importerMode = .images`
 - `.fileImporter` allows multiple selection of `.image` and `.gif` types
 - Selected URLs are passed to `BoardCanvasView` via `externalInsertURLs` binding
 - `BoardCanvasView` watches binding with `.onChange`, calls `insertImagesAtCenter()`
@@ -401,28 +413,36 @@ File loading logic (`loadURLs(from:preferredTypes:)`) is duplicated between `Ins
 
 **FilePickerView**
 
-**Status: Implemented (Separate Screen)**
+**Status: Implemented (Landing Screen)**
 
 **File:** `FilePickerView.swift`
 
-A full-screen empty state view for initial file selection before entering the canvas.
+A full-screen empty state view that serves as the app's landing screen for initial file selection.
 
 **Purpose:**
-- Acts as the entry point screen before `BoardCanvasView`
-- Large drop zone with dashed border
+- First screen users see on app launch
+- Large drop zone with dashed border for drag-and-drop
 - "Browse" button to open file picker
-- Designed for initial board creation workflow
+- Once files are selected, transitions to the canvas
 
 **Visual Design:**
 - Large photo icon (`photo.on.rectangle.angled`, size 80pt)
 - "Drag and drop images here" / "or" / "Browse" button
-- Dashed border that highlights on drag target
+- Dashed border that highlights on drag target (`isTargeted` state)
 - Uses `DesignSystem.Colors` for consistency
 
+**File Selection:**
+- `.fileImporter` supports `.image` and `.gif` types with multiple selection
+- Drag-and-drop saves `UIImage` objects to temp PNG files via `loadImageToTempFile(from:)` so they flow through the same URL-based pipeline as the browse button
+
+**API:**
+```swift
+FilePickerView(onFilesSelected: ([URL]) -> Void)
+```
+
 **Integration:**
-- Currently exists as standalone view
-- **Not yet integrated** into main app navigation flow
-- Intended to precede `ContentView` in final board creation flow
+- `RootView` hosts `FilePickerView` and passes an `onFilesSelected` callback
+- Callback triggers navigation to `ContentView` with the selected URLs
 
 ---
 
@@ -457,9 +477,10 @@ A full-screen empty state view for initial file selection before entering the ca
    - Add export options
 
 6. **Navigation Flow:**
-   - Integrate `FilePickerView` as initial screen
+   - ~~Integrate `FilePickerView` as initial screen~~ ✅ Done
+   - ~~Transition from file picker → canvas~~ ✅ Done
    - Board selection/management UI
-   - Transition from file picker → canvas
+   - Back navigation from canvas to file picker
 
 7. **Performance:**
    - Implement viewport-based culling
