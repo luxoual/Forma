@@ -10,19 +10,22 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var openHandler: AppOpenHandler
 
-    @State private var selectedURLs: [URL]? = nil
     @State private var showCanvas = false
+    @State private var initialURLs: [URL] = []
 
     var body: some View {
         if showCanvas {
-            ContentView(initialURLs: $selectedURLs)
+            ContentView(initialURLs: initialURLs)
         } else {
-            FilePickerView(selectedURLs: $selectedURLs)
-                .onChange(of: selectedURLs) { _, newValue in
-                    if let urls = newValue, !urls.isEmpty {
-                        showCanvas = true
-                    }
+            FilePickerView(onFilesSelected: { urls in
+                initialURLs = urls
+                showCanvas = true
+            })
+            .onReceive(openHandler.$importedElements) { value in
+                if value != nil {
+                    showCanvas = true
                 }
+            }
         }
     }
 }

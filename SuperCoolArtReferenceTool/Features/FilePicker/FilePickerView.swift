@@ -9,10 +9,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct FilePickerView: View {
-    @State private var viewModel = FilePickerViewModel()
+    @State private var isTargeted = false
     @State private var showingImagePicker = false
 
-    @Binding var selectedURLs: [URL]?
+    var onFilesSelected: ([URL]) -> Void
 
     var body: some View {
         ZStack {
@@ -22,9 +22,9 @@ struct FilePickerView: View {
             emptyStateView
         }
     }
-    
+
     // MARK: - Empty State
-    
+
     private var emptyStateView: some View {
         VStack(spacing: 24) {
             // Drop zone
@@ -32,12 +32,12 @@ struct FilePickerView: View {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 80))
                     .foregroundStyle(DesignSystem.Colors.secondary)
-                
+
                 VStack(spacing: 8) {
                     Text("Drag and drop images here")
                         .font(.title3)
                         .foregroundStyle(DesignSystem.Colors.secondary)
-                    
+
                     Text("or")
                         .font(.subheadline)
                         .foregroundStyle(DesignSystem.Colors.secondary.opacity(0.7))
@@ -53,10 +53,10 @@ struct FilePickerView: View {
                             dash: [10, 5]
                         )
                     )
-                    .foregroundStyle(viewModel.isTargeted ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary.opacity(0.5))
+                    .foregroundStyle(isTargeted ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary.opacity(0.5))
             )
-            .animation(.easeInOut(duration: 0.2), value: viewModel.isTargeted)
-            
+            .animation(.easeInOut(duration: 0.2), value: isTargeted)
+
             // Browse button
             Button {
                 showingImagePicker = true
@@ -71,28 +71,68 @@ struct FilePickerView: View {
             }
             .buttonStyle(.plain)
         }
-        .onDrop(of: [.image], isTargeted: $viewModel.isTargeted) { providers in
+        .onDrop(of: [.image], isTargeted: $isTargeted) { providers in
             Task {
-                await viewModel.handleDrop(providers: providers)
+                let urls = await saveDroppedImages(providers: providers)
+                if !urls.isEmpty {
+                    await MainActor.run {
+                        onFilesSelected(urls)
+                    }
+                }
             }
             return true
         }
         .fileImporter(
             isPresented: $showingImagePicker,
-            allowedContentTypes: [.image],
+            allowedContentTypes: [.image, .gif],
             allowsMultipleSelection: true
         ) { result in
             switch result {
             case .success(let urls):
-                print("[FilePicker] Selected \(urls.count) file(s)")
-                selectedURLs = urls
+                if !urls.isEmpty {
+                    onFilesSelected(urls)
+                }
             case .failure(let error):
                 print("Error selecting images: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Drag and Drop
+
+    private func saveDroppedImages(providers: [NSItemProvider]) async -> [URL] {
+        var urls: [URL] = []
+        for provider in providers {
+            guard provider.canLoadObject(ofClass: UIImage.self) else { continue }
+            if let url = await loadImageToTempFile(from: provider) {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
+    private func loadImageToTempFile(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            provider.loadObject(ofClass: UIImage.self) { object, _ in
+                guard let image = object as? UIImage,
+                      let data = image.pngData() else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString)
+                    .appendingPathExtension("png")
+                do {
+                    try data.write(to: tempURL)
+                    continuation.resume(returning: tempURL)
+                } catch {
+                    continuation.resume(returning: nil)
+                }
             }
         }
     }
 }
 
 #Preview {
-    FilePickerView(selectedURLs: .constant(nil))
+    FilePickerView(onFilesSelected: { _ in })
 }
