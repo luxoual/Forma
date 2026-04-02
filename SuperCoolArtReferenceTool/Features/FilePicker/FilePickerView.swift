@@ -71,9 +71,9 @@ struct FilePickerView: View {
             }
             .buttonStyle(.plain)
         }
-        .onDrop(of: [.image], isTargeted: $isTargeted) { providers in
+        .onDrop(of: [.image, .gif], isTargeted: $isTargeted) { providers in
             Task {
-                let urls = await saveDroppedImages(providers: providers)
+                let urls = await loadURLsFromProviders(providers, preferredTypes: [.image, .gif])
                 if !urls.isEmpty {
                     await MainActor.run {
                         onFilesSelected(urls)
@@ -98,39 +98,6 @@ struct FilePickerView: View {
         }
     }
 
-    // MARK: - Drag and Drop
-
-    private func saveDroppedImages(providers: [NSItemProvider]) async -> [URL] {
-        var urls: [URL] = []
-        for provider in providers {
-            guard provider.canLoadObject(ofClass: UIImage.self) else { continue }
-            if let url = await loadImageToTempFile(from: provider) {
-                urls.append(url)
-            }
-        }
-        return urls
-    }
-
-    private func loadImageToTempFile(from provider: NSItemProvider) async -> URL? {
-        await withCheckedContinuation { continuation in
-            provider.loadObject(ofClass: UIImage.self) { object, _ in
-                guard let image = object as? UIImage,
-                      let data = image.pngData() else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString)
-                    .appendingPathExtension("png")
-                do {
-                    try data.write(to: tempURL)
-                    continuation.resume(returning: tempURL)
-                } catch {
-                    continuation.resume(returning: nil)
-                }
-            }
-        }
-    }
 }
 
 #Preview {
