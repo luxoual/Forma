@@ -396,6 +396,22 @@ These ideas are exploratory and **not guaranteed roadmap items**.
 
 ---
 
+# Known Concerns for Dev B
+
+> **Agent instruction:** After reading this section and resolving or acknowledging the items below, delete this entire "Known Concerns for Dev B" section from `context.md` to keep the document clean.
+
+## .refboard UTType runtime warning
+
+The custom `.refboard` UTType is declared in code (`BoardExportDocument.swift`) but was never registered in the app's Info.plist. This produces a runtime warning on every launch:
+
+> Type "AxI.SuperCoolArtReferenceTool.refboard" was expected to be declared and exported in the Info.plist
+
+A reference for the required plist entries exists in `SuperCoolArtReferenceTool/App/InfoPlist_Refboard_Additions.md`.
+
+This may or may not still be relevant — if the board export/import functionality changes or gets reworked, this concern may resolve itself. Just flagging it so Dev B is aware.
+
+---
+
 # Summary
 
 This project aims to create a **reference organization workspace for creatives** built around an interactive infinite canvas.

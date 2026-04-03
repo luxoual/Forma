@@ -9,9 +9,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct FilePickerView: View {
-    @State private var viewModel = FilePickerViewModel()
+    @State private var isTargeted = false
     @State private var showingImagePicker = false
-    
+
+    var onFilesSelected: ([URL]) -> Void
+
     var body: some View {
         ZStack {
             // Background
@@ -20,9 +22,9 @@ struct FilePickerView: View {
             emptyStateView
         }
     }
-    
+
     // MARK: - Empty State
-    
+
     private var emptyStateView: some View {
         VStack(spacing: 24) {
             // Drop zone
@@ -30,12 +32,12 @@ struct FilePickerView: View {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 80))
                     .foregroundStyle(DesignSystem.Colors.secondary)
-                
+
                 VStack(spacing: 8) {
                     Text("Drag and drop images here")
                         .font(.title3)
                         .foregroundStyle(DesignSystem.Colors.secondary)
-                    
+
                     Text("or")
                         .font(.subheadline)
                         .foregroundStyle(DesignSystem.Colors.secondary.opacity(0.7))
@@ -51,10 +53,10 @@ struct FilePickerView: View {
                             dash: [10, 5]
                         )
                     )
-                    .foregroundStyle(viewModel.isTargeted ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary.opacity(0.5))
+                    .foregroundStyle(isTargeted ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary.opacity(0.5))
             )
-            .animation(.easeInOut(duration: 0.2), value: viewModel.isTargeted)
-            
+            .animation(.easeInOut(duration: 0.2), value: isTargeted)
+
             // Browse button
             Button {
                 showingImagePicker = true
@@ -69,29 +71,35 @@ struct FilePickerView: View {
             }
             .buttonStyle(.plain)
         }
-        .onDrop(of: [.image], isTargeted: $viewModel.isTargeted) { providers in
+        .onDrop(of: [.image, .gif], isTargeted: $isTargeted) { providers in
             Task {
-                await viewModel.handleDrop(providers: providers)
+                let urls = await loadURLsFromProviders(providers, preferredTypes: [.image, .gif])
+                if !urls.isEmpty {
+                    await MainActor.run {
+                        onFilesSelected(urls)
+                    }
+                }
             }
             return true
         }
         .fileImporter(
             isPresented: $showingImagePicker,
-            allowedContentTypes: [.image],
+            allowedContentTypes: [.image, .gif],
             allowsMultipleSelection: true
         ) { result in
             switch result {
             case .success(let urls):
-                for url in urls {
-                    viewModel.addImage(from: url)
+                if !urls.isEmpty {
+                    onFilesSelected(urls)
                 }
             case .failure(let error):
                 print("Error selecting images: \(error.localizedDescription)")
             }
         }
     }
+
 }
 
 #Preview {
-    FilePickerView()
+    FilePickerView(onFilesSelected: { _ in })
 }
