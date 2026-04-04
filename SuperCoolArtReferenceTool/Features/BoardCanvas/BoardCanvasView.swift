@@ -15,10 +15,13 @@ struct BoardCanvasView: View {
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
     @State private var zoomStartScale: CGFloat? = nil
+    @State private var isInteracting: Bool = false
+    @State private var interactionEndTask: Task<Void, Never>? = nil
 
     // Grid options
     @Binding private var showGrid: Bool
     @State private var gridSpacingWorld: CGFloat = 128.0
+    @Environment(\.displayScale) private var displayScale
 
     // Placed images (source-of-truth for interactions)
     @State private var placedImages: [PlacedImage] = []
@@ -107,12 +110,15 @@ struct BoardCanvasView: View {
 
                 // Render visible images only (world -> screen mapping)
                 ForEach(visibleImages) { item in
-                    FileImageView(url: item.url)
+                    let maxDimensionPoints = max(item.worldRect.width * scale, item.worldRect.height * scale)
+                    let requestedPixelSize = FileImageView.bucketedMaxPixelSize(maxDimensionPoints * displayScale)
+                    let targetMaxPixelSize = isInteracting ? min(requestedPixelSize, 768) : requestedPixelSize
+                    FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
                         .frame(width: item.worldRect.width * scale,
                                height: item.worldRect.height * scale)
                         .position(x: (item.worldRect.midX * scale) + offset.width,
                                   y: (item.worldRect.midY * scale) + offset.height)
-                        .shadow(radius: 1)
+                        .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
                 }
             }
@@ -163,8 +169,9 @@ struct BoardCanvasView: View {
             .contentShape(Rectangle())
             // Drag to pan
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 8)
                     .onChanged { value in
+                        startInteraction()
                         if dragStartOffset == nil { dragStartOffset = offset }
                         guard let start = dragStartOffset else { return }
                         offset = CGSize(width: start.width + value.translation.width,
@@ -173,11 +180,13 @@ struct BoardCanvasView: View {
                     }
                     .onEnded { _ in
                         dragStartOffset = nil
+                        endInteraction()
                     }
             )
             .simultaneousGesture(
                 MagnificationGesture()
                     .onChanged { value in
+                        startInteraction()
                         if zoomStartScale == nil { zoomStartScale = scale }
                         let startScale = zoomStartScale ?? scale
                         let newScale = clamp(startScale * value, minScale, maxScale)
@@ -195,6 +204,7 @@ struct BoardCanvasView: View {
                     }
                     .onEnded { _ in
                         zoomStartScale = nil
+                        endInteraction()
                     }
             )
         }
@@ -204,6 +214,21 @@ struct BoardCanvasView: View {
 
     private func clamp(_ value: CGFloat, _ minVal: CGFloat, _ maxVal: CGFloat) -> CGFloat {
         min(max(value, minVal), maxVal)
+    }
+
+    private func startInteraction() {
+        interactionEndTask?.cancel()
+        if !isInteracting {
+            isInteracting = true
+        }
+    }
+
+    private func endInteraction() {
+        interactionEndTask?.cancel()
+        interactionEndTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isInteracting = false
+        }
     }
 
     // MARK: - Snapshot / Load Elements (Backend Bridge)
@@ -246,7 +271,8 @@ struct BoardCanvasView: View {
     private func scheduleRefreshVisibleElements() {
         refreshTask?.cancel()
         refreshTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            let delay: UInt64 = isInteracting ? 80_000_000 : 40_000_000
+            try? await Task.sleep(nanoseconds: delay)
             await refreshVisibleElements()
         }
     }
@@ -414,14 +440,17 @@ struct BoardCanvasView: View {
     // Lightweight file image view (preview only)
     private struct FileImageView: View {
         let url: URL
+        let targetMaxPixelSize: Int
+        let isInteracting: Bool
         @State private var uiImage: UIImage?
+        private var cacheKey: String { "\(url.path)|\(targetMaxPixelSize)" }
 
         var body: some View {
             Group {
                 if let uiImage {
                     Image(uiImage: uiImage)
                         .resizable()
-                        .interpolation(.medium)
+                        .interpolation(isInteracting ? .low : .medium)
                         .antialiased(true)
                         .scaledToFill()
                 } else {
@@ -432,15 +461,60 @@ struct BoardCanvasView: View {
                 }
             }
             .clipped()
-            .task { await load() }
+            .task(id: cacheKey) { await load(cacheKey: cacheKey) }
         }
 
-        private func load() async {
-            guard url.isFileURL else { return }
-            if let data = try? Data(contentsOf: url), let img = UIImage(data: data) {
-                await MainActor.run { self.uiImage = img }
+        private func load(cacheKey: String) async {
+            if let cached = ImageCache.shared.image(forKey: cacheKey) {
+                await MainActor.run { self.uiImage = cached }
+                return
             }
+
+            guard url.isFileURL else { return }
+            let pixelSize = targetMaxPixelSize
+            let image = await Task.detached(priority: .utility) { () -> UIImage? in
+                let options: [CFString: Any] = [
+                    kCGImageSourceShouldCache: false,
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: pixelSize,
+                    kCGImageSourceCreateThumbnailWithTransform: true
+                ]
+                guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+                if let cgImage = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) {
+                    return UIImage(cgImage: cgImage)
+                }
+                return UIImage(contentsOfFile: url.path)
+            }.value
+
+            if let image {
+                ImageCache.shared.insert(image, forKey: cacheKey)
+            }
+            await MainActor.run { self.uiImage = image }
         }
+
+        static func bucketedMaxPixelSize(_ value: CGFloat) -> Int {
+            let clamped = min(2048, max(128, Int(value.rounded(.up))))
+            let bucket = 256
+            let bucketed = Int(ceil(Double(clamped) / Double(bucket))) * bucket
+            return min(2048, max(128, bucketed))
+        }
+    }
+}
+
+private final class ImageCache {
+    static let shared = ImageCache()
+    private let cache = NSCache<NSString, UIImage>()
+
+    private init() {
+        cache.countLimit = 512
+    }
+
+    func image(forKey key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func insert(_ image: UIImage, forKey key: String) {
+        cache.setObject(image, forKey: key as NSString)
     }
 }
 

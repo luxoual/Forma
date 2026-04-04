@@ -14,6 +14,13 @@ Backend architecture has **core data models and persistence layer** implemented,
 
 ---
 
+# Recent Changes (Backend Impact)
+
+- No changes to persistence, file formats, or CanvasService APIs.
+- UI now uses downsampled thumbnails and an in-memory cache for canvas rendering; this does not affect stored data or export packages.
+
+---
+
 # System Areas
 
 ## Canvas Item Model
