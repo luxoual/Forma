@@ -14,6 +14,13 @@ Backend architecture has **core data models and persistence layer** implemented,
 
 ---
 
+# Recent Changes (Backend Impact)
+
+- No changes to persistence, file formats, or CanvasService APIs.
+- UI now uses downsampled thumbnails and an in-memory cache for canvas rendering; this does not affect stored data or export packages.
+
+---
+
 # System Areas
 
 ## Canvas Item Model
@@ -49,7 +56,23 @@ Decision Status: **Implemented**
 
 The export pipeline uses a SwiftUI `FileDocument` implementation to generate a `.refboard` package on demand. `BoardExportDocument` creates a uniquely named temp package, calls `BoardArchiver.export(elements:to:)` to write assets and `manifest.json`, then returns a `FileWrapper` for the package. This avoids filename collisions in `/tmp` and allows the system file exporter UI to present correctly.
 
-The custom UTType is defined as `.refboard` (by filename extension) to match the exported package type.
+The custom UTType is defined as `.refboard` (exported identifier) to match the exported package type.
+
+---
+
+## Spatial Query Helpers
+
+Decision Status: **Implemented**
+
+**Files:**
+- `SuperCoolArtReferenceTool/Persistence/CanvasService.swift`
+- `SuperCoolArtReferenceTool/Persistence/LocalCanvasService.swift`
+- `SuperCoolArtReferenceTool/Persistence/LocalBoardStore.swift`
+
+Added viewport and selection helpers to support tile-based culling and hit-testing:
+- `elements(in:margin:layers:limit:)` for viewport-expanded queries.
+- `topmostElement(at:layers:)` for point hit testing.
+- `moveToTop` / `moveToBottom` for absolute z-order operations.
 
 ---
 
@@ -57,5 +80,7 @@ The custom UTType is defined as `.refboard` (by filename extension) to match the
 
 - `ContentView` collects a snapshot of `CMCanvasElement` from `BoardCanvasView` and passes it into `BoardExportDocument` for export.
 - `BoardArchiver` is the single backend entry point for encoding/decoding `.refboard` packages.
+- `CanvasService` provides viewport and selection queries (`elements(in:margin:...)`, `topmostElement(at:...)`) for tile-based culling and hit-testing.
+- `CanvasService` exposes z-order operations (`moveToTop` / `moveToBottom`) for absolute layer adjustments.
 
 

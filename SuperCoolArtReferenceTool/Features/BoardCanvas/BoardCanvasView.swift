@@ -15,15 +15,25 @@ struct BoardCanvasView: View {
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
     @State private var zoomStartScale: CGFloat? = nil
+    @State private var isInteracting: Bool = false
+    @State private var interactionEndTask: Task<Void, Never>? = nil
 
     // Grid options
     @Binding private var showGrid: Bool
+    @Binding private var canvasColor: Color
     @State private var gridSpacingWorld: CGFloat = 128.0
+    @Environment(\.displayScale) private var displayScale
 
-    // Placed images
+    // Placed images (source-of-truth for interactions)
     @State private var placedImages: [PlacedImage] = []
+    // Render-only set from viewport culling
+    @State private var visibleImages: [PlacedImage] = []
     @State private var nextZIndex: Int = 0
     @State private var canvasSize: CGSize = .zero
+
+    // Backend store for tile-based culling
+    @State private var canvasStore: LocalBoardStore
+    @State private var refreshTask: Task<Void, Never>? = nil
 
     // Drop/import types (images and GIFs only)
     private let allowedDropTypes: [UTType] = [.image, .gif]
@@ -36,6 +46,13 @@ struct BoardCanvasView: View {
     private let minScale: CGFloat = 0.05
     private let maxScale: CGFloat = 8.0
 
+    // Active tool from toolbar
+    @Binding private var activeTool: CanvasTool
+    // Selection state
+    @State private var selection = CanvasSelectionState()
+    @State private var currentDragMode: DragMode? = nil
+    @State private var dragStartWorldPos: CGPoint? = nil
+
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
 
@@ -43,9 +60,13 @@ struct BoardCanvasView: View {
     private let onSnapshot: (([CMCanvasElement]) -> Void)?
     @Binding private var elementsToLoad: [CMCanvasElement]?
 
-    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+        let store = LocalBoardStore()
+        self._canvasStore = State(initialValue: store)
+        self._activeTool = activeTool
         self._externalInsertURLs = externalInsertURLs
         self._showGrid = showGrid
+        self._canvasColor = canvasColor
         self.onInsertURLs = onInsertURLs
         self._snapshotTrigger = snapshotTrigger
         self._elementsToLoad = loadElements
@@ -97,20 +118,35 @@ struct BoardCanvasView: View {
                 }
                 .ignoresSafeArea()
 
-                // Render placed images (world -> screen mapping)
-                ForEach(placedImages) { item in
-                    FileImageView(url: item.url)
+                // Render visible images only (world -> screen mapping)
+                ForEach(visibleImages) { item in
+                    let isSelected = selection.selectedIDs.contains(item.id)
+                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
+                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+
+                    let maxDimensionPoints = max(item.worldRect.width * scale, item.worldRect.height * scale)
+                    let requestedPixelSize = FileImageView.bucketedMaxPixelSize(maxDimensionPoints * displayScale)
+                    let targetMaxPixelSize = isInteracting ? min(requestedPixelSize, 768) : requestedPixelSize
+                    FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
                         .frame(width: item.worldRect.width * scale,
                                height: item.worldRect.height * scale)
-                        .position(x: (item.worldRect.midX * scale) + offset.width,
-                                  y: (item.worldRect.midY * scale) + offset.height)
-                        .shadow(radius: 1)
+                        .overlay {
+                            if isSelected {
+                                SelectionOverlay()
+                            }
+                        }
+                        .position(x: (item.worldRect.midX * scale) + offset.width + liveDX,
+                                  y: (item.worldRect.midY * scale) + offset.height + liveDY)
+                        .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
                 }
             }
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
                 insertImages(atScreenPoint: point, urls: urls)
             })
+            .background {
+                canvasColor.ignoresSafeArea()
+            }
             .border(Color.gray.opacity(0.4), width: 1)
             .onAppear {
                 canvasSize = geo.size
@@ -118,9 +154,11 @@ struct BoardCanvasView: View {
                 if offset == .zero {
                     offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
                 }
+                scheduleRefreshVisibleElements()
             }
             .onChange(of: geo.size) { oldValue, newValue in
                 canvasSize = newValue
+                scheduleRefreshVisibleElements()
             }
             .onChange(of: externalInsertURLs) { oldValue, newValue in
                 if let urls = newValue, !urls.isEmpty {
@@ -134,8 +172,12 @@ struct BoardCanvasView: View {
             .onChange(of: snapshotTrigger) { oldValue, newValue in
                 // When token changes, produce a snapshot and call back
                 guard newValue != nil else { return }
-                let elements = snapshotElements()
-                onSnapshot?(elements)
+                Task {
+                    let elements = await canvasStore.allElements()
+                    await MainActor.run {
+                        onSnapshot?(elements)
+                    }
+                }
             }
             .onChange(of: elementsToLoad) { oldValue, newValue in
                 if let els = newValue {
@@ -147,22 +189,63 @@ struct BoardCanvasView: View {
                 }
             }
             .contentShape(Rectangle())
-            // Drag to pan
+            // Drag: routed through active tool behavior
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 8)
                     .onChanged { value in
-                        if dragStartOffset == nil { dragStartOffset = offset }
-                        guard let start = dragStartOffset else { return }
-                        offset = CGSize(width: start.width + value.translation.width,
-                                        height: start.height + value.translation.height)
+                        startInteraction()
+                        if currentDragMode == nil {
+                            // First event — decide mode via tool behavior
+                            let worldStart = screenToWorld(value.startLocation)
+                            dragStartWorldPos = worldStart
+                            dragStartOffset = offset
+                            let behavior = toolBehavior(for: activeTool)
+                            let store = canvasStore
+                            let sel = selection
+                            Task { @MainActor in
+                                let mode = await behavior.dragBegan(
+                                    worldStart: worldStart,
+                                    store: store,
+                                    selection: sel
+                                )
+                                currentDragMode = mode
+                                applyDrag(value: value, mode: mode)
+                            }
+                            return
+                        }
+                        if let mode = currentDragMode {
+                            applyDrag(value: value, mode: mode)
+                        }
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
+                        if currentDragMode == .moveItem {
+                            commitMove()
+                        }
+                        currentDragMode = nil
                         dragStartOffset = nil
+                        dragStartWorldPos = nil
+                        selection.isDragging = false
+                        selection.dragOffset = .zero
+                        endInteraction()
+                    }
+            )
+            .simultaneousGesture(
+                SpatialTapGesture()
+                    .onEnded { value in
+                        let worldPt = screenToWorld(value.location)
+                        let behavior = toolBehavior(for: activeTool)
+                        let store = canvasStore
+                        let sel = selection
+                        Task {
+                            await behavior.tapped(worldPoint: worldPt, store: store, selection: sel)
+                            await refreshVisibleElements()
+                        }
                     }
             )
             .simultaneousGesture(
                 MagnificationGesture()
                     .onChanged { value in
+                        startInteraction()
                         if zoomStartScale == nil { zoomStartScale = scale }
                         let startScale = zoomStartScale ?? scale
                         let newScale = clamp(startScale * value, minScale, maxScale)
@@ -176,9 +259,11 @@ struct BoardCanvasView: View {
                         let newOffsetX = anchor.x - worldXBefore * newScale
                         let newOffsetY = anchor.y - worldYBefore * newScale
                         offset = CGSize(width: newOffsetX, height: newOffsetY)
+                        scheduleRefreshVisibleElements()
                     }
                     .onEnded { _ in
                         zoomStartScale = nil
+                        endInteraction()
                     }
             )
         }
@@ -190,30 +275,83 @@ struct BoardCanvasView: View {
         min(max(value, minVal), maxVal)
     }
 
-    // MARK: - Snapshot / Load Elements (Backend Bridge)
-
-    private func snapshotElements() -> [CMCanvasElement] {
-        let defaultLayer = UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID()
-        return placedImages.map { item in
-            let rect = item.worldRect
-            let header = CMElementHeader(
-                id: item.id,
-                type: .image,
-                transform: CMAffineTransform2D(),
-                bounds: CMWorldRect(
-                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
-                    size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
-                ),
-                layerId: defaultLayer,
-                zIndex: item.zIndex
-            )
-            let payload = CMCanvasElementPayload.image(
-                url: item.url,
-                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
-            )
-            return CMCanvasElement(header: header, payload: payload)
+    private func startInteraction() {
+        interactionEndTask?.cancel()
+        if !isInteracting {
+            isInteracting = true
         }
     }
+
+    private func endInteraction() {
+        interactionEndTask?.cancel()
+        interactionEndTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            isInteracting = false
+        }
+    }
+
+    // MARK: - Drag Helpers
+
+    private func applyDrag(value: DragGesture.Value, mode: DragMode) {
+        switch mode {
+        case .pan:
+            guard let start = dragStartOffset else { return }
+            offset = CGSize(
+                width: start.width + value.translation.width,
+                height: start.height + value.translation.height
+            )
+            scheduleRefreshVisibleElements()
+        case .moveItem:
+            let worldDX = value.translation.width / scale
+            let worldDY = value.translation.height / scale
+            selection.dragOffset = CGSize(width: worldDX, height: worldDY)
+            selection.isDragging = true
+        case .none:
+            break
+        }
+    }
+
+    private func commitMove() {
+        let dx = selection.dragOffset.width
+        let dy = selection.dragOffset.height
+        guard dx != 0 || dy != 0 else { return }
+
+        let idsToMove = selection.selectedIDs
+
+        // Update local placedImages
+        for i in placedImages.indices {
+            if idsToMove.contains(placedImages[i].id) {
+                placedImages[i].worldRect.origin.x += dx
+                placedImages[i].worldRect.origin.y += dy
+            }
+        }
+
+        // Immediately update visibleImages so there's no flash
+        // when dragOffset resets to zero before the async store refresh
+        for i in visibleImages.indices {
+            if idsToMove.contains(visibleImages[i].id) {
+                visibleImages[i].worldRect.origin.x += dx
+                visibleImages[i].worldRect.origin.y += dy
+            }
+        }
+
+        // Batch update backend store
+        Task {
+            let fetched = await canvasStore.elements(for: Array(idsToMove))
+            var updated: [CMCanvasElement] = []
+            for (_, var element) in fetched {
+                element.header.bounds.origin.x += Double(dx)
+                element.header.bounds.origin.y += Double(dy)
+                updated.append(element)
+            }
+            if !updated.isEmpty {
+                await canvasStore.upsert(elements: updated)
+            }
+            await refreshVisibleElements()
+        }
+    }
+
+    // MARK: - Snapshot / Load Elements (Backend Bridge)
 
     private func applyElements(_ elements: [CMCanvasElement]) {
         placedImages.removeAll()
@@ -231,6 +369,52 @@ struct BoardCanvasView: View {
                 continue
             }
         }
+        Task {
+            await canvasStore.replaceAll(with: elements)
+            await refreshVisibleElements()
+        }
+    }
+
+    private func currentViewportRect() -> CMWorldRect {
+        let s = Double(scale)
+        let off = offset
+        let worldMinX = (-off.width) / CGFloat(s)
+        let worldMinY = (-off.height) / CGFloat(s)
+        let worldMaxX = (canvasSize.width - off.width) / CGFloat(s)
+        let worldMaxY = (canvasSize.height - off.height) / CGFloat(s)
+        return CMWorldRect(
+            origin: SIMD2<Double>(Double(worldMinX), Double(worldMinY)),
+            size: SIMD2<Double>(Double(worldMaxX - worldMinX), Double(worldMaxY - worldMinY))
+        )
+    }
+
+    private func scheduleRefreshVisibleElements() {
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor in
+            let delay: UInt64 = isInteracting ? 80_000_000 : 40_000_000
+            try? await Task.sleep(nanoseconds: delay)
+            await refreshVisibleElements()
+        }
+    }
+
+    private func refreshVisibleElements() async {
+        guard canvasSize != .zero else { return }
+        let viewport = currentViewportRect()
+        let headers = await canvasStore.headers(in: viewport, margin: 512, limit: nil)
+        let ids = headers.map { $0.id }
+        let elementsById = await canvasStore.elements(for: ids)
+        let items: [PlacedImage] = headers.compactMap { header in
+            guard let element = elementsById[header.id] else { return nil }
+            switch element.payload {
+            case .image(let url, _):
+                let b = header.bounds
+                let rect = CGRect(x: CGFloat(b.origin.x), y: CGFloat(b.origin.y), width: CGFloat(b.size.x), height: CGFloat(b.size.y))
+                return PlacedImage(id: header.id, url: url, worldRect: rect, zIndex: header.zIndex)
+            default:
+                return nil
+            }
+        }
+        visibleImages = items
     }
 
     // MARK: - Image Insertion
@@ -256,6 +440,27 @@ struct BoardCanvasView: View {
             let z = nextZIndex
             placedImages.append(PlacedImage(id: id, url: url, worldRect: rect, zIndex: z))
             nextZIndex += 1
+
+            let header = CMElementHeader(
+                id: id,
+                type: .image,
+                transform: CMAffineTransform2D(),
+                bounds: CMWorldRect(
+                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                    size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+                ),
+                layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+                zIndex: z
+            )
+            let payload = CMCanvasElementPayload.image(
+                url: url,
+                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+            )
+            let element = CMCanvasElement(header: header, payload: payload)
+            Task {
+                await canvasStore.upsert(elements: [element])
+                await refreshVisibleElements()
+            }
         }
     }
 
@@ -317,7 +522,7 @@ struct BoardCanvasView: View {
         if url.isFileURL, url.path.contains(Bundle.main.bundleIdentifier ?? "") {
             return url
         }
-        var accessGranted = url.startAccessingSecurityScopedResource()
+        let accessGranted = url.startAccessingSecurityScopedResource()
         defer { if accessGranted { url.stopAccessingSecurityScopedResource() } }
 
         let fm = FileManager.default
@@ -355,14 +560,17 @@ struct BoardCanvasView: View {
     // Lightweight file image view (preview only)
     private struct FileImageView: View {
         let url: URL
+        let targetMaxPixelSize: Int
+        let isInteracting: Bool
         @State private var uiImage: UIImage?
+        private var cacheKey: String { "\(url.path)|\(targetMaxPixelSize)" }
 
         var body: some View {
             Group {
                 if let uiImage {
                     Image(uiImage: uiImage)
                         .resizable()
-                        .interpolation(.medium)
+                        .interpolation(isInteracting ? .low : .medium)
                         .antialiased(true)
                         .scaledToFill()
                 } else {
@@ -373,15 +581,60 @@ struct BoardCanvasView: View {
                 }
             }
             .clipped()
-            .task { await load() }
+            .task(id: cacheKey) { await load(cacheKey: cacheKey) }
         }
 
-        private func load() async {
-            guard url.isFileURL else { return }
-            if let data = try? Data(contentsOf: url), let img = UIImage(data: data) {
-                await MainActor.run { self.uiImage = img }
+        private func load(cacheKey: String) async {
+            if let cached = ImageCache.shared.image(forKey: cacheKey) {
+                await MainActor.run { self.uiImage = cached }
+                return
             }
+
+            guard url.isFileURL else { return }
+            let pixelSize = targetMaxPixelSize
+            let image = await Task.detached(priority: .utility) { () -> UIImage? in
+                let options: [CFString: Any] = [
+                    kCGImageSourceShouldCache: false,
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: pixelSize,
+                    kCGImageSourceCreateThumbnailWithTransform: true
+                ]
+                guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+                if let cgImage = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) {
+                    return UIImage(cgImage: cgImage)
+                }
+                return UIImage(contentsOfFile: url.path)
+            }.value
+
+            if let image {
+                ImageCache.shared.insert(image, forKey: cacheKey)
+            }
+            await MainActor.run { self.uiImage = image }
         }
+
+        static func bucketedMaxPixelSize(_ value: CGFloat) -> Int {
+            let clamped = min(2048, max(128, Int(value.rounded(.up))))
+            let bucket = 256
+            let bucketed = Int(ceil(Double(clamped) / Double(bucket))) * bucket
+            return min(2048, max(128, bucketed))
+        }
+    }
+}
+
+private final class ImageCache {
+    static let shared = ImageCache()
+    private let cache = NSCache<NSString, UIImage>()
+
+    private init() {
+        cache.countLimit = 512
+    }
+
+    func image(forKey key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func insert(_ image: UIImage, forKey key: String) {
+        cache.setObject(image, forKey: key as NSString)
     }
 }
 

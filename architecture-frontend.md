@@ -66,20 +66,26 @@ func screenToWorld(_ p: CGPoint) -> CGPoint {
 
 ### Gesture System
 
-**Pan (Drag Gesture):**
-- `DragGesture(minimumDistance: 0)` captures all drag input
-- Updates `offset` by accumulating translation from gesture start
-- Gesture state: `dragStartOffset` stores offset at gesture begin
+Three simultaneous gestures are attached to the canvas ZStack:
+
+**Drag Gesture (Tool-Routed):**
+- `DragGesture(minimumDistance: 8)` — routed through the active `CanvasToolBehavior`
+- On first `.onChanged`: async hit-test via tool behavior determines `DragMode` (`.pan`, `.moveItem`, `.none`)
+- Mode is cached in `currentDragMode` for the gesture's duration
+- `.pan` mode: updates `offset` by accumulating translation (canvas panning)
+- `.moveItem` mode: updates `selection.dragOffset` in world space (item move with live visual feedback)
+- On `.onEnded`: if `.moveItem`, calls `commitMove()` to persist positions; resets all drag state
+
+**Spatial Tap Gesture:**
+- `SpatialTapGesture()` as `.simultaneousGesture` — handles taps independently of drag
+- Required because `DragGesture(minimumDistance: 8)` never fires for taps (< 8pt movement)
+- Delegates to active tool's `tapped()` method for hit-testing and selection changes
 
 **Zoom (Magnification Gesture):**
-- `MagnificationGesture()` captures pinch-to-zoom on trackpad/indirect input
-- Currently zooms around **view center** (not finger/cursor location)
+- `MagnificationGesture()` as `.simultaneousGesture` — always active regardless of tool
+- Zooms around **view center** (not finger/cursor location)
 - Preserves world position at anchor point during zoom
 - Gesture state: `zoomStartScale` stores scale at gesture begin
-
-**Simultaneous Recognition:**
-- `.simultaneousGesture()` allows pan and zoom to work together
-- Gestures do not block each other
 
 **Known Limitation:**
 - Zoom anchors around view center instead of pinch location
@@ -256,9 +262,103 @@ Uses SwiftUI's `matchedGeometryEffect` to create smooth transitions between acti
 
 - `ContentView` manages `@State private var activeTool: CanvasTool = .pointer`
 - Toolbar binds via `@Binding var activeTool: CanvasTool`
+- `ContentView` passes `$activeTool` to `BoardCanvasView` so the canvas knows which tool is active
 - Callbacks for actions: `onUndo`, `onRedo`, `onAddItem`
 - `onAddItem` opens `.fileImporter` for selecting images/GIFs
-- Tool state **not yet connected** to canvas behavior (planned for next iteration)
+
+---
+
+### Tool Behavior System
+
+**Status: Implemented**
+
+**File:** `CanvasToolBehavior.swift`
+
+A protocol-based abstraction that lets each toolbar tool define its own gesture handling.
+
+**Architecture:**
+
+```
+CanvasTool (enum)              -- toolbar identity, UI selection
+    |
+    v
+CanvasToolBehavior (protocol)  -- gesture interpretation per tool
+    ├── PointerToolBehavior    -- tap=select, drag-on-item=move, drag-on-empty=pan
+    └── GroupToolBehavior      -- stub (falls back to pan for now)
+```
+
+**Protocol:**
+
+```swift
+protocol CanvasToolBehavior {
+    func dragBegan(worldStart: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async -> DragMode
+    func tapped(worldPoint: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async
+}
+```
+
+**DragMode enum:** `.pan`, `.moveItem`, `.none`
+
+**Gesture Routing:**
+
+A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the active tool's behavior:
+1. On first `.onChanged` event: hit-test via tool behavior → cache `DragMode` for gesture duration
+2. Subsequent `.onChanged`: `applyDrag()` routes to pan or move based on cached mode
+3. `.onEnded`: if translation < 4pt, treat as tap → call `behavior.tapped()`; if `.moveItem`, call `commitMove()`
+
+**Pointer Tool Behavior:**
+- Drag on item → select it, bring to top, enter `.moveItem` mode
+- Drag on empty canvas → `.pan` mode (normal canvas pan)
+- Tap on item → select it
+- Tap on empty → clear selection
+
+**Group Tool:** Stub — returns `.pan` for all drags, no-op for taps. Ready for future marquee select.
+
+**Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior` maps enum to concrete behavior.
+
+**Adding New Tools:**
+1. Add case to `CanvasTool` enum
+2. Create a struct conforming to `CanvasToolBehavior`
+3. Add mapping in `toolBehavior(for:)` factory
+
+---
+
+### Selection & Move System
+
+**Status: Implemented**
+
+**Files:** `CanvasSelectionState.swift`, `SelectionOverlay.swift`, `BoardCanvasView.swift`
+
+**Selection State:**
+
+`CanvasSelectionState` is an `@Observable` class owned as `@State` in `BoardCanvasView`:
+- `selectedIDs: Set<UUID>` — currently selected element IDs
+- `dragOffset: CGSize` — world-space offset during active drag-move
+- `isDragging: Bool` — whether a move drag is in progress
+- `select(_:extending:)` — select an item (extending parameter for future multi-select)
+- `clearSelection()` — deselect all
+
+**Visual Indicators:**
+
+**File:** `SelectionOverlay.swift`
+
+Selected items display a `SelectionOverlay` via `.overlay` (applied before `.position()` so it renders in the item's coordinate space):
+- Blue stroke border (`DesignSystem.Colors.tertiary`, 2pt)
+- White corner handles (10×10pt rounded rectangles with blue border) at all four corners
+- `HandlePosition` enum defines `.topLeft`, `.topRight`, `.bottomLeft`, `.bottomRight`
+- Corner handles are visual placeholders for future resize functionality
+
+**Move Interaction:**
+
+1. User drags a selected item → `applyDrag()` sets `selection.dragOffset` in world space
+2. During drag, selected items render with a live offset: `position + (dragOffset * scale)` — no store updates per frame
+3. On drag end, `commitMove()`:
+   - Bakes offset into `placedImages` and `visibleImages` immediately (prevents flash)
+   - Batch-fetches elements from store via `elements(for:)` and updates positions in a single `upsert(elements:)` call
+   - Refreshes visible elements from store
+
+**Performance:**
+
+Store updates are batched — one `elements(for:)` fetch + one `upsert(elements:)` call regardless of selection count (2 actor round-trips, not 2N). This scales for future multi-select.
 
 ---
 
@@ -296,6 +396,7 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 - **File:** `CanvasSettingsView.swift`
 - Navigation-based settings interface with full dark theme styling
 - **Functional Settings:**
+  - **Canvas Color Picker** - Changes the canvas background color via a custom pill-shaped color swatch that opens the system color picker
   - **Show Grid Toggle** - Controls canvas grid visibility via binding to `BoardCanvasView`
   - **Toolbar Position Picker** - Switches toolbar and settings button between left/right side
 - "Done" button styled with tertiary color to dismiss
@@ -303,13 +404,21 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 
 **Settings Functionality:**
 
-1. **Grid Toggle:**
+1. **Canvas Color:**
+   - Binding: `@Binding var canvasColor: Color`
+   - Connected to `BoardCanvasView.canvasColor` binding, applied as `.background(canvasColor)` on the canvas ZStack
+   - Custom pill-shaped UI: a `RoundedRectangle` (48×28pt) filled with the current color, with an invisible `ColorPicker` scaled on top (`.opacity(0.015)`, `.scaleEffect(2.0)`)
+   - Pill set to `.allowsHitTesting(false)` so taps pass through to the picker; hit area constrained to pill shape via `.contentShape(RoundedRectangle)` on the container
+   - `supportsOpacity: false` — solid colors only
+   - Default: `.white`
+
+2. **Grid Toggle:**
    - Binding: `@Binding var showGrid: Bool`
    - Connected to `BoardCanvasView.showGrid` binding
    - Instantly shows/hides grid lines on canvas
    - Default: `true`
 
-2. **Toolbar Position:**
+3. **Toolbar Position:**
    - Enum: `ToolbarSide` (`.left` or `.right`)
    - Controls position of both `CanvasToolbar` and `CanvasSettingsButton`
    - `ContentView` uses conditional layout (`leftSideLayout` or `rightSideLayout`)
@@ -455,16 +564,19 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
    - Debug UIKit gesture recognizer interaction with SwiftUI gestures
 
 2. **Tool Behavior:**
-   - Connect `activeTool` state to actual canvas interactions
-   - Implement selection rectangles when pointer tool is active
+   - ~~Connect `activeTool` state to actual canvas interactions~~ ✅ Done
+   - ~~Implement selection via pointer tool~~ ✅ Done
+   - Implement selection rectangles / marquee select for group tool
    - Implement grouping behavior for group tool
 
 3. **Item Interaction:**
-   - Select items on tap
-   - Resize handles for selected items
+   - ~~Select items on tap~~ ✅ Done
+   - ~~Move items by dragging~~ ✅ Done
+   - ~~Resize handle visuals~~ ✅ Done (placeholder, not yet functional)
+   - Functional resize via corner handle drag
    - Rotation gestures
    - Delete selected items
-   - Multi-selection
+   - Multi-selection (CanvasSelectionState already supports it via `extending` parameter)
 
 4. **File Import Refactor:**
    - Extract duplicate file loading code into `FileImportHelpers.swift`
@@ -504,14 +616,14 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
    - **Integration needed:** Conversion helpers between coordinate systems
 
 3. **Persistence:**
-   - Dev A manages items in `@State` (ephemeral)
-   - Dev B has `LocalCanvasService` and `LocalBoardStore` ready
-   - **Next step:** Wire canvas changes to persistence layer
+   - Dev A manages `placedImages` in `@State` and syncs to `LocalBoardStore` on insert and move
+   - Move operations use `elements(for:)` + `upsert(elements:)` for batched updates
+   - Hit testing uses `topmostHeader(at:)` from `LocalBoardStore`
+   - `moveToTop(elementIDs:)` used to bring selected items to front on interaction
 
 4. **Tile System:**
    - Dev B has implemented `CMTileKey` spatial indexing
-   - Dev A doesn't use it yet (renders all items)
-   - **Future optimization:** Use tile system for visibility culling
+   - Dev A uses it for viewport culling via `headers(in:viewport:margin:)` and hit testing
 
 ---
 

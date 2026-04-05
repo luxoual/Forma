@@ -136,6 +136,75 @@ actor LocalBoardStore {
         }
         return result.sorted { ($0.zIndex, $0.id.uuidString) < ($1.zIndex, $1.id.uuidString) }
     }
+
+    /// Query element headers intersecting the viewport expanded by margin.
+    func headers(in viewport: CMWorldRect, margin: Double, limit: Int? = nil) async -> [CMElementHeader] {
+        let expanded = CMWorldRect(
+            origin: SIMD2<Double>(viewport.origin.x - margin, viewport.origin.y - margin),
+            size: SIMD2<Double>(viewport.size.x + 2 * margin, viewport.size.y + 2 * margin)
+        )
+        return await headers(in: expanded, limit: limit)
+    }
+
+    /// Returns the topmost header containing a point.
+    func topmostHeader(at point: SIMD2<Double>) async -> CMElementHeader? {
+        let tileSize = CMTileKey.size
+        let key = CMTileKey(
+            x: Int(floor(point.x / tileSize)),
+            y: Int(floor(point.y / tileSize))
+        )
+        let ids = tileIndex[key] ?? []
+        var best: CMElementHeader? = nil
+        for id in ids {
+            guard let header = elements[id], header.bounds.contains(point) else { continue }
+            if let current = best {
+                if header.zIndex > current.zIndex {
+                    best = header
+                }
+            } else {
+                best = header
+            }
+        }
+        return best
+    }
+
+    /// Moves the provided elements above all others by adjusting zIndex.
+    func moveToTop(elementIDs: [UUID]) async {
+        guard !elementIDs.isEmpty else { return }
+        let maxZ = elements.values.map { $0.zIndex }.max() ?? 0
+        var nextZ = maxZ + 1
+        let ordered = elementIDs.compactMap { elements[$0] }.sorted { $0.zIndex < $1.zIndex }
+        for header in ordered {
+            var updated = header
+            updated.zIndex = nextZ
+            nextZ += 1
+            elements[updated.id] = updated
+            if var full = fullElements[updated.id] {
+                full.header = updated
+                fullElements[updated.id] = full
+            }
+        }
+        cache.removeAll()
+    }
+
+    /// Moves the provided elements below all others by adjusting zIndex.
+    func moveToBottom(elementIDs: [UUID]) async {
+        guard !elementIDs.isEmpty else { return }
+        let minZ = elements.values.map { $0.zIndex }.min() ?? 0
+        var nextZ = minZ - elementIDs.count
+        let ordered = elementIDs.compactMap { elements[$0] }.sorted { $0.zIndex < $1.zIndex }
+        for header in ordered {
+            var updated = header
+            updated.zIndex = nextZ
+            nextZ += 1
+            elements[updated.id] = updated
+            if var full = fullElements[updated.id] {
+                full.header = updated
+                fullElements[updated.id] = full
+            }
+        }
+        cache.removeAll()
+    }
     
     /// Fetch a full element by ID (if present).
     func element(id: UUID) async -> CMCanvasElement? {
