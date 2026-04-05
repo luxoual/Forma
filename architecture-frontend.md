@@ -308,7 +308,7 @@ A standalone settings button positioned dynamically at the bottom corner of the 
    - Binding: `@Binding var canvasColor: Color`
    - Connected to `BoardCanvasView.canvasColor` binding, applied as `.background(canvasColor)` on the canvas ZStack
    - Custom pill-shaped UI: a `RoundedRectangle` (48×28pt) filled with the current color, with an invisible `ColorPicker` scaled on top (`.opacity(0.015)`, `.scaleEffect(2.0)`)
-   - Hit area constrained to pill shape via `.clipShape(RoundedRectangle)`, pill set to `.allowsHitTesting(false)` so taps pass through to the picker
+   - Pill set to `.allowsHitTesting(false)` so taps pass through to the picker; hit area constrained to pill shape via `.contentShape(RoundedRectangle)` on the container
    - `supportsOpacity: false` — solid colors only
    - Default: `.white`
 
