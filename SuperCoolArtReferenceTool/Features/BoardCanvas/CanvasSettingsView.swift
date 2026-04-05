@@ -27,7 +27,6 @@ struct CanvasSettingsView: View {
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(canvasColor)
                                 .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                                .frame(width: 48, height: 28)
                                 .allowsHitTesting(false)
                             ColorPicker("", selection: $canvasColor, supportsOpacity: false)
                                 .labelsHidden()
@@ -35,7 +34,7 @@ struct CanvasSettingsView: View {
                                 .opacity(0.015)
                         }
                         .frame(width: 48, height: 28)
-                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
 
                     Toggle("Show Grid", isOn: $showGrid)
