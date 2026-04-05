@@ -13,15 +13,34 @@ struct CanvasSettingsView: View {
     
     @Binding var showGrid: Bool
     @Binding var toolbarSide: ToolbarSide
-    
+    @Binding var canvasColor: Color
+
     var body: some View {
         NavigationView {
             List {
                 Section("Canvas") {
+                    HStack {
+                        Text("Canvas Color")
+                            .foregroundStyle(DesignSystem.Colors.text)
+                        Spacer()
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(canvasColor)
+                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                .allowsHitTesting(false)
+                            ColorPicker("", selection: $canvasColor, supportsOpacity: false)
+                                .labelsHidden()
+                                .scaleEffect(CGSize(width: 2.0, height: 2.0))
+                                .opacity(0.015)
+                        }
+                        .frame(width: 48, height: 28)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                    }
+
                     Toggle("Show Grid", isOn: $showGrid)
                         .tint(DesignSystem.Colors.tertiary)
                         .foregroundStyle(DesignSystem.Colors.text)
-                    
+
                     HStack {
                         Text("Toolbar Position")
                             .foregroundStyle(DesignSystem.Colors.text)
@@ -76,6 +95,7 @@ enum ToolbarSide: String, Codable {
 #Preview {
     @Previewable @State var showGrid = true
     @Previewable @State var toolbarSide = ToolbarSide.left
-    
-    CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide)
+    @Previewable @State var canvasColor = Color.white
+
+    CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
 }
