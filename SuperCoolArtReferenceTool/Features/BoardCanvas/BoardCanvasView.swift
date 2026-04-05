@@ -132,8 +132,7 @@ struct BoardCanvasView: View {
                                height: item.worldRect.height * scale)
                         .overlay {
                             if isSelected {
-                                Rectangle()
-                                    .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 2)
+                                SelectionOverlay()
                             }
                         }
                         .position(x: (item.worldRect.midX * scale) + offset.width + liveDX,
