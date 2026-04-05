@@ -66,20 +66,26 @@ func screenToWorld(_ p: CGPoint) -> CGPoint {
 
 ### Gesture System
 
-**Pan (Drag Gesture):**
-- `DragGesture(minimumDistance: 0)` captures all drag input
-- Updates `offset` by accumulating translation from gesture start
-- Gesture state: `dragStartOffset` stores offset at gesture begin
+Three simultaneous gestures are attached to the canvas ZStack:
+
+**Drag Gesture (Tool-Routed):**
+- `DragGesture(minimumDistance: 8)` — routed through the active `CanvasToolBehavior`
+- On first `.onChanged`: async hit-test via tool behavior determines `DragMode` (`.pan`, `.moveItem`, `.none`)
+- Mode is cached in `currentDragMode` for the gesture's duration
+- `.pan` mode: updates `offset` by accumulating translation (canvas panning)
+- `.moveItem` mode: updates `selection.dragOffset` in world space (item move with live visual feedback)
+- On `.onEnded`: if `.moveItem`, calls `commitMove()` to persist positions; resets all drag state
+
+**Spatial Tap Gesture:**
+- `SpatialTapGesture()` as `.simultaneousGesture` — handles taps independently of drag
+- Required because `DragGesture(minimumDistance: 8)` never fires for taps (< 8pt movement)
+- Delegates to active tool's `tapped()` method for hit-testing and selection changes
 
 **Zoom (Magnification Gesture):**
-- `MagnificationGesture()` captures pinch-to-zoom on trackpad/indirect input
-- Currently zooms around **view center** (not finger/cursor location)
+- `MagnificationGesture()` as `.simultaneousGesture` — always active regardless of tool
+- Zooms around **view center** (not finger/cursor location)
 - Preserves world position at anchor point during zoom
 - Gesture state: `zoomStartScale` stores scale at gesture begin
-
-**Simultaneous Recognition:**
-- `.simultaneousGesture()` allows pan and zoom to work together
-- Gestures do not block each other
 
 **Known Limitation:**
 - Zoom anchors around view center instead of pinch location
@@ -320,7 +326,7 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Status: Implemented**
 
-**Files:** `CanvasSelectionState.swift`, `BoardCanvasView.swift`
+**Files:** `CanvasSelectionState.swift`, `SelectionOverlay.swift`, `BoardCanvasView.swift`
 
 **Selection State:**
 
@@ -333,7 +339,13 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Visual Indicators:**
 
-Selected items show a `DesignSystem.Colors.tertiary` (blue) stroke border via `.overlay`.
+**File:** `SelectionOverlay.swift`
+
+Selected items display a `SelectionOverlay` via `.overlay` (applied before `.position()` so it renders in the item's coordinate space):
+- Blue stroke border (`DesignSystem.Colors.tertiary`, 2pt)
+- White corner handles (10×10pt rounded rectangles with blue border) at all four corners
+- `HandlePosition` enum defines `.topLeft`, `.topRight`, `.bottomLeft`, `.bottomRight`
+- Corner handles are visual placeholders for future resize functionality
 
 **Move Interaction:**
 
@@ -560,7 +572,8 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
 3. **Item Interaction:**
    - ~~Select items on tap~~ ✅ Done
    - ~~Move items by dragging~~ ✅ Done
-   - Resize handles for selected items
+   - ~~Resize handle visuals~~ ✅ Done (placeholder, not yet functional)
+   - Functional resize via corner handle drag
    - Rotation gestures
    - Delete selected items
    - Multi-selection (CanvasSelectionState already supports it via `extending` parameter)
