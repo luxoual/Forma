@@ -334,14 +334,17 @@ struct BoardCanvasView: View {
             }
         }
 
-        // Update backend store
+        // Batch update backend store
         Task {
-            for id in idsToMove {
-                if var element = await canvasStore.element(id: id) {
-                    element.header.bounds.origin.x += Double(dx)
-                    element.header.bounds.origin.y += Double(dy)
-                    await canvasStore.upsert(elements: [element])
-                }
+            let fetched = await canvasStore.elements(for: Array(idsToMove))
+            var updated: [CMCanvasElement] = []
+            for (_, var element) in fetched {
+                element.header.bounds.origin.x += Double(dx)
+                element.header.bounds.origin.y += Double(dy)
+                updated.append(element)
+            }
+            if !updated.isEmpty {
+                await canvasStore.upsert(elements: updated)
             }
             await refreshVisibleElements()
         }
