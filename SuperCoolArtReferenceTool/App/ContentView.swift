@@ -20,6 +20,7 @@ struct ContentView: View {
     // Settings
     @State private var showGrid = true
     @State private var toolbarSide: ToolbarSide = .left
+    @State private var canvasColor: Color = .white
     
     @State private var snapshotToken: UUID? = nil
     @State private var elementsToLoad: [CMCanvasElement]? = nil
@@ -34,6 +35,7 @@ struct ContentView: View {
             BoardCanvasView(
                 externalInsertURLs: $urlsToInsert,
                 showGrid: $showGrid,
+                canvasColor: $canvasColor,
                 snapshotTrigger: $snapshotToken,
                 loadElements: $elementsToLoad,
                 onInsertURLs: { _ in },
@@ -109,7 +111,7 @@ struct ContentView: View {
             importerMode = nil
         }
         .sheet(isPresented: $showingSettings) {
-            CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide)
+            CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
         }
         .onAppear {
             if !initialURLs.isEmpty {

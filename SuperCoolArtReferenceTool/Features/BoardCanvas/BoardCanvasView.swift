@@ -20,6 +20,7 @@ struct BoardCanvasView: View {
 
     // Grid options
     @Binding private var showGrid: Bool
+    @Binding private var canvasColor: Color
     @State private var gridSpacingWorld: CGFloat = 128.0
     @Environment(\.displayScale) private var displayScale
 
@@ -52,11 +53,12 @@ struct BoardCanvasView: View {
     private let onSnapshot: (([CMCanvasElement]) -> Void)?
     @Binding private var elementsToLoad: [CMCanvasElement]?
 
-    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._externalInsertURLs = externalInsertURLs
         self._showGrid = showGrid
+        self._canvasColor = canvasColor
         self.onInsertURLs = onInsertURLs
         self._snapshotTrigger = snapshotTrigger
         self._elementsToLoad = loadElements
@@ -125,6 +127,7 @@ struct BoardCanvasView: View {
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
                 insertImages(atScreenPoint: point, urls: urls)
             })
+            .background(canvasColor)
             .border(Color.gray.opacity(0.4), width: 1)
             .onAppear {
                 canvasSize = geo.size
