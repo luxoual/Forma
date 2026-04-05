@@ -34,7 +34,7 @@ struct CanvasSettingsView: View {
                                 .opacity(0.015)
                         }
                         .frame(width: 48, height: 28)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
                     }
 
                     Toggle("Show Grid", isOn: $showGrid)

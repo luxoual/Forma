@@ -127,7 +127,9 @@ struct BoardCanvasView: View {
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
                 insertImages(atScreenPoint: point, urls: urls)
             })
-            .background(canvasColor)
+            .background {
+                canvasColor.ignoresSafeArea()
+            }
             .border(Color.gray.opacity(0.4), width: 1)
             .onAppear {
                 canvasSize = geo.size
