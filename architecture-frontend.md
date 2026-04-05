@@ -296,6 +296,7 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 - **File:** `CanvasSettingsView.swift`
 - Navigation-based settings interface with full dark theme styling
 - **Functional Settings:**
+  - **Canvas Color Picker** - Changes the canvas background color via a custom pill-shaped color swatch that opens the system color picker
   - **Show Grid Toggle** - Controls canvas grid visibility via binding to `BoardCanvasView`
   - **Toolbar Position Picker** - Switches toolbar and settings button between left/right side
 - "Done" button styled with tertiary color to dismiss
@@ -303,13 +304,21 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 
 **Settings Functionality:**
 
-1. **Grid Toggle:**
+1. **Canvas Color:**
+   - Binding: `@Binding var canvasColor: Color`
+   - Connected to `BoardCanvasView.canvasColor` binding, applied as `.background(canvasColor)` on the canvas ZStack
+   - Custom pill-shaped UI: a `RoundedRectangle` (48×28pt) filled with the current color, with an invisible `ColorPicker` scaled on top (`.opacity(0.015)`, `.scaleEffect(2.0)`)
+   - Hit area constrained to pill shape via `.clipShape(RoundedRectangle)`, pill set to `.allowsHitTesting(false)` so taps pass through to the picker
+   - `supportsOpacity: false` — solid colors only
+   - Default: `.white`
+
+2. **Grid Toggle:**
    - Binding: `@Binding var showGrid: Bool`
    - Connected to `BoardCanvasView.showGrid` binding
    - Instantly shows/hides grid lines on canvas
    - Default: `true`
 
-2. **Toolbar Position:**
+3. **Toolbar Position:**
    - Enum: `ToolbarSide` (`.left` or `.right`)
    - Controls position of both `CanvasToolbar` and `CanvasSettingsButton`
    - `ContentView` uses conditional layout (`leftSideLayout` or `rightSideLayout`)
