@@ -256,9 +256,97 @@ Uses SwiftUI's `matchedGeometryEffect` to create smooth transitions between acti
 
 - `ContentView` manages `@State private var activeTool: CanvasTool = .pointer`
 - Toolbar binds via `@Binding var activeTool: CanvasTool`
+- `ContentView` passes `$activeTool` to `BoardCanvasView` so the canvas knows which tool is active
 - Callbacks for actions: `onUndo`, `onRedo`, `onAddItem`
 - `onAddItem` opens `.fileImporter` for selecting images/GIFs
-- Tool state **not yet connected** to canvas behavior (planned for next iteration)
+
+---
+
+### Tool Behavior System
+
+**Status: Implemented**
+
+**File:** `CanvasToolBehavior.swift`
+
+A protocol-based abstraction that lets each toolbar tool define its own gesture handling.
+
+**Architecture:**
+
+```
+CanvasTool (enum)              -- toolbar identity, UI selection
+    |
+    v
+CanvasToolBehavior (protocol)  -- gesture interpretation per tool
+    ├── PointerToolBehavior    -- tap=select, drag-on-item=move, drag-on-empty=pan
+    └── GroupToolBehavior      -- stub (falls back to pan for now)
+```
+
+**Protocol:**
+
+```swift
+protocol CanvasToolBehavior {
+    func dragBegan(worldStart: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async -> DragMode
+    func tapped(worldPoint: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async
+}
+```
+
+**DragMode enum:** `.pan`, `.moveItem`, `.none`
+
+**Gesture Routing:**
+
+A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the active tool's behavior:
+1. On first `.onChanged` event: hit-test via tool behavior → cache `DragMode` for gesture duration
+2. Subsequent `.onChanged`: `applyDrag()` routes to pan or move based on cached mode
+3. `.onEnded`: if translation < 4pt, treat as tap → call `behavior.tapped()`; if `.moveItem`, call `commitMove()`
+
+**Pointer Tool Behavior:**
+- Drag on item → select it, bring to top, enter `.moveItem` mode
+- Drag on empty canvas → `.pan` mode (normal canvas pan)
+- Tap on item → select it
+- Tap on empty → clear selection
+
+**Group Tool:** Stub — returns `.pan` for all drags, no-op for taps. Ready for future marquee select.
+
+**Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior` maps enum to concrete behavior.
+
+**Adding New Tools:**
+1. Add case to `CanvasTool` enum
+2. Create a struct conforming to `CanvasToolBehavior`
+3. Add mapping in `toolBehavior(for:)` factory
+
+---
+
+### Selection & Move System
+
+**Status: Implemented**
+
+**Files:** `CanvasSelectionState.swift`, `BoardCanvasView.swift`
+
+**Selection State:**
+
+`CanvasSelectionState` is an `@Observable` class owned as `@State` in `BoardCanvasView`:
+- `selectedIDs: Set<UUID>` — currently selected element IDs
+- `dragOffset: CGSize` — world-space offset during active drag-move
+- `isDragging: Bool` — whether a move drag is in progress
+- `select(_:extending:)` — select an item (extending parameter for future multi-select)
+- `clearSelection()` — deselect all
+
+**Visual Indicators:**
+
+Selected items show a `DesignSystem.Colors.tertiary` (blue) stroke border via `.overlay`.
+
+**Move Interaction:**
+
+1. User drags a selected item → `applyDrag()` sets `selection.dragOffset` in world space
+2. During drag, selected items render with a live offset: `position + (dragOffset * scale)` — no store updates per frame
+3. On drag end, `commitMove()`:
+   - Bakes offset into `placedImages` and `visibleImages` immediately (prevents flash)
+   - Batch-fetches elements from store via `elements(for:)` and updates positions in a single `upsert(elements:)` call
+   - Refreshes visible elements from store
+
+**Performance:**
+
+Store updates are batched — one `elements(for:)` fetch + one `upsert(elements:)` call regardless of selection count (2 actor round-trips, not 2N). This scales for future multi-select.
 
 ---
 
@@ -464,16 +552,18 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
    - Debug UIKit gesture recognizer interaction with SwiftUI gestures
 
 2. **Tool Behavior:**
-   - Connect `activeTool` state to actual canvas interactions
-   - Implement selection rectangles when pointer tool is active
+   - ~~Connect `activeTool` state to actual canvas interactions~~ ✅ Done
+   - ~~Implement selection via pointer tool~~ ✅ Done
+   - Implement selection rectangles / marquee select for group tool
    - Implement grouping behavior for group tool
 
 3. **Item Interaction:**
-   - Select items on tap
+   - ~~Select items on tap~~ ✅ Done
+   - ~~Move items by dragging~~ ✅ Done
    - Resize handles for selected items
    - Rotation gestures
    - Delete selected items
-   - Multi-selection
+   - Multi-selection (CanvasSelectionState already supports it via `extending` parameter)
 
 4. **File Import Refactor:**
    - Extract duplicate file loading code into `FileImportHelpers.swift`
@@ -513,14 +603,14 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
    - **Integration needed:** Conversion helpers between coordinate systems
 
 3. **Persistence:**
-   - Dev A manages items in `@State` (ephemeral)
-   - Dev B has `LocalCanvasService` and `LocalBoardStore` ready
-   - **Next step:** Wire canvas changes to persistence layer
+   - Dev A manages `placedImages` in `@State` and syncs to `LocalBoardStore` on insert and move
+   - Move operations use `elements(for:)` + `upsert(elements:)` for batched updates
+   - Hit testing uses `topmostHeader(at:)` from `LocalBoardStore`
+   - `moveToTop(elementIDs:)` used to bring selected items to front on interaction
 
 4. **Tile System:**
    - Dev B has implemented `CMTileKey` spatial indexing
-   - Dev A doesn't use it yet (renders all items)
-   - **Future optimization:** Use tile system for visibility culling
+   - Dev A uses it for viewport culling via `headers(in:viewport:margin:)` and hit testing
 
 ---
 
