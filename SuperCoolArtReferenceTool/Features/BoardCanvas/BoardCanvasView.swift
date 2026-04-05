@@ -130,14 +130,14 @@ struct BoardCanvasView: View {
                     FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
                         .frame(width: item.worldRect.width * scale,
                                height: item.worldRect.height * scale)
-                        .position(x: (item.worldRect.midX * scale) + offset.width + liveDX,
-                                  y: (item.worldRect.midY * scale) + offset.height + liveDY)
                         .overlay {
                             if isSelected {
                                 Rectangle()
                                     .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 2)
                             }
                         }
+                        .position(x: (item.worldRect.midX * scale) + offset.width + liveDX,
+                                  y: (item.worldRect.midY * scale) + offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
                 }
@@ -219,17 +219,6 @@ struct BoardCanvasView: View {
                         }
                     }
                     .onEnded { value in
-                        let wasTap = hypot(value.translation.width, value.translation.height) < 4
-                        if wasTap {
-                            let worldPt = screenToWorld(value.startLocation)
-                            let behavior = toolBehavior(for: activeTool)
-                            let store = canvasStore
-                            let sel = selection
-                            Task {
-                                await behavior.tapped(worldPoint: worldPt, store: store, selection: sel)
-                                await refreshVisibleElements()
-                            }
-                        }
                         if currentDragMode == .moveItem {
                             commitMove()
                         }
@@ -239,6 +228,19 @@ struct BoardCanvasView: View {
                         selection.isDragging = false
                         selection.dragOffset = .zero
                         endInteraction()
+                    }
+            )
+            .simultaneousGesture(
+                SpatialTapGesture()
+                    .onEnded { value in
+                        let worldPt = screenToWorld(value.location)
+                        let behavior = toolBehavior(for: activeTool)
+                        let store = canvasStore
+                        let sel = selection
+                        Task {
+                            await behavior.tapped(worldPoint: worldPt, store: store, selection: sel)
+                            await refreshVisibleElements()
+                        }
                     }
             )
             .simultaneousGesture(
