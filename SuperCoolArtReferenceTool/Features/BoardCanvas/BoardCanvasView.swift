@@ -46,6 +46,13 @@ struct BoardCanvasView: View {
     private let minScale: CGFloat = 0.05
     private let maxScale: CGFloat = 8.0
 
+    // Active tool from toolbar
+    @Binding private var activeTool: CanvasTool
+    // Selection state
+    @State private var selection = CanvasSelectionState()
+    @State private var currentDragMode: DragMode? = nil
+    @State private var dragStartWorldPos: CGPoint? = nil
+
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
 
@@ -53,9 +60,10 @@ struct BoardCanvasView: View {
     private let onSnapshot: (([CMCanvasElement]) -> Void)?
     @Binding private var elementsToLoad: [CMCanvasElement]?
 
-    init(externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
+        self._activeTool = activeTool
         self._externalInsertURLs = externalInsertURLs
         self._showGrid = showGrid
         self._canvasColor = canvasColor
@@ -112,14 +120,24 @@ struct BoardCanvasView: View {
 
                 // Render visible images only (world -> screen mapping)
                 ForEach(visibleImages) { item in
+                    let isSelected = selection.selectedIDs.contains(item.id)
+                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
+                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+
                     let maxDimensionPoints = max(item.worldRect.width * scale, item.worldRect.height * scale)
                     let requestedPixelSize = FileImageView.bucketedMaxPixelSize(maxDimensionPoints * displayScale)
                     let targetMaxPixelSize = isInteracting ? min(requestedPixelSize, 768) : requestedPixelSize
                     FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
                         .frame(width: item.worldRect.width * scale,
                                height: item.worldRect.height * scale)
-                        .position(x: (item.worldRect.midX * scale) + offset.width,
-                                  y: (item.worldRect.midY * scale) + offset.height)
+                        .position(x: (item.worldRect.midX * scale) + offset.width + liveDX,
+                                  y: (item.worldRect.midY * scale) + offset.height + liveDY)
+                        .overlay {
+                            if isSelected {
+                                Rectangle()
+                                    .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 2)
+                            }
+                        }
                         .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
                 }
@@ -172,19 +190,54 @@ struct BoardCanvasView: View {
                 }
             }
             .contentShape(Rectangle())
-            // Drag to pan
+            // Drag: routed through active tool behavior
             .gesture(
                 DragGesture(minimumDistance: 8)
                     .onChanged { value in
                         startInteraction()
-                        if dragStartOffset == nil { dragStartOffset = offset }
-                        guard let start = dragStartOffset else { return }
-                        offset = CGSize(width: start.width + value.translation.width,
-                                        height: start.height + value.translation.height)
-                        scheduleRefreshVisibleElements()
+                        if currentDragMode == nil {
+                            // First event — decide mode via tool behavior
+                            let worldStart = screenToWorld(value.startLocation)
+                            dragStartWorldPos = worldStart
+                            dragStartOffset = offset
+                            let behavior = toolBehavior(for: activeTool)
+                            let store = canvasStore
+                            let sel = selection
+                            Task { @MainActor in
+                                let mode = await behavior.dragBegan(
+                                    worldStart: worldStart,
+                                    store: store,
+                                    selection: sel
+                                )
+                                currentDragMode = mode
+                                applyDrag(value: value, mode: mode)
+                            }
+                            return
+                        }
+                        if let mode = currentDragMode {
+                            applyDrag(value: value, mode: mode)
+                        }
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
+                        let wasTap = hypot(value.translation.width, value.translation.height) < 4
+                        if wasTap {
+                            let worldPt = screenToWorld(value.startLocation)
+                            let behavior = toolBehavior(for: activeTool)
+                            let store = canvasStore
+                            let sel = selection
+                            Task {
+                                await behavior.tapped(worldPoint: worldPt, store: store, selection: sel)
+                                await refreshVisibleElements()
+                            }
+                        }
+                        if currentDragMode == .moveItem {
+                            commitMove()
+                        }
+                        currentDragMode = nil
                         dragStartOffset = nil
+                        dragStartWorldPos = nil
+                        selection.isDragging = false
+                        selection.dragOffset = .zero
                         endInteraction()
                     }
             )
@@ -233,6 +286,64 @@ struct BoardCanvasView: View {
         interactionEndTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
             isInteracting = false
+        }
+    }
+
+    // MARK: - Drag Helpers
+
+    private func applyDrag(value: DragGesture.Value, mode: DragMode) {
+        switch mode {
+        case .pan:
+            guard let start = dragStartOffset else { return }
+            offset = CGSize(
+                width: start.width + value.translation.width,
+                height: start.height + value.translation.height
+            )
+            scheduleRefreshVisibleElements()
+        case .moveItem:
+            let worldDX = value.translation.width / scale
+            let worldDY = value.translation.height / scale
+            selection.dragOffset = CGSize(width: worldDX, height: worldDY)
+            selection.isDragging = true
+        case .none:
+            break
+        }
+    }
+
+    private func commitMove() {
+        let dx = selection.dragOffset.width
+        let dy = selection.dragOffset.height
+        guard dx != 0 || dy != 0 else { return }
+
+        let idsToMove = selection.selectedIDs
+
+        // Update local placedImages
+        for i in placedImages.indices {
+            if idsToMove.contains(placedImages[i].id) {
+                placedImages[i].worldRect.origin.x += dx
+                placedImages[i].worldRect.origin.y += dy
+            }
+        }
+
+        // Immediately update visibleImages so there's no flash
+        // when dragOffset resets to zero before the async store refresh
+        for i in visibleImages.indices {
+            if idsToMove.contains(visibleImages[i].id) {
+                visibleImages[i].worldRect.origin.x += dx
+                visibleImages[i].worldRect.origin.y += dy
+            }
+        }
+
+        // Update backend store
+        Task {
+            for id in idsToMove {
+                if var element = await canvasStore.element(id: id) {
+                    element.header.bounds.origin.x += Double(dx)
+                    element.header.bounds.origin.y += Double(dy)
+                    await canvasStore.upsert(elements: [element])
+                }
+            }
+            await refreshVisibleElements()
         }
     }
 
