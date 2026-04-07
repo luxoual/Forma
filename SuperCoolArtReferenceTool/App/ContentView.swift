@@ -33,6 +33,7 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             BoardCanvasView(
+                activeTool: $activeTool,
                 externalInsertURLs: $urlsToInsert,
                 showGrid: $showGrid,
                 canvasColor: $canvasColor,
