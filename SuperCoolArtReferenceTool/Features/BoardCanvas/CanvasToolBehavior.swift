@@ -3,6 +3,7 @@ import SwiftUI
 enum DragMode {
     case pan
     case moveItem
+    case resizeItem
     case none
 }
 

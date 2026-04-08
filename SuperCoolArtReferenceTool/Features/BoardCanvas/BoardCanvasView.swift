@@ -121,22 +121,25 @@ struct BoardCanvasView: View {
                 // Render visible images only (world -> screen mapping)
                 ForEach(visibleImages) { item in
                     let isSelected = selection.selectedIDs.contains(item.id)
+                    let isBeingResized = selection.isResizing && selection.resizeElementID == item.id
+                    let liveRect = isBeingResized ? (selection.resizeCurrentRect ?? item.worldRect) : item.worldRect
+
                     let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
                     let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
 
-                    let maxDimensionPoints = max(item.worldRect.width * scale, item.worldRect.height * scale)
+                    let maxDimensionPoints = max(liveRect.width * scale, liveRect.height * scale)
                     let requestedPixelSize = FileImageView.bucketedMaxPixelSize(maxDimensionPoints * displayScale)
                     let targetMaxPixelSize = isInteracting ? min(requestedPixelSize, 768) : requestedPixelSize
                     FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
-                        .frame(width: item.worldRect.width * scale,
-                               height: item.worldRect.height * scale)
+                        .frame(width: liveRect.width * scale,
+                               height: liveRect.height * scale)
                         .overlay {
                             if isSelected {
                                 SelectionOverlay()
                             }
                         }
-                        .position(x: (item.worldRect.midX * scale) + offset.width + liveDX,
-                                  y: (item.worldRect.midY * scale) + offset.height + liveDY)
+                        .position(x: (liveRect.midX * scale) + offset.width + liveDX,
+                                  y: (liveRect.midY * scale) + offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
                 }
@@ -195,10 +198,22 @@ struct BoardCanvasView: View {
                     .onChanged { value in
                         startInteraction()
                         if currentDragMode == nil {
-                            // First event — decide mode via tool behavior
+                            // First event — check for handle hit before tool behavior
+                            dragStartOffset = offset
+
+                            if let (handle, item) = hitTestHandle(screenPoint: value.startLocation) {
+                                // Resize mode
+                                selection.resizeHandle = handle
+                                selection.resizeStartRect = item.worldRect
+                                selection.resizeElementID = item.id
+                                currentDragMode = .resizeItem
+                                applyDrag(value: value, mode: .resizeItem)
+                                return
+                            }
+
+                            // Normal tool behavior routing
                             let worldStart = screenToWorld(value.startLocation)
                             dragStartWorldPos = worldStart
-                            dragStartOffset = offset
                             let behavior = toolBehavior(for: activeTool)
                             let store = canvasStore
                             let sel = selection
@@ -220,6 +235,8 @@ struct BoardCanvasView: View {
                     .onEnded { value in
                         if currentDragMode == .moveItem {
                             commitMove()
+                        } else if currentDragMode == .resizeItem {
+                            commitResize()
                         }
                         currentDragMode = nil
                         dragStartOffset = nil
@@ -290,6 +307,51 @@ struct BoardCanvasView: View {
         }
     }
 
+    // MARK: - Handle Hit-Testing
+
+    /// Screen-space hit radius for grabbing handles
+    private let handleHitRadius: CGFloat = 30
+
+    /// Check if a screen point is near any handle on the selected item.
+    /// Returns the handle position and the item's world rect if hit.
+    private func hitTestHandle(screenPoint: CGPoint) -> (HandlePosition, PlacedImage)? {
+        guard selection.selectedIDs.count == 1,
+              let selectedID = selection.selectedIDs.first,
+              let item = visibleImages.first(where: { $0.id == selectedID }) else {
+            return nil
+        }
+
+        let itemScreenRect = CGRect(
+            x: item.worldRect.origin.x * scale + offset.width,
+            y: item.worldRect.origin.y * scale + offset.height,
+            width: item.worldRect.width * scale,
+            height: item.worldRect.height * scale
+        )
+
+        var bestHandle: HandlePosition?
+        var bestDist: CGFloat = .greatestFiniteMagnitude
+
+        for handle in HandlePosition.allCases {
+            let handleScreenPt = handle.point(in: itemScreenRect.size)
+            let handleAbsolute = CGPoint(
+                x: itemScreenRect.origin.x + handleScreenPt.x,
+                y: itemScreenRect.origin.y + handleScreenPt.y
+            )
+            let dx = screenPoint.x - handleAbsolute.x
+            let dy = screenPoint.y - handleAbsolute.y
+            let dist = sqrt(dx * dx + dy * dy)
+            if dist < handleHitRadius && dist < bestDist {
+                bestDist = dist
+                bestHandle = handle
+            }
+        }
+
+        if let handle = bestHandle {
+            return (handle, item)
+        }
+        return nil
+    }
+
     // MARK: - Drag Helpers
 
     private func applyDrag(value: DragGesture.Value, mode: DragMode) {
@@ -306,9 +368,130 @@ struct BoardCanvasView: View {
             let worldDY = value.translation.height / scale
             selection.dragOffset = CGSize(width: worldDX, height: worldDY)
             selection.isDragging = true
+        case .resizeItem:
+            applyResize(translation: value.translation)
         case .none:
             break
         }
+    }
+
+    // MARK: - Resize Logic
+
+    private func applyResize(translation: CGSize) {
+        guard let handle = selection.resizeHandle,
+              let startRect = selection.resizeStartRect else { return }
+
+        let worldDX = translation.width / scale
+        let worldDY = translation.height / scale
+
+        let anchorPos = handle.anchorPosition
+        let anchorPt = anchorPos.point(in: startRect.size)
+        let anchorWorld = CGPoint(
+            x: startRect.origin.x + anchorPt.x,
+            y: startRect.origin.y + anchorPt.y
+        )
+
+        let handlePt = handle.point(in: startRect.size)
+        let draggedWorld = CGPoint(
+            x: startRect.origin.x + handlePt.x + worldDX,
+            y: startRect.origin.y + handlePt.y + worldDY
+        )
+
+        var newRect: CGRect
+
+        if handle.isCorner {
+            // Aspect-ratio locked resize
+            let aspect = startRect.width / max(startRect.height, 0.001)
+
+            var rawW = abs(draggedWorld.x - anchorWorld.x)
+            var rawH = abs(draggedWorld.y - anchorWorld.y)
+
+            // Lock aspect ratio to whichever axis moved more
+            if rawW / max(aspect, 0.001) > rawH {
+                rawH = rawW / aspect
+            } else {
+                rawW = rawH * aspect
+            }
+
+            // Enforce minimum size
+            rawW = max(rawW, minImageDimensionWorld)
+            rawH = max(rawH, minImageDimensionWorld / max(aspect, 0.001))
+
+            // Build rect from anchor point, expanding toward the dragged corner
+            let originX = handle.isLeftSide ? anchorWorld.x - rawW : anchorWorld.x
+            let originY = handle.isTopSide ? anchorWorld.y - rawH : anchorWorld.y
+
+            newRect = CGRect(x: originX, y: originY, width: rawW, height: rawH)
+        } else {
+            // Single-axis edge resize
+            var newOrigin = startRect.origin
+            var newSize = startRect.size
+
+            switch handle {
+            case .topCenter:
+                let newTop = min(draggedWorld.y, anchorWorld.y - minImageDimensionWorld)
+                newSize.height = anchorWorld.y - newTop
+                newOrigin.y = newTop
+            case .bottomCenter:
+                let newBottom = max(draggedWorld.y, anchorWorld.y + minImageDimensionWorld)
+                newSize.height = newBottom - anchorWorld.y
+                newOrigin.y = anchorWorld.y
+            case .leftCenter:
+                let newLeft = min(draggedWorld.x, anchorWorld.x - minImageDimensionWorld)
+                newSize.width = anchorWorld.x - newLeft
+                newOrigin.x = newLeft
+            case .rightCenter:
+                let newRight = max(draggedWorld.x, anchorWorld.x + minImageDimensionWorld)
+                newSize.width = newRight - anchorWorld.x
+                newOrigin.x = anchorWorld.x
+            default:
+                return
+            }
+
+            newRect = CGRect(origin: newOrigin, size: newSize)
+        }
+
+        selection.resizeCurrentRect = newRect
+    }
+
+    private func commitResize() {
+        guard let elementID = selection.resizeElementID,
+              let newRect = selection.resizeCurrentRect else {
+            selection.clearResize()
+            return
+        }
+
+        // Update local placedImages
+        if let idx = placedImages.firstIndex(where: { $0.id == elementID }) {
+            placedImages[idx].worldRect = newRect
+        }
+
+        // Update visibleImages to prevent flash
+        if let idx = visibleImages.firstIndex(where: { $0.id == elementID }) {
+            visibleImages[idx].worldRect = newRect
+        }
+
+        // Batch update backend store
+        let store = canvasStore
+        Task {
+            let fetched = await store.elements(for: [elementID])
+            if var element = fetched[elementID] {
+                element.header.bounds = CMWorldRect(
+                    origin: SIMD2<Double>(Double(newRect.origin.x), Double(newRect.origin.y)),
+                    size: SIMD2<Double>(Double(newRect.width), Double(newRect.height))
+                )
+                if case .image(let url, _) = element.payload {
+                    element.payload = .image(
+                        url: url,
+                        size: SIMD2<Double>(Double(newRect.width), Double(newRect.height))
+                    )
+                }
+                await store.upsert(elements: [element])
+            }
+            await refreshVisibleElements()
+        }
+
+        selection.clearResize()
     }
 
     private func commitMove() {
@@ -572,7 +755,6 @@ struct BoardCanvasView: View {
                         .resizable()
                         .interpolation(isInteracting ? .low : .medium)
                         .antialiased(true)
-                        .scaledToFill()
                 } else {
                     ZStack {
                         Rectangle().fill(Color.secondary.opacity(0.15))
