@@ -13,6 +13,7 @@ struct PlacedElementSnapshot {
 enum CanvasCommand {
     case move(elementIDs: Set<UUID>, delta: CGSize)
     case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
+    case groupResize(fromRects: [UUID: CGRect], toRects: [UUID: CGRect])
     case insert(snapshots: [PlacedElementSnapshot])
     case delete(snapshots: [PlacedElementSnapshot])
 }

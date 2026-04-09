@@ -34,6 +34,7 @@ struct BoardCanvasView: View {
     // Backend store for tile-based culling
     @State private var canvasStore: LocalBoardStore
     @State private var refreshTask: Task<Void, Never>? = nil
+    @State private var storeMutationTask: Task<Void, Never>? = nil
 
     // Drop/import types (images and GIFs only)
     private let allowedDropTypes: [UTType] = [.image, .gif]
@@ -130,10 +131,26 @@ struct BoardCanvasView: View {
                 ForEach(visibleImages) { item in
                     let isSelected = selection.selectedIDs.contains(item.id)
                     let isBeingResized = selection.isResizing && selection.resizeElementID == item.id
-                    let liveRect = isBeingResized ? (selection.resizeCurrentRect ?? item.worldRect) : item.worldRect
+                    let isBeingGroupResized = selection.isGroupResizing && isSelected
+
+                    let liveRect: CGRect = {
+                        if isBeingGroupResized,
+                           let startRects = selection.groupResizeStartRects,
+                           let originalRect = startRects[item.id],
+                           let bboxStart = selection.groupResizeBBoxStart,
+                           let bboxCurrent = selection.groupResizeBBoxCurrent {
+                            return scaledRect(original: originalRect, bboxStart: bboxStart, bboxCurrent: bboxCurrent)
+                        } else if isBeingResized {
+                            return selection.resizeCurrentRect ?? item.worldRect
+                        } else {
+                            return item.worldRect
+                        }
+                    }()
 
                     let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
                     let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+
+                    let multiSelected = selection.selectedIDs.count > 1
 
                     let maxDimensionPoints = max(liveRect.width * scale, liveRect.height * scale)
                     let requestedPixelSize = FileImageView.bucketedMaxPixelSize(maxDimensionPoints * displayScale)
@@ -142,14 +159,51 @@ struct BoardCanvasView: View {
                         .frame(width: liveRect.width * scale,
                                height: liveRect.height * scale)
                         .overlay {
-                            if isSelected {
+                            if isSelected && !multiSelected {
                                 SelectionOverlay()
+                            } else if isSelected && multiSelected {
+                                // Light border only for individual items in a multi-select
+                                Rectangle()
+                                    .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)
                             }
                         }
                         .position(x: (liveRect.midX * scale) + offset.width + liveDX,
                                   y: (liveRect.midY * scale) + offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
+                }
+
+                // Marquee selection rectangle
+                if selection.isMarqueeing, let worldRect = selection.marqueeWorldRect {
+                    let screenRect = CGRect(
+                        x: worldRect.origin.x * scale + offset.width,
+                        y: worldRect.origin.y * scale + offset.height,
+                        width: worldRect.width * scale,
+                        height: worldRect.height * scale
+                    )
+                    MarqueeOverlayView(screenRect: screenRect)
+                        .allowsHitTesting(false)
+                        .zIndex(Double(Int.max - 1))
+                }
+
+                // Group bounding box with resize handles
+                if selection.selectedIDs.count > 1, !selection.isDragging {
+                    let bbox: CGRect? = selection.isGroupResizing
+                        ? (selection.groupResizeBBoxCurrent ?? groupBoundingBox())
+                        : groupBoundingBox()
+                    if let bbox {
+                        let screenRect = CGRect(
+                            x: bbox.origin.x * scale + offset.width,
+                            y: bbox.origin.y * scale + offset.height,
+                            width: bbox.width * scale,
+                            height: bbox.height * scale
+                        )
+                        GroupSelectionOverlay()
+                            .frame(width: screenRect.width, height: screenRect.height)
+                            .position(x: screenRect.midX, y: screenRect.midY)
+                            .allowsHitTesting(false)
+                            .zIndex(Double(Int.max))
+                    }
                 }
             }
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
@@ -219,11 +273,22 @@ struct BoardCanvasView: View {
                             // First event — check for handle hit before tool behavior
                             dragStartOffset = offset
 
-                            if let (handle, item) = hitTestHandle(screenPoint: value.startLocation) {
-                                // Resize mode
-                                selection.resizeHandle = handle
-                                selection.resizeStartRect = item.worldRect
-                                selection.resizeElementID = item.id
+                            if let hitResult = hitTestHandle(screenPoint: value.startLocation) {
+                                switch hitResult {
+                                case .singleItem(let handle, let item):
+                                    selection.resizeHandle = handle
+                                    selection.resizeStartRect = item.worldRect
+                                    selection.resizeElementID = item.id
+                                case .group(let handle, let bbox):
+                                    var startRects: [UUID: CGRect] = [:]
+                                    for img in placedImages where selection.selectedIDs.contains(img.id) {
+                                        startRects[img.id] = img.worldRect
+                                    }
+                                    selection.groupResizeStartRects = startRects
+                                    selection.groupResizeBBoxStart = bbox
+                                    selection.groupResizeBBoxCurrent = bbox
+                                    selection.resizeHandle = handle
+                                }
                                 currentDragMode = .resizeItem
                                 applyDrag(value: value, mode: .resizeItem)
                                 return
@@ -235,6 +300,8 @@ struct BoardCanvasView: View {
                             let behavior = toolBehavior(for: activeTool)
                             let store = canvasStore
                             let sel = selection
+                            // Set sentinel to prevent re-entry while awaiting
+                            currentDragMode = DragMode.none
                             Task { @MainActor in
                                 let mode = await behavior.dragBegan(
                                     worldStart: worldStart,
@@ -242,6 +309,10 @@ struct BoardCanvasView: View {
                                     selection: sel
                                 )
                                 currentDragMode = mode
+                                if mode == .marqueeSelect {
+                                    selection.marqueeStartWorld = worldStart
+                                    selection.marqueeCurrentWorld = worldStart
+                                }
                                 applyDrag(value: value, mode: mode)
                             }
                             return
@@ -254,7 +325,13 @@ struct BoardCanvasView: View {
                         if currentDragMode == .moveItem {
                             commitMove()
                         } else if currentDragMode == .resizeItem {
-                            commitResize()
+                            if selection.isGroupResizing {
+                                commitGroupResize()
+                            } else {
+                                commitResize()
+                            }
+                        } else if currentDragMode == .marqueeSelect {
+                            commitMarqueeSelect()
                         }
                         currentDragMode = nil
                         dragStartOffset = nil
@@ -330,30 +407,49 @@ struct BoardCanvasView: View {
     /// Screen-space hit radius for grabbing handles
     private let handleHitRadius: CGFloat = 30
 
-    /// Check if a screen point is near any handle on the selected item.
-    /// Returns the handle position and the item's world rect if hit.
-    private func hitTestHandle(screenPoint: CGPoint) -> (HandlePosition, PlacedImage)? {
-        guard selection.selectedIDs.count == 1,
-              let selectedID = selection.selectedIDs.first,
-              let item = visibleImages.first(where: { $0.id == selectedID }) else {
-            return nil
+    private enum HandleHitResult {
+        case singleItem(handle: HandlePosition, item: PlacedImage)
+        case group(handle: HandlePosition, bbox: CGRect)
+    }
+
+    /// Pure query: hit-test screen point against handles on the current selection.
+    private func hitTestHandle(screenPoint: CGPoint) -> HandleHitResult? {
+        if selection.selectedIDs.count == 1,
+           let selectedID = selection.selectedIDs.first,
+           let item = visibleImages.first(where: { $0.id == selectedID }) {
+            let itemScreenRect = CGRect(
+                x: item.worldRect.origin.x * scale + offset.width,
+                y: item.worldRect.origin.y * scale + offset.height,
+                width: item.worldRect.width * scale,
+                height: item.worldRect.height * scale
+            )
+            if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: itemScreenRect) {
+                return .singleItem(handle: handle, item: item)
+            }
+        } else if selection.selectedIDs.count > 1, let bbox = groupBoundingBox() {
+            let bboxScreenRect = CGRect(
+                x: bbox.origin.x * scale + offset.width,
+                y: bbox.origin.y * scale + offset.height,
+                width: bbox.width * scale,
+                height: bbox.height * scale
+            )
+            if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: bboxScreenRect) {
+                return .group(handle: handle, bbox: bbox)
+            }
         }
+        return nil
+    }
 
-        let itemScreenRect = CGRect(
-            x: item.worldRect.origin.x * scale + offset.width,
-            y: item.worldRect.origin.y * scale + offset.height,
-            width: item.worldRect.width * scale,
-            height: item.worldRect.height * scale
-        )
-
+    /// Shared helper: hit-test a screen point against 8 handles on a screen-space rect.
+    private func hitTestHandleOnRect(screenPoint: CGPoint, screenRect: CGRect) -> HandlePosition? {
         var bestHandle: HandlePosition?
         var bestDist: CGFloat = .greatestFiniteMagnitude
 
         for handle in HandlePosition.allCases {
-            let handleScreenPt = handle.point(in: itemScreenRect.size)
+            let handleScreenPt = handle.point(in: screenRect.size)
             let handleAbsolute = CGPoint(
-                x: itemScreenRect.origin.x + handleScreenPt.x,
-                y: itemScreenRect.origin.y + handleScreenPt.y
+                x: screenRect.origin.x + handleScreenPt.x,
+                y: screenRect.origin.y + handleScreenPt.y
             )
             let dx = screenPoint.x - handleAbsolute.x
             let dy = screenPoint.y - handleAbsolute.y
@@ -363,11 +459,7 @@ struct BoardCanvasView: View {
                 bestHandle = handle
             }
         }
-
-        if let handle = bestHandle {
-            return (handle, item)
-        }
-        return nil
+        return bestHandle
     }
 
     // MARK: - Drag Helpers
@@ -387,7 +479,17 @@ struct BoardCanvasView: View {
             selection.dragOffset = CGSize(width: worldDX, height: worldDY)
             selection.isDragging = true
         case .resizeItem:
-            applyResize(translation: value.translation)
+            if selection.isGroupResizing {
+                applyGroupResize(translation: value.translation)
+            } else {
+                applyResize(translation: value.translation)
+            }
+        case .marqueeSelect:
+            let screenCurrent = CGPoint(
+                x: value.startLocation.x + value.translation.width,
+                y: value.startLocation.y + value.translation.height
+            )
+            selection.marqueeCurrentWorld = screenToWorld(screenCurrent)
         case .none:
             break
         }
@@ -395,10 +497,12 @@ struct BoardCanvasView: View {
 
     // MARK: - Resize Logic
 
-    private func applyResize(translation: CGSize) {
-        guard let handle = selection.resizeHandle,
-              let startRect = selection.resizeStartRect else { return }
-
+    /// Pure function: compute a new rect from a handle drag on a reference rect.
+    private func computeResizedRect(
+        handle: HandlePosition,
+        startRect: CGRect,
+        translation: CGSize
+    ) -> CGRect? {
         let worldDX = translation.width / scale
         let worldDY = translation.height / scale
 
@@ -415,33 +519,24 @@ struct BoardCanvasView: View {
             y: startRect.origin.y + handlePt.y + worldDY
         )
 
-        var newRect: CGRect
-
         if handle.isCorner {
-            // Aspect-ratio locked resize
             let aspect = startRect.width / max(startRect.height, 0.001)
-
             var rawW = abs(draggedWorld.x - anchorWorld.x)
             var rawH = abs(draggedWorld.y - anchorWorld.y)
 
-            // Lock aspect ratio to whichever axis moved more
             if rawW / max(aspect, 0.001) > rawH {
                 rawH = rawW / aspect
             } else {
                 rawW = rawH * aspect
             }
 
-            // Enforce minimum size
             rawW = max(rawW, minImageDimensionWorld)
             rawH = max(rawH, minImageDimensionWorld / max(aspect, 0.001))
 
-            // Build rect from anchor point, expanding toward the dragged corner
             let originX = handle.isLeftSide ? anchorWorld.x - rawW : anchorWorld.x
             let originY = handle.isTopSide ? anchorWorld.y - rawH : anchorWorld.y
-
-            newRect = CGRect(x: originX, y: originY, width: rawW, height: rawH)
+            return CGRect(x: originX, y: originY, width: rawW, height: rawH)
         } else {
-            // Single-axis edge resize
             var newOrigin = startRect.origin
             var newSize = startRect.size
 
@@ -463,12 +558,17 @@ struct BoardCanvasView: View {
                 newSize.width = newRight - anchorWorld.x
                 newOrigin.x = anchorWorld.x
             default:
-                return
+                return nil
             }
 
-            newRect = CGRect(origin: newOrigin, size: newSize)
+            return CGRect(origin: newOrigin, size: newSize)
         }
+    }
 
+    private func applyResize(translation: CGSize) {
+        guard let handle = selection.resizeHandle,
+              let startRect = selection.resizeStartRect,
+              let newRect = computeResizedRect(handle: handle, startRect: startRect, translation: translation) else { return }
         selection.resizeCurrentRect = newRect
     }
 
@@ -491,6 +591,77 @@ struct BoardCanvasView: View {
         selection.clearResize()
     }
 
+    // MARK: - Group Resize Logic
+
+    private func groupBoundingBox() -> CGRect? {
+        guard selection.selectedIDs.count > 1 else { return nil }
+        let rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map { $0.worldRect }
+        guard !rects.isEmpty else { return nil }
+        return rects.dropFirst().reduce(rects[0]) { $0.union($1) }
+    }
+
+    private func scaledRect(original: CGRect, bboxStart: CGRect, bboxCurrent: CGRect) -> CGRect {
+        let scaleX = bboxStart.width > 0.001 ? bboxCurrent.width / bboxStart.width : 1
+        let scaleY = bboxStart.height > 0.001 ? bboxCurrent.height / bboxStart.height : 1
+        let newX = bboxCurrent.origin.x + (original.origin.x - bboxStart.origin.x) * scaleX
+        let newY = bboxCurrent.origin.y + (original.origin.y - bboxStart.origin.y) * scaleY
+        let newW = original.width * scaleX
+        let newH = original.height * scaleY
+        return CGRect(x: newX, y: newY, width: newW, height: newH)
+    }
+
+    private func applyGroupResize(translation: CGSize) {
+        guard let handle = selection.resizeHandle,
+              let bboxStart = selection.groupResizeBBoxStart,
+              let newBBox = computeResizedRect(handle: handle, startRect: bboxStart, translation: translation) else { return }
+        selection.groupResizeBBoxCurrent = newBBox
+    }
+
+    private func commitGroupResize() {
+        guard let startRects = selection.groupResizeStartRects,
+              let bboxStart = selection.groupResizeBBoxStart,
+              let bboxCurrent = selection.groupResizeBBoxCurrent,
+              bboxStart != bboxCurrent else {
+            selection.clearGroupResize()
+            return
+        }
+
+        var toRects: [UUID: CGRect] = [:]
+        for (id, originalRect) in startRects {
+            toRects[id] = scaledRect(original: originalRect, bboxStart: bboxStart, bboxCurrent: bboxCurrent)
+        }
+
+        commandHistory.push(.groupResize(fromRects: startRects, toRects: toRects))
+
+        for (id, rect) in toRects {
+            applyResizeRect(elementID: id, rect: rect)
+        }
+        selection.clearGroupResize()
+    }
+
+    // MARK: - Marquee Select
+
+    private func commitMarqueeSelect() {
+        guard let rect = selection.marqueeWorldRect else {
+            selection.clearMarquee()
+            return
+        }
+
+        let cmRect = CMWorldRect(
+            origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+            size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+        )
+
+        let store = canvasStore
+        Task { @MainActor in
+            let headers = await store.headers(in: cmRect, limit: nil)
+            let ids = Set(headers.map { $0.id })
+            selection.selectedIDs = ids
+            selection.clearMarquee()
+            await refreshVisibleElements()
+        }
+    }
+
     private func commitMove() {
         let dx = selection.dragOffset.width
         let dy = selection.dragOffset.height
@@ -510,6 +681,10 @@ struct BoardCanvasView: View {
             applyMoveDelta(elementIDs: ids, dx: -delta.width, dy: -delta.height)
         case .resize(let id, let fromRect, _):
             applyResizeRect(elementID: id, rect: fromRect)
+        case .groupResize(let fromRects, _):
+            for (id, rect) in fromRects {
+                applyResizeRect(elementID: id, rect: rect)
+            }
         case .insert(let snapshots):
             removeElements(snapshots: snapshots)
         case .delete(let snapshots):
@@ -524,6 +699,10 @@ struct BoardCanvasView: View {
             applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
         case .resize(let id, _, let toRect):
             applyResizeRect(elementID: id, rect: toRect)
+        case .groupResize(_, let toRects):
+            for (id, rect) in toRects {
+                applyResizeRect(elementID: id, rect: rect)
+            }
         case .insert(let snapshots):
             addElements(snapshots: snapshots)
         case .delete(let snapshots):
@@ -532,6 +711,19 @@ struct BoardCanvasView: View {
     }
 
     // MARK: - Command Execution Helpers
+
+    /// Enqueue a serialized store mutation. Cancels any in-flight mutation first,
+    /// then awaits its completion before running the new one.
+    private func enqueueStoreMutation(_ work: @escaping @Sendable (LocalBoardStore) async -> Void) {
+        let previous = storeMutationTask
+        let store = canvasStore
+        storeMutationTask = Task { @MainActor in
+            previous?.cancel()
+            _ = await previous?.result  // wait for cancellation to settle
+            await work(store)
+            await refreshVisibleElements()
+        }
+    }
 
     private func applyMoveDelta(elementIDs: Set<UUID>, dx: CGFloat, dy: CGFloat) {
         for i in placedImages.indices {
@@ -547,8 +739,8 @@ struct BoardCanvasView: View {
             }
         }
 
-        Task {
-            let fetched = await canvasStore.elements(for: Array(elementIDs))
+        enqueueStoreMutation { store in
+            let fetched = await store.elements(for: Array(elementIDs))
             var updated: [CMCanvasElement] = []
             for (_, var element) in fetched {
                 element.header.bounds.origin.x += Double(dx)
@@ -556,9 +748,8 @@ struct BoardCanvasView: View {
                 updated.append(element)
             }
             if !updated.isEmpty {
-                await canvasStore.upsert(elements: updated)
+                await store.upsert(elements: updated)
             }
-            await refreshVisibleElements()
         }
     }
 
@@ -570,8 +761,7 @@ struct BoardCanvasView: View {
             visibleImages[idx].worldRect = rect
         }
 
-        let store = canvasStore
-        Task {
+        enqueueStoreMutation { store in
             let fetched = await store.elements(for: [elementID])
             if var element = fetched[elementID] {
                 element.header.bounds = CMWorldRect(
@@ -586,7 +776,6 @@ struct BoardCanvasView: View {
                 }
                 await store.upsert(elements: [element])
             }
-            await refreshVisibleElements()
         }
     }
 
@@ -597,9 +786,8 @@ struct BoardCanvasView: View {
         }
 
         let elements = snapshots.map { $0.element }
-        Task {
-            await canvasStore.upsert(elements: elements)
-            await refreshVisibleElements()
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
         }
     }
 
@@ -609,9 +797,8 @@ struct BoardCanvasView: View {
         visibleImages.removeAll { idsToRemove.contains($0.id) }
         selection.selectedIDs.subtract(idsToRemove)
 
-        Task {
-            await canvasStore.delete(elementIDs: Array(idsToRemove))
-            await refreshVisibleElements()
+        enqueueStoreMutation { store in
+            await store.delete(elementIDs: Array(idsToRemove))
         }
     }
 

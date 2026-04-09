@@ -4,6 +4,7 @@ enum DragMode {
     case pan
     case moveItem
     case resizeItem
+    case marqueeSelect
     case none
 }
 
@@ -58,11 +59,25 @@ struct PointerToolBehavior: CanvasToolBehavior {
 
 struct GroupToolBehavior: CanvasToolBehavior {
     func dragBegan(worldStart: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async -> DragMode {
-        return .pan
+        let point = SIMD2<Double>(Double(worldStart.x), Double(worldStart.y))
+        if let header = await store.topmostHeader(at: point) {
+            if !selection.selectedIDs.contains(header.id) {
+                await MainActor.run { selection.select(header.id, extending: true) }
+            }
+            await store.moveToTop(elementIDs: Array(selection.selectedIDs))
+            return .moveItem
+        } else {
+            return .marqueeSelect
+        }
     }
 
     func tapped(worldPoint: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async {
-        // Future: toggle group membership
+        let point = SIMD2<Double>(Double(worldPoint.x), Double(worldPoint.y))
+        if let header = await store.topmostHeader(at: point) {
+            await MainActor.run { selection.select(header.id, extending: true) }
+        } else {
+            await MainActor.run { selection.clearSelection() }
+        }
     }
 }
 
