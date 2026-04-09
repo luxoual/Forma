@@ -504,6 +504,10 @@ struct BoardCanvasView: View {
             applyMoveDelta(elementIDs: ids, dx: -delta.width, dy: -delta.height)
         case .resize(let id, let fromRect, _):
             applyResizeRect(elementID: id, rect: fromRect)
+        case .insert(let snapshots):
+            removeElements(snapshots: snapshots)
+        case .delete(let snapshots):
+            addElements(snapshots: snapshots)
         }
     }
 
@@ -514,6 +518,10 @@ struct BoardCanvasView: View {
             applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
         case .resize(let id, _, let toRect):
             applyResizeRect(elementID: id, rect: toRect)
+        case .insert(let snapshots):
+            addElements(snapshots: snapshots)
+        case .delete(let snapshots):
+            removeElements(snapshots: snapshots)
         }
     }
 
@@ -572,6 +580,31 @@ struct BoardCanvasView: View {
                 }
                 await store.upsert(elements: [element])
             }
+            await refreshVisibleElements()
+        }
+    }
+
+    private func addElements(snapshots: [PlacedElementSnapshot]) {
+        for snap in snapshots {
+            placedImages.append(PlacedImage(id: snap.id, url: snap.url, worldRect: snap.worldRect, zIndex: snap.zIndex))
+            nextZIndex = max(nextZIndex, snap.zIndex + 1)
+        }
+
+        let elements = snapshots.map { $0.element }
+        Task {
+            await canvasStore.upsert(elements: elements)
+            await refreshVisibleElements()
+        }
+    }
+
+    private func removeElements(snapshots: [PlacedElementSnapshot]) {
+        let idsToRemove = Set(snapshots.map { $0.id })
+        placedImages.removeAll { idsToRemove.contains($0.id) }
+        visibleImages.removeAll { idsToRemove.contains($0.id) }
+        selection.selectedIDs.subtract(idsToRemove)
+
+        Task {
+            await canvasStore.delete(elementIDs: Array(idsToRemove))
             await refreshVisibleElements()
         }
     }
@@ -652,12 +685,14 @@ struct BoardCanvasView: View {
     }
 
     private func insertImages(atScreenPoint point: CGPoint, urls: [URL]) {
+        var snapshots: [PlacedElementSnapshot] = []
+        var elements: [CMCanvasElement] = []
+
         for originalURL in urls {
             guard let url = makeSandboxCopyIfNeeded(from: originalURL) else { continue }
             let pixelSize = imagePixelSize(url: url)
             let worldSize = worldSizeForPixelSize(pixelSize)
             let worldCenter = screenToWorld(point)
-            // Choose a non-overlapping rect near the desired center
             let desiredCenter = CGPoint(x: worldCenter.x, y: worldCenter.y)
             let rect = firstNonOverlappingRect(near: desiredCenter, size: worldSize)
 
@@ -682,10 +717,20 @@ struct BoardCanvasView: View {
                 size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
             )
             let element = CMCanvasElement(header: header, payload: payload)
-            Task {
-                await canvasStore.upsert(elements: [element])
-                await refreshVisibleElements()
-            }
+            elements.append(element)
+
+            snapshots.append(PlacedElementSnapshot(
+                id: id, url: url, worldRect: rect, zIndex: z, element: element
+            ))
+        }
+
+        if !snapshots.isEmpty {
+            commandHistory.push(.insert(snapshots: snapshots))
+        }
+
+        Task {
+            await canvasStore.upsert(elements: elements)
+            await refreshVisibleElements()
         }
     }
 

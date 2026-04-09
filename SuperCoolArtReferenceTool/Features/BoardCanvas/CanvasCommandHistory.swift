@@ -1,9 +1,20 @@
 import Foundation
 
+/// Snapshot of a placed element, sufficient to add/remove from the board.
+struct PlacedElementSnapshot {
+    let id: UUID
+    let url: URL
+    let worldRect: CGRect
+    let zIndex: Int
+    let element: CMCanvasElement
+}
+
 /// A reversible canvas operation.
 enum CanvasCommand {
     case move(elementIDs: Set<UUID>, delta: CGSize)
     case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
+    case insert(snapshots: [PlacedElementSnapshot])
+    case delete(snapshots: [PlacedElementSnapshot])
 }
 
 /// Tracks performed commands for undo/redo support.
