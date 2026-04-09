@@ -294,27 +294,30 @@ struct BoardCanvasView: View {
                                 return
                             }
 
-                            // Normal tool behavior routing
+                            // Normal tool behavior routing (synchronous — no async race)
                             let worldStart = screenToWorld(value.startLocation)
                             dragStartWorldPos = worldStart
                             let behavior = toolBehavior(for: activeTool)
-                            let store = canvasStore
-                            let sel = selection
-                            // Set sentinel to prevent re-entry while awaiting
-                            currentDragMode = DragMode.none
-                            Task { @MainActor in
-                                let mode = await behavior.dragBegan(
-                                    worldStart: worldStart,
-                                    store: store,
-                                    selection: sel
-                                )
-                                currentDragMode = mode
-                                if mode == .marqueeSelect {
-                                    selection.marqueeStartWorld = worldStart
-                                    selection.marqueeCurrentWorld = worldStart
-                                }
-                                applyDrag(value: value, mode: mode)
+                            let items = placedImages.map {
+                                HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
                             }
+                            let mode = behavior.dragBegan(
+                                worldStart: worldStart,
+                                items: items,
+                                selection: selection
+                            )
+                            currentDragMode = mode
+                            if mode == .marqueeSelect {
+                                selection.marqueeStartWorld = worldStart
+                                selection.marqueeCurrentWorld = worldStart
+                            }
+                            // Fire-and-forget: reorder in store for z-order persistence
+                            if mode == .moveItem {
+                                let store = canvasStore
+                                let ids = Array(selection.selectedIDs)
+                                Task { await store.moveToTop(elementIDs: ids) }
+                            }
+                            applyDrag(value: value, mode: mode)
                             return
                         }
                         if let mode = currentDragMode {
@@ -632,10 +635,7 @@ struct BoardCanvasView: View {
         }
 
         commandHistory.push(.groupResize(fromRects: startRects, toRects: toRects))
-
-        for (id, rect) in toRects {
-            applyResizeRect(elementID: id, rect: rect)
-        }
+        applyResizeRects(toRects)
         selection.clearGroupResize()
     }
 
@@ -682,9 +682,7 @@ struct BoardCanvasView: View {
         case .resize(let id, let fromRect, _):
             applyResizeRect(elementID: id, rect: fromRect)
         case .groupResize(let fromRects, _):
-            for (id, rect) in fromRects {
-                applyResizeRect(elementID: id, rect: rect)
-            }
+            applyResizeRects(fromRects)
         case .insert(let snapshots):
             removeElements(snapshots: snapshots)
         case .delete(let snapshots):
@@ -700,9 +698,7 @@ struct BoardCanvasView: View {
         case .resize(let id, _, let toRect):
             applyResizeRect(elementID: id, rect: toRect)
         case .groupResize(_, let toRects):
-            for (id, rect) in toRects {
-                applyResizeRect(elementID: id, rect: rect)
-            }
+            applyResizeRects(toRects)
         case .insert(let snapshots):
             addElements(snapshots: snapshots)
         case .delete(let snapshots):
@@ -776,6 +772,42 @@ struct BoardCanvasView: View {
                 }
                 await store.upsert(elements: [element])
             }
+        }
+    }
+
+    /// Batch-apply multiple resize rects in a single store mutation (used by group resize + undo/redo).
+    private func applyResizeRects(_ rects: [UUID: CGRect]) {
+        // Update in-memory arrays synchronously
+        for (id, rect) in rects {
+            if let idx = placedImages.firstIndex(where: { $0.id == id }) {
+                placedImages[idx].worldRect = rect
+            }
+            if let idx = visibleImages.firstIndex(where: { $0.id == id }) {
+                visibleImages[idx].worldRect = rect
+            }
+        }
+
+        // Single batched store mutation
+        let ids = Array(rects.keys)
+        enqueueStoreMutation { store in
+            let fetched = await store.elements(for: ids)
+            var updated: [CMCanvasElement] = []
+            for (id, rect) in rects {
+                if var element = fetched[id] {
+                    element.header.bounds = CMWorldRect(
+                        origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                        size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                    )
+                    if case .image(let url, _) = element.payload {
+                        element.payload = .image(
+                            url: url,
+                            size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                        )
+                    }
+                    updated.append(element)
+                }
+            }
+            await store.upsert(elements: updated)
         }
     }
 

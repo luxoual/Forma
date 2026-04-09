@@ -290,11 +290,15 @@ CanvasToolBehavior (protocol)  -- gesture interpretation per tool
 **Protocol:**
 
 ```swift
+struct HitTestItem { let id: UUID; let worldRect: CGRect; let zIndex: Int }
+
 protocol CanvasToolBehavior {
-    func dragBegan(worldStart: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async -> DragMode
+    func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode
     func tapped(worldPoint: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async
 }
 ```
+
+`dragBegan` is **synchronous** — it hit-tests against in-memory `placedImages` (mapped to `HitTestItem`) instead of querying the async store. This eliminates a race where quick drags could end before the async mode decision completed. The `moveToTop` z-order persistence is fired as a non-blocking side effect after mode is set.
 
 **DragMode enum:** `.pan`, `.moveItem`, `.resizeItem`, `.marqueeSelect`, `.none`
 
@@ -302,7 +306,7 @@ protocol CanvasToolBehavior {
 
 A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the active tool's behavior:
 1. On first `.onChanged` event: handle hit-test first (resize), then tool behavior → cache `DragMode` for gesture duration
-2. A `DragMode.none` sentinel is set synchronously before the async `dragBegan` call to prevent re-entry from subsequent events arriving before the Task completes
+2. Mode decision is synchronous — no async gap between first event and mode being set
 3. Subsequent `.onChanged`: `applyDrag()` routes to pan, move, resize, or marquee based on cached mode
 4. `.onEnded`: commits the appropriate action (move, resize, group resize, or marquee select)
 
@@ -391,7 +395,7 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
    - `scaleX = bboxCurrent.width / bboxStart.width`
    - `scaleY = bboxCurrent.height / bboxStart.height`
    - Position and size scaled relative to bbox origin
-5. `commitGroupResize()` pushes `.groupResize(fromRects:toRects:)` command, applies each rect via `applyResizeRect`
+5. `commitGroupResize()` pushes `.groupResize(fromRects:toRects:)` command, applies all rects in a single batch via `applyResizeRects(_:)`
 
 **Shared resize math:** `computeResizedRect(handle:startRect:translation:) -> CGRect?`
 - Corner handles: aspect-ratio-locked resize, opposite corner pinned
@@ -460,7 +464,7 @@ ContentView                  — triggers undo/redo from toolbar
 
 - Toolbar undo/redo buttons fire UUID trigger bindings (`undoTrigger`, `redoTrigger`)
 - `BoardCanvasView` observes triggers via `.onChange` and calls `performUndo()` / `performRedo()`
-- Each method pops a command and dispatches to shared helpers: `applyMoveDelta()`, `applyResizeRect()`, `addElements()`, `removeElements()`
+- Each method pops a command and dispatches to shared helpers: `applyMoveDelta()`, `applyResizeRect()`, `applyResizeRects(_:)` (batched group resize), `addElements()`, `removeElements()`
 
 **Adding New Undoable Operations:**
 
