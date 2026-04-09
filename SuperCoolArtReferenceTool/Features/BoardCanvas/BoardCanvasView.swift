@@ -53,6 +53,11 @@ struct BoardCanvasView: View {
     @State private var currentDragMode: DragMode? = nil
     @State private var dragStartWorldPos: CGPoint? = nil
 
+    // Command history for undo/redo
+    var commandHistory: CanvasCommandHistory
+    @Binding private var undoTrigger: UUID?
+    @Binding private var redoTrigger: UUID?
+
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
 
@@ -60,13 +65,16 @@ struct BoardCanvasView: View {
     private let onSnapshot: (([CMCanvasElement]) -> Void)?
     @Binding private var elementsToLoad: [CMCanvasElement]?
 
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory = CanvasCommandHistory(), undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
         self._externalInsertURLs = externalInsertURLs
         self._showGrid = showGrid
         self._canvasColor = canvasColor
+        self.commandHistory = commandHistory
+        self._undoTrigger = undoTrigger
+        self._redoTrigger = redoTrigger
         self.onInsertURLs = onInsertURLs
         self._snapshotTrigger = snapshotTrigger
         self._elementsToLoad = loadElements
@@ -190,6 +198,16 @@ struct BoardCanvasView: View {
                         elementsToLoad = nil
                     }
                 }
+            }
+            .onChange(of: undoTrigger) { _, newValue in
+                guard newValue != nil else { return }
+                performUndo()
+                DispatchQueue.main.async { undoTrigger = nil }
+            }
+            .onChange(of: redoTrigger) { _, newValue in
+                guard newValue != nil else { return }
+                performRedo()
+                DispatchQueue.main.async { redoTrigger = nil }
             }
             .contentShape(Rectangle())
             // Drag: routed through active tool behavior
@@ -456,41 +474,14 @@ struct BoardCanvasView: View {
 
     private func commitResize() {
         guard let elementID = selection.resizeElementID,
+              let startRect = selection.resizeStartRect,
               let newRect = selection.resizeCurrentRect else {
             selection.clearResize()
             return
         }
 
-        // Update local placedImages
-        if let idx = placedImages.firstIndex(where: { $0.id == elementID }) {
-            placedImages[idx].worldRect = newRect
-        }
-
-        // Update visibleImages to prevent flash
-        if let idx = visibleImages.firstIndex(where: { $0.id == elementID }) {
-            visibleImages[idx].worldRect = newRect
-        }
-
-        // Batch update backend store
-        let store = canvasStore
-        Task {
-            let fetched = await store.elements(for: [elementID])
-            if var element = fetched[elementID] {
-                element.header.bounds = CMWorldRect(
-                    origin: SIMD2<Double>(Double(newRect.origin.x), Double(newRect.origin.y)),
-                    size: SIMD2<Double>(Double(newRect.width), Double(newRect.height))
-                )
-                if case .image(let url, _) = element.payload {
-                    element.payload = .image(
-                        url: url,
-                        size: SIMD2<Double>(Double(newRect.width), Double(newRect.height))
-                    )
-                }
-                await store.upsert(elements: [element])
-            }
-            await refreshVisibleElements()
-        }
-
+        commandHistory.push(.resize(elementID: elementID, fromRect: startRect, toRect: newRect))
+        applyResizeRect(elementID: elementID, rect: newRect)
         selection.clearResize()
     }
 
@@ -500,27 +491,50 @@ struct BoardCanvasView: View {
         guard dx != 0 || dy != 0 else { return }
 
         let idsToMove = selection.selectedIDs
+        commandHistory.push(.move(elementIDs: idsToMove, delta: CGSize(width: dx, height: dy)))
+        applyMoveDelta(elementIDs: idsToMove, dx: dx, dy: dy)
+    }
 
-        // Update local placedImages
+    // MARK: - Undo / Redo
+
+    func performUndo() {
+        guard let command = commandHistory.popUndo() else { return }
+        switch command {
+        case .move(let ids, let delta):
+            applyMoveDelta(elementIDs: ids, dx: -delta.width, dy: -delta.height)
+        case .resize(let id, let fromRect, _):
+            applyResizeRect(elementID: id, rect: fromRect)
+        }
+    }
+
+    func performRedo() {
+        guard let command = commandHistory.popRedo() else { return }
+        switch command {
+        case .move(let ids, let delta):
+            applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
+        case .resize(let id, _, let toRect):
+            applyResizeRect(elementID: id, rect: toRect)
+        }
+    }
+
+    // MARK: - Command Execution Helpers
+
+    private func applyMoveDelta(elementIDs: Set<UUID>, dx: CGFloat, dy: CGFloat) {
         for i in placedImages.indices {
-            if idsToMove.contains(placedImages[i].id) {
+            if elementIDs.contains(placedImages[i].id) {
                 placedImages[i].worldRect.origin.x += dx
                 placedImages[i].worldRect.origin.y += dy
             }
         }
-
-        // Immediately update visibleImages so there's no flash
-        // when dragOffset resets to zero before the async store refresh
         for i in visibleImages.indices {
-            if idsToMove.contains(visibleImages[i].id) {
+            if elementIDs.contains(visibleImages[i].id) {
                 visibleImages[i].worldRect.origin.x += dx
                 visibleImages[i].worldRect.origin.y += dy
             }
         }
 
-        // Batch update backend store
         Task {
-            let fetched = await canvasStore.elements(for: Array(idsToMove))
+            let fetched = await canvasStore.elements(for: Array(elementIDs))
             var updated: [CMCanvasElement] = []
             for (_, var element) in fetched {
                 element.header.bounds.origin.x += Double(dx)
@@ -529,6 +543,34 @@ struct BoardCanvasView: View {
             }
             if !updated.isEmpty {
                 await canvasStore.upsert(elements: updated)
+            }
+            await refreshVisibleElements()
+        }
+    }
+
+    private func applyResizeRect(elementID: UUID, rect: CGRect) {
+        if let idx = placedImages.firstIndex(where: { $0.id == elementID }) {
+            placedImages[idx].worldRect = rect
+        }
+        if let idx = visibleImages.firstIndex(where: { $0.id == elementID }) {
+            visibleImages[idx].worldRect = rect
+        }
+
+        let store = canvasStore
+        Task {
+            let fetched = await store.elements(for: [elementID])
+            if var element = fetched[elementID] {
+                element.header.bounds = CMWorldRect(
+                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                    size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                )
+                if case .image(let url, _) = element.payload {
+                    element.payload = .image(
+                        url: url,
+                        size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                    )
+                }
+                await store.upsert(elements: [element])
             }
             await refreshVisibleElements()
         }
