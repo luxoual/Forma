@@ -480,6 +480,12 @@ struct BoardCanvasView: View {
             return
         }
 
+        // Skip no-op resizes (e.g., clamped to min size or negligible drag)
+        guard newRect != startRect else {
+            selection.clearResize()
+            return
+        }
+
         commandHistory.push(.resize(elementID: elementID, fromRect: startRect, toRect: newRect))
         applyResizeRect(elementID: elementID, rect: newRect)
         selection.clearResize()
@@ -680,8 +686,7 @@ struct BoardCanvasView: View {
     private func insertImagesAtCenter(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         let center = CGPoint(x: canvasSize.width / 2.0, y: canvasSize.height / 2.0)
-        let resolved = urls.compactMap { makeSandboxCopyIfNeeded(from: $0) }
-        insertImages(atScreenPoint: center, urls: resolved)
+        insertImages(atScreenPoint: center, urls: urls)
     }
 
     private func insertImages(atScreenPoint point: CGPoint, urls: [URL]) {
