@@ -101,7 +101,7 @@ Three simultaneous gestures are attached to the canvas ZStack:
 
 Images are placed via `insertImages(atScreenPoint:urls:)`:
 
-1. **File Security:** Files are copied to `Application Support/ImportedImages/` to ensure sandbox access
+1. **File Security:** Files are copied to `Application Support/ImportedImages/` via `makeSandboxCopyIfNeeded(from:)` to ensure sandbox access. This is called once inside `insertImages(atScreenPoint:urls:)` — callers pass raw URLs
 2. **Size Calculation:** 
    - Pixel dimensions read via `CGImageSource` 
    - Scaled to world units preserving aspect ratio
@@ -326,7 +326,7 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Status: Implemented**
 
-**Files:** `CanvasSelectionState.swift`, `SelectionOverlay.swift`, `BoardCanvasView.swift`
+**Files:** `CanvasSelectionState.swift`, `HandlePosition.swift`, `SelectionOverlay.swift`, `BoardCanvasView.swift`
 
 **Selection State:**
 
@@ -339,12 +339,13 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Visual Indicators:**
 
-**File:** `SelectionOverlay.swift`
+**Files:** `SelectionOverlay.swift` (view), `HandlePosition.swift` (data model)
 
 Selected items display a `SelectionOverlay` via `.overlay` (applied before `.position()` so it renders in the item's coordinate space):
 - Blue stroke border (`DesignSystem.Colors.tertiary`, 2pt)
 - White handles (10×10pt rounded rectangles with blue border) at 8 positions: 4 corners + 4 edge midpoints
-- `HandlePosition` enum defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`
+- `HandlePosition` enum (in `HandlePosition.swift`) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`
+- Extracted to its own file to avoid coupling `CanvasSelectionState` to the view layer
 - Each handle has helper properties: `anchorPosition` (opposite handle), `isCorner`, `isLeftSide`, `isTopSide`
 
 **Move Interaction:**
@@ -364,7 +365,7 @@ Selected items display a `SelectionOverlay` via `.overlay` (applied before `.pos
    - **Edge handles:** single-axis stretch (width or height only), opposite edge pinned
    - Minimum dimension enforced (`minImageDimensionWorld = 64`)
 4. Live rect stored in `selection.resizeCurrentRect`, used by render loop for immediate visual feedback
-5. On drag end, `commitResize()` pushes a `.resize` command to history, then applies via `applyResizeRect()`
+5. On drag end, `commitResize()` skips no-op resizes (where `newRect == startRect`), then pushes a `.resize` command to history and applies via `applyResizeRect()`
 6. Single-select only for now; resize is skipped if multiple items are selected
 
 **Resize State** (in `CanvasSelectionState`):
