@@ -284,7 +284,7 @@ CanvasTool (enum)              -- toolbar identity, UI selection
     v
 CanvasToolBehavior (protocol)  -- gesture interpretation per tool
     ├── PointerToolBehavior    -- tap=select, drag-on-item=move, drag-on-empty=pan
-    └── GroupToolBehavior      -- stub (falls back to pan for now)
+    └── GroupToolBehavior      -- tap=toggle selection, drag-on-item=group move, drag-on-empty=marquee select
 ```
 
 **Protocol:**
@@ -296,14 +296,15 @@ protocol CanvasToolBehavior {
 }
 ```
 
-**DragMode enum:** `.pan`, `.moveItem`, `.none`
+**DragMode enum:** `.pan`, `.moveItem`, `.resizeItem`, `.marqueeSelect`, `.none`
 
 **Gesture Routing:**
 
 A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the active tool's behavior:
-1. On first `.onChanged` event: hit-test via tool behavior → cache `DragMode` for gesture duration
-2. Subsequent `.onChanged`: `applyDrag()` routes to pan or move based on cached mode
-3. `.onEnded`: if translation < 4pt, treat as tap → call `behavior.tapped()`; if `.moveItem`, call `commitMove()`
+1. On first `.onChanged` event: handle hit-test first (resize), then tool behavior → cache `DragMode` for gesture duration
+2. A `DragMode.none` sentinel is set synchronously before the async `dragBegan` call to prevent re-entry from subsequent events arriving before the Task completes
+3. Subsequent `.onChanged`: `applyDrag()` routes to pan, move, resize, or marquee based on cached mode
+4. `.onEnded`: commits the appropriate action (move, resize, group resize, or marquee select)
 
 **Pointer Tool Behavior:**
 - Drag on item → select it, bring to top, enter `.moveItem` mode
@@ -311,7 +312,12 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 - Tap on item → select it
 - Tap on empty → clear selection
 
-**Group Tool:** Stub — returns `.pan` for all drags, no-op for taps. Ready for future marquee select.
+**Group Tool Behavior:**
+- Drag on selected item → `.moveItem` mode (group move)
+- Drag on unselected item → add to selection via `extending: true`, `.moveItem` mode
+- Drag on empty canvas → `.marqueeSelect` mode (draws selection rectangle)
+- Tap on item → toggle selection membership (`extending: true`)
+- Tap on empty → clear selection
 
 **Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior` maps enum to concrete behavior.
 
@@ -326,7 +332,7 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Status: Implemented**
 
-**Files:** `CanvasSelectionState.swift`, `HandlePosition.swift`, `SelectionOverlay.swift`, `BoardCanvasView.swift`
+**Files:** `CanvasSelectionState.swift`, `HandlePosition.swift`, `SelectionOverlay.swift`, `MarqueeOverlayView.swift`, `BoardCanvasView.swift`
 
 **Selection State:**
 
@@ -334,16 +340,26 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 - `selectedIDs: Set<UUID>` — currently selected element IDs
 - `dragOffset: CGSize` — world-space offset during active drag-move
 - `isDragging: Bool` — whether a move drag is in progress
-- `select(_:extending:)` — select an item (extending parameter for future multi-select)
+- `select(_:extending:)` — select an item (`extending: true` toggles membership for multi-select)
 - `clearSelection()` — deselect all
+
+**Marquee State** (in `CanvasSelectionState`):
+- `marqueeStartWorld: CGPoint?` — world-space anchor of the marquee drag
+- `marqueeCurrentWorld: CGPoint?` — world-space current corner
+- `marqueeWorldRect: CGRect?` — computed normalized rect
+- `isMarqueeing: Bool` — computed from `marqueeStartWorld != nil`
+- `clearMarquee()` — resets marquee state
 
 **Visual Indicators:**
 
-**Files:** `SelectionOverlay.swift` (view), `HandlePosition.swift` (data model)
+**Files:** `SelectionOverlay.swift` (views), `HandlePosition.swift` (data model)
 
-Selected items display a `SelectionOverlay` via `.overlay` (applied before `.position()` so it renders in the item's coordinate space):
-- Blue stroke border (`DesignSystem.Colors.tertiary`, 2pt)
-- White handles (10×10pt rounded rectangles with blue border) at 8 positions: 4 corners + 4 edge midpoints
+- `ResizeHandleView` — shared 10×10pt rounded rectangle handle with white fill and tertiary border, used by both overlay types
+- `SelectionOverlay` — solid blue border + 8 handles, shown on single-selected items
+- `GroupSelectionOverlay` — dashed blue border + 8 handles, shown on the group bounding box when multiple items are selected
+- When multi-selected, individual items show a light semi-transparent border instead of full handles
+- `MarqueeOverlayView` — dashed rectangle with semi-transparent fill, shown during marquee drag
+
 - `HandlePosition` enum (in `HandlePosition.swift`) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`
 - Extracted to its own file to avoid coupling `CanvasSelectionState` to the view layer
 - Each handle has helper properties: `anchorPosition` (opposite handle), `isCorner`, `isLeftSide`, `isTopSide`
@@ -356,29 +372,51 @@ Selected items display a `SelectionOverlay` via `.overlay` (applied before `.pos
 
 **Resize Interaction:**
 
-**Status: Implemented**
+**Status: Implemented (single + group)**
 
-1. On drag start, `hitTestHandle(screenPoint:)` checks screen-space distance to all 8 handles on the selected item (hit radius: 30pt)
-2. If a handle is hit → `.resizeItem` drag mode, bypassing tool behavior routing
-3. During drag, `applyResize(translation:)` computes the new world rect:
-   - **Corner handles:** aspect-ratio-locked resize, opposite corner pinned
-   - **Edge handles:** single-axis stretch (width or height only), opposite edge pinned
-   - Minimum dimension enforced (`minImageDimensionWorld = 64`)
-4. Live rect stored in `selection.resizeCurrentRect`, used by render loop for immediate visual feedback
-5. On drag end, `commitResize()` skips no-op resizes (where `newRect == startRect`), then pushes a `.resize` command to history and applies via `applyResizeRect()`
-6. Single-select only for now; resize is skipped if multiple items are selected
+`hitTestHandle(screenPoint:)` is a pure query returning a `HandleHitResult` enum (`.singleItem` or `.group`). The call site in the gesture handler sets up the appropriate resize state based on the result.
 
-**Resize State** (in `CanvasSelectionState`):
-- `resizeHandle: HandlePosition?` — which handle is being dragged
+**Single-item resize** (1 item selected):
+1. `hitTestHandle` checks screen-space distance to 8 handles on the item (hit radius: 30pt)
+2. If hit → `.resizeItem` drag mode, populates single resize state
+3. During drag, `applyResize(translation:)` delegates to `computeResizedRect()` (shared pure function)
+4. Live rect stored in `selection.resizeCurrentRect`
+5. `commitResize()` skips no-op resizes, pushes `.resize` command
+
+**Group resize** (2+ items selected):
+1. `hitTestHandle` checks handles on the group bounding box
+2. If hit → `.resizeItem` drag mode, snapshots all selected items' rects into `groupResizeStartRects`
+3. During drag, `applyGroupResize(translation:)` delegates to `computeResizedRect()` on the group bbox
+4. Each item's live rect is computed via `scaledRect(original:bboxStart:bboxCurrent:)`:
+   - `scaleX = bboxCurrent.width / bboxStart.width`
+   - `scaleY = bboxCurrent.height / bboxStart.height`
+   - Position and size scaled relative to bbox origin
+5. `commitGroupResize()` pushes `.groupResize(fromRects:toRects:)` command, applies each rect via `applyResizeRect`
+
+**Shared resize math:** `computeResizedRect(handle:startRect:translation:) -> CGRect?`
+- Corner handles: aspect-ratio-locked resize, opposite corner pinned
+- Edge handles: single-axis stretch, opposite edge pinned
+- Minimum dimension enforced (`minImageDimensionWorld = 64`)
+- Used by both single and group resize paths
+
+**Single Resize State** (in `CanvasSelectionState`):
+- `resizeHandle: HandlePosition?` — which handle is being dragged (shared with group resize)
 - `resizeStartRect: CGRect?` — element's world rect at drag start
 - `resizeCurrentRect: CGRect?` — live rect during drag
 - `resizeElementID: UUID?` — element being resized
 - `isResizing: Bool` — computed from `resizeHandle != nil`
-- `clearResize()` — resets all resize state
+- `clearResize()` — resets all single resize state
+
+**Group Resize State** (in `CanvasSelectionState`):
+- `groupResizeStartRects: [UUID: CGRect]?` — original rects of all selected items
+- `groupResizeBBoxStart: CGRect?` — group bounding box at resize start
+- `groupResizeBBoxCurrent: CGRect?` — live bounding box during resize
+- `isGroupResizing: Bool` — computed from `groupResizeStartRects != nil`
+- `clearGroupResize()` — resets all group resize state
 
 **Performance:**
 
-Store updates are batched — one `elements(for:)` fetch + one `upsert(elements:)` call regardless of selection count (2 actor round-trips, not 2N). This scales for future multi-select.
+Store updates are serialized via `enqueueStoreMutation()` — each mutation cancels any in-flight task and awaits its completion before running. This prevents stale writes from rapid undo/redo or overlapping operations. Each mutation uses batched `elements(for:)` + `upsert(elements:)` calls (2 actor round-trips, not 2N).
 
 ---
 
@@ -405,6 +443,7 @@ ContentView                  — triggers undo/redo from toolbar
 |---------|-------------|------|------|
 | `.move` | `elementIDs: Set<UUID>`, `delta: CGSize` | Move by -delta | Move by +delta |
 | `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Restore fromRect | Restore toRect |
+| `.groupResize` | `fromRects: [UUID: CGRect]`, `toRects: [UUID: CGRect]` | Restore all fromRects | Apply all toRects |
 | `.insert` | `snapshots: [PlacedElementSnapshot]` | Remove elements | Re-add elements |
 | `.delete` | `snapshots: [PlacedElementSnapshot]` | Re-add elements | Remove elements |
 
@@ -635,18 +674,20 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
 2. **Tool Behavior:**
    - ~~Connect `activeTool` state to actual canvas interactions~~ ✅ Done
    - ~~Implement selection via pointer tool~~ ✅ Done
-   - Implement selection rectangles / marquee select for group tool
-   - Implement grouping behavior for group tool
+   - ~~Implement selection rectangles / marquee select for group tool~~ ✅ Done
+   - ~~Implement group move/resize behavior for group tool~~ ✅ Done
 
 3. **Item Interaction:**
    - ~~Select items on tap~~ ✅ Done
    - ~~Move items by dragging~~ ✅ Done
    - ~~Resize handle visuals~~ ✅ Done
    - ~~Functional resize via corner and edge handle drag~~ ✅ Done
-   - ~~Undo/redo for move, resize, and insert~~ ✅ Done
+   - ~~Undo/redo for move, resize, insert, and group resize~~ ✅ Done
+   - ~~Multi-selection via marquee and toggle-tap~~ ✅ Done
+   - ~~Group move (all selected items move together)~~ ✅ Done
+   - ~~Group resize (proportional scaling relative to group bounding box)~~ ✅ Done
    - Delete selected items (command exists, needs UI trigger)
    - Rotation gestures
-   - Multi-selection (CanvasSelectionState already supports it via `extending` parameter)
 
 4. **File Import Refactor:**
    - Extract duplicate file loading code into `FileImportHelpers.swift`
@@ -687,7 +728,9 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
 
 3. **Persistence:**
    - Dev A manages `placedImages` in `@State` and syncs to `LocalBoardStore` on insert, move, resize, and delete
+   - All store mutations are serialized via `enqueueStoreMutation()` — cancels previous task, awaits completion, then runs
    - Move/resize operations use `elements(for:)` + `upsert(elements:)` for batched updates
+   - Marquee select uses `headers(in: CMWorldRect)` for spatial rectangle query
    - Insert undo uses `delete(elementIDs:)` to remove elements from the store
    - Hit testing uses `topmostHeader(at:)` from `LocalBoardStore`
    - `moveToTop(elementIDs:)` used to bring selected items to front on interaction
