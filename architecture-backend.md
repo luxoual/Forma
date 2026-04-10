@@ -16,8 +16,9 @@ Backend architecture has **core data models and persistence layer** implemented,
 
 # Recent Changes (Backend Impact)
 
-- No changes to persistence, file formats, or CanvasService APIs.
-- UI now uses downsampled thumbnails and an in-memory cache for canvas rendering; this does not affect stored data or export packages.
+- `.refboard` is now a **single-file ZIP** format (not a package). The exporter zips a manifest + assets folder into one file.
+- Import supports both the new ZIP format and the legacy package folder format for compatibility.
+- UTI registration updated to `public.data` + `public.zip-archive` and no longer treated as a package.
 
 ---
 
@@ -54,9 +55,13 @@ Decision Status: **Implemented**
 - `SuperCoolArtReferenceTool/App/BoardExportDocument.swift`
 - `SuperCoolArtReferenceTool/App/BoardArchiver.swift`
 
-The export pipeline uses a SwiftUI `FileDocument` implementation to generate a `.refboard` package on demand. `BoardExportDocument` creates a uniquely named temp package, calls `BoardArchiver.export(elements:to:)` to write assets and `manifest.json`, then returns a `FileWrapper` for the package. This avoids filename collisions in `/tmp` and allows the system file exporter UI to present correctly.
+The export pipeline produces a **single-file `.refboard` ZIP** containing:
+- `manifest.json`
+- `assets/` (copied image files)
 
-The custom UTType is defined as `.refboard` (exported identifier) to match the exported package type.
+`BoardArchiver.export(elements:to:)` writes a temp package, zips it, and outputs a flat file. `BoardArchiver.importElements(from:)` accepts either the new ZIP or a legacy package folder, unpacks if needed, and resolves assets.
+
+The custom UTType identifier is `AxI.SuperCoolArtReferenceTool.refboard`, declared as `public.data` + `public.zip-archive` (not a package).
 
 ---
 
@@ -78,9 +83,7 @@ Added viewport and selection helpers to support tile-based culling and hit-testi
 
 # Integration Points
 
-- `ContentView` collects a snapshot of `CMCanvasElement` from `BoardCanvasView` and passes it into `BoardExportDocument` for export.
-- `BoardArchiver` is the single backend entry point for encoding/decoding `.refboard` packages.
+- `ContentView` collects a snapshot of `CMCanvasElement` from `BoardCanvasView` and exports via `BoardArchiver` (macOS uses a save panel to choose the target URL).
+- `BoardArchiver` is the single backend entry point for encoding/decoding `.refboard` files (ZIP or legacy package).
 - `CanvasService` provides viewport and selection queries (`elements(in:margin:...)`, `topmostElement(at:...)`) for tile-based culling and hit-testing.
 - `CanvasService` exposes z-order operations (`moveToTop` / `moveToBottom`) for absolute layer adjustments.
-
-
