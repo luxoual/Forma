@@ -6,13 +6,16 @@
 //
 
 import Foundation
+import ZIPFoundation
 import simd
 
-/// Handles importing and exporting reference board data as `.refboard` directory packages.
+/// Handles importing and exporting reference board data as single-file `.refboard` ZIPs
+/// that contain a package layout (manifest + assets).
 /// Currently supports a JSON manifest (`manifest.json`) and image-based elements, with optional
 /// copying of referenced assets into the app's Application Support directory.
 enum BoardArchiver {
-    /// Import elements from a `.refboard` file URL.
+    /// Import elements from a `.refboard` URL. Supports both legacy package folders and
+    /// the new single-file ZIP container.
     /// - Parameters:
     ///   - url: Source file URL (likely a security-scoped resource when coming from `.onOpenURL`).
     ///   - copyAssetsToAppSupport: When `true`, copy any referenced assets into Application Support.
@@ -22,13 +25,50 @@ enum BoardArchiver {
             throw ImportError.unsupportedFileExtension
         }
 
-        // Ensure it's a directory package and begin security-scoped access if needed
+        let accessGranted = url.startAccessingSecurityScopedResource()
+        defer { if accessGranted { url.stopAccessingSecurityScopedResource() } }
+
+        // Check if it's a directory package or a single-file ZIP
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+            throw ImportError.corruptedFile
+        }
+        if isDir.boolValue {
+            return try importFromPackage(url: url, copyAssetsToAppSupport: copyAssetsToAppSupport)
+        }
+        return try importFromZip(url: url, copyAssetsToAppSupport: copyAssetsToAppSupport)
+    }
+
+    private static func importFromZip(url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory
+            .appendingPathComponent("RefboardImport-\(UUID().uuidString)", isDirectory: true)
+        try? fm.removeItem(at: tempDir)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        try unzipItem(at: url, to: tempDir)
+
+        let manifestAtRoot = tempDir.appendingPathComponent("manifest.json")
+        let packageURL: URL
+        if fm.fileExists(atPath: manifestAtRoot.path) {
+            packageURL = tempDir
+        } else if let firstDir = firstDirectory(in: tempDir) {
+            packageURL = firstDir
+        } else {
+            try? fm.removeItem(at: tempDir)
+            throw ImportError.corruptedFile
+        }
+
+        defer { try? fm.removeItem(at: tempDir) }
+        return try importFromPackage(url: packageURL, copyAssetsToAppSupport: copyAssetsToAppSupport)
+    }
+
+    private static func importFromPackage(url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
+        // Ensure it's a directory package
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
             throw ImportError.corruptedFile
         }
-        let accessGranted = url.startAccessingSecurityScopedResource()
-        defer { if accessGranted { url.stopAccessingSecurityScopedResource() } }
 
         // Load and decode the manifest
         let manifestURL = url.appendingPathComponent("manifest.json")
@@ -96,7 +136,7 @@ enum BoardArchiver {
         return candidate
     }
     
-    /// Export elements to a `.refboard` package at the given destination URL.
+    /// Export elements to a single-file `.refboard` ZIP at the given destination URL.
     /// Returns the final URL written (which may be adjusted if needed).
     static func export(elements: [CMCanvasElement], to destination: URL) throws -> URL {
         let fm = FileManager.default
@@ -145,11 +185,52 @@ enum BoardArchiver {
         let manifestData = try encoder.encode(manifest)
         try manifestData.write(to: temp.appendingPathComponent("manifest.json"), options: [.atomic])
 
-        // Replace destination with the temp package
+        // Zip the package into the destination file
         try? fm.removeItem(at: destination)
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try fm.moveItem(at: temp, to: destination)
+        try zipItem(at: temp, to: destination)
+        try? fm.removeItem(at: temp)
         return destination
+    }
+
+    private static func zipItem(at sourceURL: URL, to destinationURL: URL) throws {
+        guard let archive = Archive(url: destinationURL, accessMode: .create) else {
+            throw ImportError.ioFailure
+        }
+
+        let fm = FileManager.default
+        let enumerator = fm.enumerator(at: sourceURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        while let item = enumerator?.nextObject() as? URL {
+            let values = try item.resourceValues(forKeys: [.isDirectoryKey])
+            if values.isDirectory == true {
+                continue
+            }
+            let relativePath = item.path.replacingOccurrences(of: sourceURL.path + "/", with: "")
+            try archive.addEntry(with: relativePath, fileURL: item, compressionMethod: .deflate)
+        }
+    }
+
+    private static func unzipItem(at sourceURL: URL, to destinationURL: URL) throws {
+        guard let archive = Archive(url: sourceURL, accessMode: .read) else {
+            throw ImportError.ioFailure
+        }
+
+        let fm = FileManager.default
+        for entry in archive {
+            let destURL = destinationURL.appendingPathComponent(entry.path)
+            if entry.type == .directory {
+                try fm.createDirectory(at: destURL, withIntermediateDirectories: true)
+                continue
+            }
+            try fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            _ = try archive.extract(entry, to: destURL)
+        }
+    }
+
+    private static func firstDirectory(in folder: URL) -> URL? {
+        let fm = FileManager.default
+        let contents = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+        return contents?.first(where: { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true })
     }
 
     // MARK: - Package Manifest Types
@@ -198,4 +279,3 @@ enum BoardArchiver {
         case ioFailure
     }
 }
-
