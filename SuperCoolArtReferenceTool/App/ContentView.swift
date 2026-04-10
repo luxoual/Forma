@@ -27,6 +27,11 @@ struct ContentView: View {
     @State private var showingExporter = false
     @State private var exportDocument = BoardExportDocument(elements: [])
 
+    // Undo/redo
+    @State private var commandHistory = CanvasCommandHistory()
+    @State private var undoTrigger: UUID?
+    @State private var redoTrigger: UUID?
+
     @State private var importerMode: ImporterMode? = nil
     private enum ImporterMode { case images, board }
 
@@ -39,6 +44,9 @@ struct ContentView: View {
                 canvasColor: $canvasColor,
                 snapshotTrigger: $snapshotToken,
                 loadElements: $elementsToLoad,
+                commandHistory: commandHistory,
+                undoTrigger: $undoTrigger,
+                redoTrigger: $redoTrigger,
                 onInsertURLs: { _ in },
                 onSnapshot: { elements in
                     // When snapshot arrives, prepare a FileDocument and present the exporter
@@ -136,8 +144,8 @@ struct ContentView: View {
             HStack {
                 CanvasToolbar(
                     activeTool: $activeTool,
-                    onUndo: { /* TODO: hook up undo */ },
-                    onRedo: { /* TODO: hook up redo */ },
+                    onUndo: { undoTrigger = UUID() },
+                    onRedo: { redoTrigger = UUID() },
                     onAddItem: {
                         print("[UI] Add Item tapped")
                         importerMode = .images
@@ -172,8 +180,8 @@ struct ContentView: View {
                 
                 CanvasToolbar(
                     activeTool: $activeTool,
-                    onUndo: { /* TODO: hook up undo */ },
-                    onRedo: { /* TODO: hook up redo */ },
+                    onUndo: { undoTrigger = UUID() },
+                    onRedo: { redoTrigger = UUID() },
                     onAddItem: {
                         print("[UI] Add Item tapped")
                         importerMode = .images

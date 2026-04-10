@@ -101,7 +101,7 @@ Three simultaneous gestures are attached to the canvas ZStack:
 
 Images are placed via `insertImages(atScreenPoint:urls:)`:
 
-1. **File Security:** Files are copied to `Application Support/ImportedImages/` to ensure sandbox access
+1. **File Security:** Files are copied to `Application Support/ImportedImages/` via `makeSandboxCopyIfNeeded(from:)` to ensure sandbox access. This is called once inside `insertImages(atScreenPoint:urls:)` — callers pass raw URLs
 2. **Size Calculation:** 
    - Pixel dimensions read via `CGImageSource` 
    - Scaled to world units preserving aspect ratio
@@ -326,7 +326,7 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Status: Implemented**
 
-**Files:** `CanvasSelectionState.swift`, `SelectionOverlay.swift`, `BoardCanvasView.swift`
+**Files:** `CanvasSelectionState.swift`, `HandlePosition.swift`, `SelectionOverlay.swift`, `BoardCanvasView.swift`
 
 **Selection State:**
 
@@ -339,26 +339,95 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Visual Indicators:**
 
-**File:** `SelectionOverlay.swift`
+**Files:** `SelectionOverlay.swift` (view), `HandlePosition.swift` (data model)
 
 Selected items display a `SelectionOverlay` via `.overlay` (applied before `.position()` so it renders in the item's coordinate space):
 - Blue stroke border (`DesignSystem.Colors.tertiary`, 2pt)
-- White corner handles (10×10pt rounded rectangles with blue border) at all four corners
-- `HandlePosition` enum defines `.topLeft`, `.topRight`, `.bottomLeft`, `.bottomRight`
-- Corner handles are visual placeholders for future resize functionality
+- White handles (10×10pt rounded rectangles with blue border) at 8 positions: 4 corners + 4 edge midpoints
+- `HandlePosition` enum (in `HandlePosition.swift`) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`
+- Extracted to its own file to avoid coupling `CanvasSelectionState` to the view layer
+- Each handle has helper properties: `anchorPosition` (opposite handle), `isCorner`, `isLeftSide`, `isTopSide`
 
 **Move Interaction:**
 
 1. User drags a selected item → `applyDrag()` sets `selection.dragOffset` in world space
 2. During drag, selected items render with a live offset: `position + (dragOffset * scale)` — no store updates per frame
-3. On drag end, `commitMove()`:
-   - Bakes offset into `placedImages` and `visibleImages` immediately (prevents flash)
-   - Batch-fetches elements from store via `elements(for:)` and updates positions in a single `upsert(elements:)` call
-   - Refreshes visible elements from store
+3. On drag end, `commitMove()` pushes a `.move` command to history, then applies via `applyMoveDelta()`
+
+**Resize Interaction:**
+
+**Status: Implemented**
+
+1. On drag start, `hitTestHandle(screenPoint:)` checks screen-space distance to all 8 handles on the selected item (hit radius: 30pt)
+2. If a handle is hit → `.resizeItem` drag mode, bypassing tool behavior routing
+3. During drag, `applyResize(translation:)` computes the new world rect:
+   - **Corner handles:** aspect-ratio-locked resize, opposite corner pinned
+   - **Edge handles:** single-axis stretch (width or height only), opposite edge pinned
+   - Minimum dimension enforced (`minImageDimensionWorld = 64`)
+4. Live rect stored in `selection.resizeCurrentRect`, used by render loop for immediate visual feedback
+5. On drag end, `commitResize()` skips no-op resizes (where `newRect == startRect`), then pushes a `.resize` command to history and applies via `applyResizeRect()`
+6. Single-select only for now; resize is skipped if multiple items are selected
+
+**Resize State** (in `CanvasSelectionState`):
+- `resizeHandle: HandlePosition?` — which handle is being dragged
+- `resizeStartRect: CGRect?` — element's world rect at drag start
+- `resizeCurrentRect: CGRect?` — live rect during drag
+- `resizeElementID: UUID?` — element being resized
+- `isResizing: Bool` — computed from `resizeHandle != nil`
+- `clearResize()` — resets all resize state
 
 **Performance:**
 
 Store updates are batched — one `elements(for:)` fetch + one `upsert(elements:)` call regardless of selection count (2 actor round-trips, not 2N). This scales for future multi-select.
+
+---
+
+### Command History (Undo/Redo)
+
+**Status: Implemented**
+
+**Files:** `CanvasCommandHistory.swift`, `BoardCanvasView.swift`, `ContentView.swift`
+
+A command pattern for reversible canvas operations. Each user action (move, resize, insert) is recorded as a lightweight command that can be undone and redone.
+
+**Architecture:**
+
+```
+CanvasCommand (enum)         — describes a reversible operation
+CanvasCommandHistory         — @Observable class with undo/redo stacks
+BoardCanvasView              — executes commands via helper methods
+ContentView                  — triggers undo/redo from toolbar
+```
+
+**Command Types:**
+
+| Command | Data Stored | Undo | Redo |
+|---------|-------------|------|------|
+| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize` | Move by -delta | Move by +delta |
+| `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Restore fromRect | Restore toRect |
+| `.insert` | `snapshots: [PlacedElementSnapshot]` | Remove elements | Re-add elements |
+| `.delete` | `snapshots: [PlacedElementSnapshot]` | Re-add elements | Remove elements |
+
+`PlacedElementSnapshot` captures everything needed to fully add/remove an element: `id`, `url`, `worldRect`, `zIndex`, and the full `CMCanvasElement`.
+
+**History Management:**
+
+- `CanvasCommandHistory` is an `@Observable` class owned as `@State` in `ContentView` and passed to `BoardCanvasView`
+- `push(_:)` — appends to undo stack, clears redo stack
+- `popUndo()` / `popRedo()` — moves commands between stacks
+- `canUndo` / `canRedo` — computed properties for UI state
+
+**Integration:**
+
+- Toolbar undo/redo buttons fire UUID trigger bindings (`undoTrigger`, `redoTrigger`)
+- `BoardCanvasView` observes triggers via `.onChange` and calls `performUndo()` / `performRedo()`
+- Each method pops a command and dispatches to shared helpers: `applyMoveDelta()`, `applyResizeRect()`, `addElements()`, `removeElements()`
+
+**Adding New Undoable Operations:**
+
+1. Add a case to `CanvasCommand` enum
+2. Push the command in the action's commit function
+3. Add undo/redo handling in `performUndo()` / `performRedo()`
 
 ---
 
@@ -572,10 +641,11 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
 3. **Item Interaction:**
    - ~~Select items on tap~~ ✅ Done
    - ~~Move items by dragging~~ ✅ Done
-   - ~~Resize handle visuals~~ ✅ Done (placeholder, not yet functional)
-   - Functional resize via corner handle drag
+   - ~~Resize handle visuals~~ ✅ Done
+   - ~~Functional resize via corner and edge handle drag~~ ✅ Done
+   - ~~Undo/redo for move, resize, and insert~~ ✅ Done
+   - Delete selected items (command exists, needs UI trigger)
    - Rotation gestures
-   - Delete selected items
    - Multi-selection (CanvasSelectionState already supports it via `extending` parameter)
 
 4. **File Import Refactor:**
@@ -616,8 +686,9 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
    - **Integration needed:** Conversion helpers between coordinate systems
 
 3. **Persistence:**
-   - Dev A manages `placedImages` in `@State` and syncs to `LocalBoardStore` on insert and move
-   - Move operations use `elements(for:)` + `upsert(elements:)` for batched updates
+   - Dev A manages `placedImages` in `@State` and syncs to `LocalBoardStore` on insert, move, resize, and delete
+   - Move/resize operations use `elements(for:)` + `upsert(elements:)` for batched updates
+   - Insert undo uses `delete(elementIDs:)` to remove elements from the store
    - Hit testing uses `topmostHeader(at:)` from `LocalBoardStore`
    - `moveToTop(elementIDs:)` used to bring selected items to front on interaction
 

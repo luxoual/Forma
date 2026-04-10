@@ -28,16 +28,3 @@ struct SelectionOverlay: View {
             )
     }
 }
-
-enum HandlePosition: CaseIterable {
-    case topLeft, topRight, bottomLeft, bottomRight
-
-    func point(in size: CGSize) -> CGPoint {
-        switch self {
-        case .topLeft:     return CGPoint(x: 0, y: 0)
-        case .topRight:    return CGPoint(x: size.width, y: 0)
-        case .bottomLeft:  return CGPoint(x: 0, y: size.height)
-        case .bottomRight: return CGPoint(x: size.width, y: size.height)
-        }
-    }
-}
