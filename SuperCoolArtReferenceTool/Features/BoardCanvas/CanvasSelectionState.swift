@@ -43,4 +43,47 @@ final class CanvasSelectionState {
         resizeCurrentRect = nil
         resizeElementID = nil
     }
+
+    // MARK: - Marquee state
+
+    /// World-space anchor point of the marquee drag
+    var marqueeStartWorld: CGPoint?
+    /// World-space current corner of the marquee drag
+    var marqueeCurrentWorld: CGPoint?
+
+    var isMarqueeing: Bool { marqueeStartWorld != nil }
+
+    /// Normalized world-space rect of the active marquee
+    var marqueeWorldRect: CGRect? {
+        guard let start = marqueeStartWorld, let current = marqueeCurrentWorld else { return nil }
+        return CGRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(current.x - start.x),
+            height: abs(current.y - start.y)
+        )
+    }
+
+    func clearMarquee() {
+        marqueeStartWorld = nil
+        marqueeCurrentWorld = nil
+    }
+
+    // MARK: - Group resize state
+
+    /// Original world rects of all selected items at resize start
+    var groupResizeStartRects: [UUID: CGRect]?
+    /// Group bounding box at resize start
+    var groupResizeBBoxStart: CGRect?
+    /// Live group bounding box during resize
+    var groupResizeBBoxCurrent: CGRect?
+
+    var isGroupResizing: Bool { groupResizeStartRects != nil }
+
+    func clearGroupResize() {
+        groupResizeStartRects = nil
+        groupResizeBBoxStart = nil
+        groupResizeBBoxCurrent = nil
+        resizeHandle = nil
+    }
 }

@@ -33,6 +33,8 @@ struct ContentView: View {
     @State private var redoTrigger: UUID?
 
     @State private var importerMode: ImporterMode? = nil
+    /// Latched copy so the result handler can read it even after the binding clears importerMode
+    @State private var lastImporterMode: ImporterMode? = nil
     private enum ImporterMode { case images, board }
 
     var body: some View {
@@ -71,6 +73,7 @@ struct ContentView: View {
 
                 Button("Import") {
                     importerMode = .board
+                    lastImporterMode = .board
                     print("[UI] Import Board tapped")
                 }
                 .buttonStyle(.bordered)
@@ -93,12 +96,12 @@ struct ContentView: View {
         .fileImporter(
             isPresented: Binding(
                 get: { importerMode != nil },
-                set: { _ in /* keep mode until handler runs */ }
+                set: { newValue in if !newValue { importerMode = nil } }
             ),
             allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard, .package, .folder],
             allowsMultipleSelection: importerMode == .images
         ) { result in
-            let currentMode = importerMode
+            let currentMode = lastImporterMode
             print("[Importer] Unified fileImporter fired (mode: \(String(describing: currentMode)))")
             switch result {
             case .success(let urls):
@@ -149,6 +152,7 @@ struct ContentView: View {
                     onAddItem: {
                         print("[UI] Add Item tapped")
                         importerMode = .images
+                        lastImporterMode = .images
                     }
                 )
                 .padding(.leading, 16)
@@ -185,6 +189,7 @@ struct ContentView: View {
                     onAddItem: {
                         print("[UI] Add Item tapped")
                         importerMode = .images
+                        lastImporterMode = .images
                     }
                 )
                 .padding(.trailing, 16)
