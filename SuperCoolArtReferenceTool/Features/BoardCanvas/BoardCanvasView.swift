@@ -14,6 +14,7 @@ struct BoardCanvasView: View {
 
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
+    @State private var twoFingerPanStartOffset: CGSize? = nil
     @State private var zoomStartScale: CGFloat? = nil
     @State private var isInteracting: Bool = false
     @State private var interactionEndTask: Task<Void, Never>? = nil
@@ -381,6 +382,25 @@ struct BoardCanvasView: View {
                         zoomStartScale = nil
                         endInteraction()
                     }
+            )
+            .background(
+                TwoFingerPanView { phase, translation in
+                    switch phase {
+                    case .began:
+                        startInteraction()
+                        twoFingerPanStartOffset = offset
+                    case .changed:
+                        let start = twoFingerPanStartOffset ?? offset
+                        offset = CGSize(
+                            width: start.width + translation.width,
+                            height: start.height + translation.height
+                        )
+                        scheduleRefreshVisibleElements()
+                    case .ended:
+                        twoFingerPanStartOffset = nil
+                        endInteraction()
+                    }
+                }
             )
         }
     }
