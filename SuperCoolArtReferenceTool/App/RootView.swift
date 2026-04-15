@@ -12,17 +12,21 @@ struct RootView: View {
 
     @State private var showCanvas = false
     @State private var initialURLs: [URL] = []
+    @State private var initialElements: [CMCanvasElement]? = nil
 
     var body: some View {
         if showCanvas {
-            ContentView(initialURLs: initialURLs)
+            ContentView(initialURLs: initialURLs, initialElements: initialElements)
         } else {
             FilePickerView(onFilesSelected: { urls in
+                initialElements = nil
                 initialURLs = urls
                 showCanvas = true
             })
             .onReceive(openHandler.$importedElements) { value in
-                if value != nil {
+                if let value {
+                    initialURLs = []
+                    initialElements = value
                     showCanvas = true
                 }
             }

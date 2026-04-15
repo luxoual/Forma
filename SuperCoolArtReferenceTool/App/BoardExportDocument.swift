@@ -32,5 +32,7 @@ struct BoardExportDocument: FileDocument {
 }
 
 extension UTType {
-    static let refboard = UTType(exportedAs: "AxI.SuperCoolArtReferenceTool.refboard")
+    static let refboard =
+        UTType(filenameExtension: "refboard", conformingTo: .data)
+        ?? UTType(exportedAs: "AxI.SuperCoolArtReferenceTool.refboard", conformingTo: .data)
 }

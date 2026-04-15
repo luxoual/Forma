@@ -12,6 +12,7 @@ struct ContentView: View {
     @EnvironmentObject private var openHandler: AppOpenHandler
 
     let initialURLs: [URL]
+    let initialElements: [CMCanvasElement]?
 
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
@@ -98,7 +99,7 @@ struct ContentView: View {
                 get: { importerMode != nil },
                 set: { newValue in if !newValue { importerMode = nil } }
             ),
-            allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard, .package, .folder],
+            allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard],
             allowsMultipleSelection: importerMode == .images
         ) { result in
             let currentMode = lastImporterMode
@@ -126,7 +127,10 @@ struct ContentView: View {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
         }
         .onAppear {
-            if !initialURLs.isEmpty {
+            if let initialElements, !initialElements.isEmpty {
+                elementsToLoad = initialElements
+                openHandler.importedElements = nil
+            } else if !initialURLs.isEmpty {
                 urlsToInsert = initialURLs
             }
         }
@@ -213,7 +217,6 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(initialURLs: [])
+    ContentView(initialURLs: [], initialElements: nil)
         .environmentObject(AppOpenHandler())
 }
-
