@@ -173,6 +173,11 @@ struct BoardCanvasView: View {
                                   y: (liveRect.midY * scale) + offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
+                        .contextMenu {
+                            CanvasContextMenu(onDelete: { deleteForContext(itemID: item.id) })
+                        } preview: {
+                            contextPreview(for: item.id)
+                        }
                 }
 
                 // Marquee selection rectangle
@@ -841,6 +846,108 @@ struct BoardCanvasView: View {
         enqueueStoreMutation { store in
             await store.upsert(elements: elements)
         }
+    }
+
+    /// Preview shown in the iPadOS context menu. For a group selection under
+    /// the Group tool (when the pressed item is part of the selection) renders
+    /// every selected item at their relative positions; otherwise renders just
+    /// the pressed item.
+    @ViewBuilder
+    private func contextPreview(for itemID: UUID) -> some View {
+        let targetIDs = previewTargetIDs(for: itemID)
+        let items = placedImages.filter { targetIDs.contains($0.id) }
+
+        if items.count <= 1, let p = items.first ?? placedImages.first(where: { $0.id == itemID }) {
+            FileImageView(url: p.url, targetMaxPixelSize: 1024, isInteracting: false)
+                .frame(width: p.worldRect.width, height: p.worldRect.height)
+        } else if let bbox = boundingBox(of: items.map(\.worldRect)) {
+            let maxDim: CGFloat = 400
+            let s = min(1, maxDim / max(bbox.width, bbox.height, 1))
+            ZStack(alignment: .topLeading) {
+                ForEach(items) { p in
+                    FileImageView(url: p.url, targetMaxPixelSize: 768, isInteracting: false)
+                        .frame(width: p.worldRect.width * s, height: p.worldRect.height * s)
+                        .position(x: (p.worldRect.midX - bbox.origin.x) * s,
+                                  y: (p.worldRect.midY - bbox.origin.y) * s)
+                }
+            }
+            .frame(width: bbox.width * s, height: bbox.height * s)
+        }
+    }
+
+    private func previewTargetIDs(for itemID: UUID) -> Set<UUID> {
+        if activeTool == .group, selection.selectedIDs.contains(itemID) {
+            return selection.selectedIDs
+        }
+        return [itemID]
+    }
+
+    private func boundingBox(of rects: [CGRect]) -> CGRect? {
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    /// Delete target for a context-menu action on `itemID`.
+    ///
+    /// Rule: if the Group tool is active AND the pressed item is part of the
+    /// current selection, the whole selection is deleted. Otherwise only the
+    /// pressed item is deleted (Pointer tool always deletes just the one).
+    ///
+    /// Snapshots are fetched from the store so undo restores the authoritative
+    /// element (transform, layerId, etc.) rather than a reconstructed one.
+    private func deleteForContext(itemID: UUID) {
+        let targetIDs: Set<UUID>
+        if activeTool == .group, selection.selectedIDs.contains(itemID) {
+            targetIDs = selection.selectedIDs
+        } else {
+            targetIDs = [itemID]
+        }
+
+        let placedByID: [UUID: PlacedImage] = Dictionary(
+            uniqueKeysWithValues: placedImages
+                .filter { targetIDs.contains($0.id) }
+                .map { ($0.id, $0) }
+        )
+        guard !placedByID.isEmpty else { return }
+
+        let store = canvasStore
+        Task { @MainActor in
+            let elementsByID = await store.elements(for: Array(placedByID.keys))
+            let snapshots: [PlacedElementSnapshot] = placedByID.map { id, placed in
+                let element = elementsByID[id] ?? fallbackElement(for: placed)
+                return PlacedElementSnapshot(
+                    id: id,
+                    url: placed.url,
+                    worldRect: placed.worldRect,
+                    zIndex: placed.zIndex,
+                    element: element
+                )
+            }
+            commandHistory.push(.delete(snapshots: snapshots))
+            removeElements(snapshots: snapshots)
+        }
+    }
+
+    /// Used only if the store has no record of the element (shouldn't happen
+    /// in normal flow, but keeps delete resilient to a store/view desync).
+    private func fallbackElement(for placed: PlacedImage) -> CMCanvasElement {
+        let rect = placed.worldRect
+        let header = CMElementHeader(
+            id: placed.id,
+            type: .image,
+            transform: CMAffineTransform2D(),
+            bounds: CMWorldRect(
+                origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+            ),
+            layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+            zIndex: placed.zIndex
+        )
+        let payload = CMCanvasElementPayload.image(
+            url: placed.url,
+            size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+        )
+        return CMCanvasElement(header: header, payload: payload)
     }
 
     private func removeElements(snapshots: [PlacedElementSnapshot]) {
