@@ -384,25 +384,7 @@ struct BoardCanvasView: View {
                         endInteraction()
                     }
             )
-            .background(
-                TwoFingerPanView { phase, translation in
-                    switch phase {
-                    case .began:
-                        startInteraction()
-                        twoFingerPanStartOffset = offset
-                    case .changed:
-                        let start = twoFingerPanStartOffset ?? offset
-                        offset = CGSize(
-                            width: start.width + translation.width,
-                            height: start.height + translation.height
-                        )
-                        scheduleRefreshVisibleElements()
-                    case .ended:
-                        twoFingerPanStartOffset = nil
-                        endInteraction()
-                    }
-                }
-            )
+            .background(TwoFingerPanView(onPan: handleTwoFingerPan))
         }
     }
 
@@ -424,6 +406,22 @@ struct BoardCanvasView: View {
         interactionEndTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
             isInteracting = false
+        }
+    }
+
+    private func handleTwoFingerPan(phase: TwoFingerPanView.Phase, translation: CGSize) {
+        switch phase {
+        case .began:
+            startInteraction()
+            twoFingerPanStartOffset = offset
+        case .changed:
+            let start = twoFingerPanStartOffset ?? offset
+            offset = CGSize(width: start.width + translation.width,
+                            height: start.height + translation.height)
+            scheduleRefreshVisibleElements()
+        case .ended:
+            twoFingerPanStartOffset = nil
+            endInteraction()
         }
     }
 

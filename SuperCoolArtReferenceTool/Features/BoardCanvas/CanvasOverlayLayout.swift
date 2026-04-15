@@ -1,0 +1,37 @@
+import SwiftUI
+
+/// Positions the canvas toolbar (vertically centered) and the settings button
+/// (bottom corner) on the left or right edge of the canvas, based on the
+/// user's toolbar-side preference.
+struct CanvasOverlayLayout: View {
+    let side: ToolbarSide
+    @Binding var activeTool: CanvasTool
+    let onUndo: () -> Void
+    let onRedo: () -> Void
+    let onAddItem: () -> Void
+    let onSettings: () -> Void
+
+    var body: some View {
+        let edge: Edge.Set = (side == .left) ? .leading : .trailing
+        let frameAlignment: Alignment = (side == .left) ? .leading : .trailing
+
+        Group {
+            CanvasToolbar(
+                activeTool: $activeTool,
+                onUndo: onUndo,
+                onRedo: onRedo,
+                onAddItem: onAddItem
+            )
+            .padding(edge, 16)
+            .frame(maxWidth: .infinity, alignment: frameAlignment)
+
+            VStack {
+                Spacer()
+                CanvasSettingsButton(onTap: onSettings)
+                    .padding(edge, 16)
+                    .padding(.bottom, 16)
+                    .frame(maxWidth: .infinity, alignment: frameAlignment)
+            }
+        }
+    }
+}

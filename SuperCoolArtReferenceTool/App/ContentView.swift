@@ -59,12 +59,14 @@ struct ContentView: View {
                 }
             )
             
-            // Dynamic layout based on toolbar side
-            if toolbarSide == .left {
-                leftSideLayout
-            } else {
-                rightSideLayout
-            }
+            CanvasOverlayLayout(
+                side: toolbarSide,
+                activeTool: $activeTool,
+                onUndo: { undoTrigger = UUID() },
+                onRedo: { redoTrigger = UUID() },
+                onAddItem: openImageImporter,
+                onSettings: { showingSettings = true }
+            )
         }
         .overlay(alignment: .topTrailing) {
             HStack(spacing: 8) {
@@ -147,76 +149,10 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Layout Variants
-    
-    private var leftSideLayout: some View {
-        Group {
-            // Main toolbar (centered vertically on left side)
-            HStack {
-                CanvasToolbar(
-                    activeTool: $activeTool,
-                    onUndo: { undoTrigger = UUID() },
-                    onRedo: { redoTrigger = UUID() },
-                    onAddItem: {
-                        print("[UI] Add Item tapped")
-                        importerMode = .images
-                        lastImporterMode = .images
-                    }
-                )
-                .padding(.leading, 16)
-                
-                Spacer()
-            }
-            
-            // Settings button (bottom-left)
-            VStack {
-                Spacer()
-                HStack {
-                    CanvasSettingsButton {
-                        showingSettings = true
-                    }
-                    .padding(.leading, 16)
-                    .padding(.bottom, 16)
-                    
-                    Spacer()
-                }
-            }
-        }
-    }
-    
-    private var rightSideLayout: some View {
-        Group {
-            // Main toolbar (centered vertically on right side)
-            HStack {
-                Spacer()
-                
-                CanvasToolbar(
-                    activeTool: $activeTool,
-                    onUndo: { undoTrigger = UUID() },
-                    onRedo: { redoTrigger = UUID() },
-                    onAddItem: {
-                        print("[UI] Add Item tapped")
-                        importerMode = .images
-                        lastImporterMode = .images
-                    }
-                )
-                .padding(.trailing, 16)
-            }
-            
-            // Settings button (bottom-right)
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    
-                    CanvasSettingsButton {
-                        showingSettings = true
-                    }
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 16)
-                }
-            }
-        }
+    private func openImageImporter() {
+        print("[UI] Add Item tapped")
+        importerMode = .images
+        lastImporterMode = .images
     }
 }
 
