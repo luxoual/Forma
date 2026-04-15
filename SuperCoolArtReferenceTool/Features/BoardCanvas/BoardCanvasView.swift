@@ -247,6 +247,7 @@ struct BoardCanvasView: View {
             .onChange(of: elementsToLoad) { oldValue, newValue in
                 if let els = newValue {
                     applyElements(els)
+                    commandHistory.clear()
                     // Clear the binding after applying
                     DispatchQueue.main.async {
                         elementsToLoad = nil

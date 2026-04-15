@@ -43,4 +43,9 @@ final class CanvasCommandHistory {
         undoStack.append(command)
         return command
     }
+
+    func clear() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+    }
 }
