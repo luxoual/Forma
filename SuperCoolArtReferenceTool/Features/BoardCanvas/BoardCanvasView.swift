@@ -169,15 +169,15 @@ struct BoardCanvasView: View {
                                     .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)
                             }
                         }
-                        .position(x: (liveRect.midX * scale) + offset.width + liveDX,
-                                  y: (liveRect.midY * scale) + offset.height + liveDY)
-                        .shadow(radius: isInteracting ? 0 : 1)
-                        .zIndex(Double(item.zIndex))
                         .contextMenu {
                             CanvasContextMenu(onDelete: { deleteForContext(itemID: item.id) })
                         } preview: {
                             contextPreview(for: item.id)
                         }
+                        .position(x: (liveRect.midX * scale) + offset.width + liveDX,
+                                  y: (liveRect.midY * scale) + offset.height + liveDY)
+                        .shadow(radius: isInteracting ? 0 : 1)
+                        .zIndex(Double(item.zIndex))
                 }
 
                 // Marquee selection rectangle
