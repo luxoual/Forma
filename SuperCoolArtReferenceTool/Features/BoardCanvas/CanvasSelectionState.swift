@@ -1,6 +1,7 @@
 import SwiftUI
 
 @Observable
+@MainActor
 final class CanvasSelectionState {
     var selectedIDs: Set<UUID> = []
     /// World-space offset being applied during an active drag-move

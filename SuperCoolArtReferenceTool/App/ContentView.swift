@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var openHandler: AppOpenHandler
+    @Environment(AppOpenHandler.self) private var openHandler
 
     let initialURLs: [URL]
     let initialElements: [CMCanvasElement]?
@@ -134,7 +134,7 @@ struct ContentView: View {
                 urlsToInsert = initialURLs
             }
         }
-        .onReceive(openHandler.$importedElements) { value in
+        .onChange(of: openHandler.importedElements) { _, value in
             if let els = value {
                 elementsToLoad = els
                 // Clear the open handler value to avoid repeated loads
@@ -218,5 +218,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView(initialURLs: [], initialElements: nil)
-        .environmentObject(AppOpenHandler())
+        .environment(AppOpenHandler())
 }

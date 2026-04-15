@@ -20,6 +20,7 @@ enum CanvasCommand {
 
 /// Tracks performed commands for undo/redo support.
 @Observable
+@MainActor
 final class CanvasCommandHistory {
     private(set) var undoStack: [CanvasCommand] = []
     private(set) var redoStack: [CanvasCommand] = []
