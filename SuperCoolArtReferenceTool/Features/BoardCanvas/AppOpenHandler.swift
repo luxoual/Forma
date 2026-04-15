@@ -5,5 +5,5 @@ import Foundation
 @Observable
 @MainActor
 final class AppOpenHandler {
-    var importedElements: [CMCanvasElement]? = nil
+    var importedElements: [CMCanvasElement]?
 }

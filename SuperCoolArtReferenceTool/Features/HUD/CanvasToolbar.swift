@@ -116,12 +116,6 @@ private struct ToolbarButton: View {
     }
 }
 
-/// Available canvas tools
-enum CanvasTool: Equatable {
-    case pointer
-    case group
-}
-
 // MARK: - Preview
 
 #Preview("Canvas Toolbar") {

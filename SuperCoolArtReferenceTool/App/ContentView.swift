@@ -16,15 +16,15 @@ struct ContentView: View {
 
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
-    @State private var urlsToInsert: [URL]? = nil
+    @State private var urlsToInsert: [URL]?
     
     // Settings
     @State private var showGrid = true
     @State private var toolbarSide: ToolbarSide = .left
     @State private var canvasColor: Color = .white
     
-    @State private var snapshotToken: UUID? = nil
-    @State private var elementsToLoad: [CMCanvasElement]? = nil
+    @State private var snapshotToken: UUID?
+    @State private var elementsToLoad: [CMCanvasElement]?
     @State private var showingExporter = false
     @State private var exportDocument = BoardExportDocument(elements: [])
 
@@ -33,10 +33,10 @@ struct ContentView: View {
     @State private var undoTrigger: UUID?
     @State private var redoTrigger: UUID?
 
-    @State private var importerMode: ImporterMode? = nil
+    @State private var importerMode: ImporterMode?
     @State private var importerPresented = false
     /// Latched copy so the result handler can read it even after the binding clears importerMode
-    @State private var lastImporterMode: ImporterMode? = nil
+    @State private var lastImporterMode: ImporterMode?
     private enum ImporterMode { case images, board }
 
     var body: some View {
