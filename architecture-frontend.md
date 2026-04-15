@@ -96,6 +96,7 @@ Three simultaneous gestures are attached to the canvas ZStack:
 - Recognizer config: `cancelsTouchesInView = false`, `delaysTouchesBegan/Ended = false`, delegate returns `true` for `shouldRecognizeSimultaneouslyWith` so SwiftUI gestures still observe touches
 - Attached via `.background(TwoFingerPanView(onPan:))` on the canvas; routed through `handleTwoFingerPan(phase:translation:)` which updates `offset` relative to a cached `twoFingerPanStartOffset`
 - Works with pinch-zoom simultaneously; single-finger tool gestures are unaffected
+- Teardown: `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()` to remove the recognizer from its host view, clear target/delegate, and replace `onPan` with a no-op — prevents duplicate recognizers and retention cycles if the canvas remounts (e.g. `RootView` toggling `showCanvas`)
 
 **Known Limitation:**
 - Zoom anchors around view center instead of pinch location
