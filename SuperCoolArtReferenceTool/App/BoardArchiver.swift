@@ -45,6 +45,7 @@ enum BoardArchiver {
             .appendingPathComponent("RefboardImport-\(UUID().uuidString)", isDirectory: true)
         try? fm.removeItem(at: tempDir)
         try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
 
         try unzipItem(at: url, to: tempDir)
 
@@ -55,11 +56,9 @@ enum BoardArchiver {
         } else if let firstDir = firstDirectory(in: tempDir) {
             packageURL = firstDir
         } else {
-            try? fm.removeItem(at: tempDir)
             throw ImportError.corruptedFile
         }
 
-        defer { try? fm.removeItem(at: tempDir) }
         return try importFromPackage(url: packageURL, copyAssetsToAppSupport: copyAssetsToAppSupport)
     }
 
@@ -199,13 +198,19 @@ enum BoardArchiver {
         }
 
         let fm = FileManager.default
+        let sourceRoot = sourceURL.standardizedFileURL
+        let sourceRootPath = sourceRoot.path.hasSuffix("/") ? sourceRoot.path : sourceRoot.path + "/"
         let enumerator = fm.enumerator(at: sourceURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
         while let item = enumerator?.nextObject() as? URL {
             let values = try item.resourceValues(forKeys: [.isDirectoryKey])
             if values.isDirectory == true {
                 continue
             }
-            let relativePath = item.path.replacingOccurrences(of: sourceURL.path + "/", with: "")
+            let itemPath = item.standardizedFileURL.path
+            guard itemPath.hasPrefix(sourceRootPath) else {
+                throw ImportError.ioFailure
+            }
+            let relativePath = String(itemPath.dropFirst(sourceRootPath.count))
             try archive.addEntry(with: relativePath, fileURL: item, compressionMethod: .deflate)
         }
     }
@@ -216,15 +221,32 @@ enum BoardArchiver {
         }
 
         let fm = FileManager.default
+        let destinationRoot = destinationURL.standardizedFileURL
         for entry in archive {
-            let destURL = destinationURL.appendingPathComponent(entry.path)
+            guard let destURL = sanitizedArchiveEntryURL(entry.path, destinationRoot: destinationRoot) else {
+                throw ImportError.corruptedFile
+            }
             if entry.type == .directory {
                 try fm.createDirectory(at: destURL, withIntermediateDirectories: true)
                 continue
             }
+            if entry.type != .file {
+                throw ImportError.corruptedFile
+            }
             try fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             _ = try archive.extract(entry, to: destURL)
         }
+    }
+
+    private static func sanitizedArchiveEntryURL(_ entryPath: String, destinationRoot: URL) -> URL? {
+        guard !entryPath.isEmpty else { return nil }
+        guard !entryPath.hasPrefix("/") else { return nil }
+        guard !entryPath.contains("\\") else { return nil }
+
+        let candidate = destinationRoot.appendingPathComponent(entryPath).standardizedFileURL
+        let rootPath = destinationRoot.path.hasSuffix("/") ? destinationRoot.path : destinationRoot.path + "/"
+        guard candidate.path.hasPrefix(rootPath) else { return nil }
+        return candidate
     }
 
     private static func firstDirectory(in folder: URL) -> URL? {
