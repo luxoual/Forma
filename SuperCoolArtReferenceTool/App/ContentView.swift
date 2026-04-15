@@ -34,6 +34,7 @@ struct ContentView: View {
     @State private var redoTrigger: UUID?
 
     @State private var importerMode: ImporterMode? = nil
+    @State private var importerPresented = false
     /// Latched copy so the result handler can read it even after the binding clears importerMode
     @State private var lastImporterMode: ImporterMode? = nil
     private enum ImporterMode { case images, board }
@@ -94,11 +95,14 @@ struct ContentView: View {
                 print("Export share failed: ", error.localizedDescription)
             }
         }
+        .onChange(of: importerMode) { _, newMode in
+            importerPresented = (newMode != nil)
+        }
+        .onChange(of: importerPresented) { _, presented in
+            if !presented { importerMode = nil }
+        }
         .fileImporter(
-            isPresented: Binding(
-                get: { importerMode != nil },
-                set: { newValue in if !newValue { importerMode = nil } }
-            ),
+            isPresented: $importerPresented,
             allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard],
             allowsMultipleSelection: importerMode == .images
         ) { result in
