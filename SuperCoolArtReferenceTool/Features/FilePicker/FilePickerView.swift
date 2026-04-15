@@ -66,8 +66,7 @@ struct FilePickerView: View {
                     .foregroundStyle(DesignSystem.Colors.primary)
                     .padding(.horizontal, 32)
                     .padding(.vertical, 12)
-                    .background(DesignSystem.Colors.tertiary)
-                    .cornerRadius(8)
+                    .background(DesignSystem.Colors.tertiary, in: .rect(cornerRadius: 8))
             }
             .buttonStyle(.plain)
         }
