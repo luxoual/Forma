@@ -24,6 +24,10 @@ struct TwoFingerPanView: UIViewRepresentable {
         context.coordinator.onPan = onPan
     }
 
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onPan: (Phase, CGSize) -> Void
         let recognizer: UIPanGestureRecognizer
@@ -55,6 +59,15 @@ struct TwoFingerPanView: UIViewRepresentable {
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             true
+        }
+
+        /// Remove the recognizer from its host and break retention so the coordinator
+        /// and onPan closure can be released when the representable is dismantled.
+        func detach() {
+            recognizer.view?.removeGestureRecognizer(recognizer)
+            recognizer.removeTarget(self, action: #selector(handle(_:)))
+            recognizer.delegate = nil
+            onPan = { _, _ in }
         }
     }
 
