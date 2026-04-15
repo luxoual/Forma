@@ -18,6 +18,8 @@ Backend architecture has **core data models and persistence layer** implemented,
 
 - `.refboard` is a **single-file ZIP** export format. The exporter writes a manifest plus copied image assets into one archive.
 - Import accepts both the ZIP-based `.refboard` file and the older directory-style package layout for compatibility.
+- ZIP import/export paths were hardened to avoid path traversal and unstable relative-path generation during archive extraction and creation.
+- Temporary unzip directories are now cleaned up even when archive extraction fails early.
 - Board import in the UI is now filtered to `.refboard` only instead of also allowing generic folders and packages.
 - App-open delivery now passes imported `CMCanvasElement` values through the root view into the canvas on first launch/open.
 
@@ -64,7 +66,16 @@ The export pipeline produces a **single-file `.refboard` ZIP** containing:
 
 When `copyAssetsToAppSupport` is enabled, imported image assets are copied into the app container so the canvas can keep stable file URLs after temporary unzip directories are removed.
 
+### Archive Safety
+
+The archive layer now includes explicit path-safety checks:
+- ZIP entry extraction rejects empty paths, absolute paths, backslash-based paths, and any standardized destination that escapes the intended temp extraction root.
+- ZIP creation derives entry names by stripping only the verified source-root prefix, rather than doing a global string replacement on absolute paths.
+- Temporary extraction directories are deleted via `defer` so failed imports do not leak temp folders.
+
 The app uses a custom `UTType.refboard` helper. In code it is resolved from the `refboard` filename extension first, then falls back to the exported identifier `AxI.SuperCoolArtReferenceTool.refboard`.
+
+At the moment, `UTType.refboard` still conforms to `public.data` in code rather than `public.zip-archive`. This is a compatibility choice: the project is still building with a generated `Info.plist`, so the custom `.refboard` document type is not fully registered through app metadata yet. Using `.data` preserves current file-picker behavior until the project switches to a real plist-based type declaration.
 
 ### Import/Open Flow
 
