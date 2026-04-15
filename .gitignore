@@ -77,6 +77,11 @@ playground.xcworkspace
 # User-specific merges/patches
 *.orig
 
+# Agent skills (dev-specific)
+.agents/
+.claude/skills/
+skills-lock.json
+
 # SPM Artifacts
 Artifacts/
 # Temporary/AI artefact Markdown files

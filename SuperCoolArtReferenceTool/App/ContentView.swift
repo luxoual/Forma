@@ -28,7 +28,14 @@ struct ContentView: View {
     @State private var showingExporter = false
     @State private var exportDocument = BoardExportDocument(elements: [])
 
+    // Undo/redo
+    @State private var commandHistory = CanvasCommandHistory()
+    @State private var undoTrigger: UUID?
+    @State private var redoTrigger: UUID?
+
     @State private var importerMode: ImporterMode? = nil
+    /// Latched copy so the result handler can read it even after the binding clears importerMode
+    @State private var lastImporterMode: ImporterMode? = nil
     private enum ImporterMode { case images, board }
 
     var body: some View {
@@ -40,6 +47,9 @@ struct ContentView: View {
                 canvasColor: $canvasColor,
                 snapshotTrigger: $snapshotToken,
                 loadElements: $elementsToLoad,
+                commandHistory: commandHistory,
+                undoTrigger: $undoTrigger,
+                redoTrigger: $redoTrigger,
                 onInsertURLs: { _ in },
                 onSnapshot: { elements in
                     // When snapshot arrives, prepare a FileDocument and present the exporter
@@ -64,6 +74,7 @@ struct ContentView: View {
 
                 Button("Import") {
                     importerMode = .board
+                    lastImporterMode = .board
                     print("[UI] Import Board tapped")
                 }
                 .buttonStyle(.bordered)
@@ -86,12 +97,12 @@ struct ContentView: View {
         .fileImporter(
             isPresented: Binding(
                 get: { importerMode != nil },
-                set: { _ in /* keep mode until handler runs */ }
+                set: { newValue in if !newValue { importerMode = nil } }
             ),
             allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard],
             allowsMultipleSelection: importerMode == .images
         ) { result in
-            let currentMode = importerMode
+            let currentMode = lastImporterMode
             print("[Importer] Unified fileImporter fired (mode: \(String(describing: currentMode)))")
             switch result {
             case .success(let urls):
@@ -140,11 +151,12 @@ struct ContentView: View {
             HStack {
                 CanvasToolbar(
                     activeTool: $activeTool,
-                    onUndo: { /* TODO: hook up undo */ },
-                    onRedo: { /* TODO: hook up redo */ },
+                    onUndo: { undoTrigger = UUID() },
+                    onRedo: { redoTrigger = UUID() },
                     onAddItem: {
                         print("[UI] Add Item tapped")
                         importerMode = .images
+                        lastImporterMode = .images
                     }
                 )
                 .padding(.leading, 16)
@@ -176,11 +188,12 @@ struct ContentView: View {
                 
                 CanvasToolbar(
                     activeTool: $activeTool,
-                    onUndo: { /* TODO: hook up undo */ },
-                    onRedo: { /* TODO: hook up redo */ },
+                    onUndo: { undoTrigger = UUID() },
+                    onRedo: { redoTrigger = UUID() },
                     onAddItem: {
                         print("[UI] Add Item tapped")
                         importerMode = .images
+                        lastImporterMode = .images
                     }
                 )
                 .padding(.trailing, 16)

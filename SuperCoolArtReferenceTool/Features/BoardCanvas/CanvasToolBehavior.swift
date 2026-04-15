@@ -3,16 +3,25 @@ import SwiftUI
 enum DragMode {
     case pan
     case moveItem
+    case resizeItem
+    case marqueeSelect
     case none
 }
 
+/// Lightweight item descriptor for synchronous hit-testing against in-memory placed images.
+struct HitTestItem {
+    let id: UUID
+    let worldRect: CGRect
+    let zIndex: Int
+}
+
 protocol CanvasToolBehavior {
-    /// Called on first drag event to decide what this drag does.
+    /// Synchronous mode decision using in-memory placed images (no store round-trip).
     func dragBegan(
         worldStart: CGPoint,
-        store: LocalBoardStore,
+        items: [HitTestItem],
         selection: CanvasSelectionState
-    ) async -> DragMode
+    ) -> DragMode
 
     /// Called on tap (drag that ends without meaningful translation).
     func tapped(
@@ -25,19 +34,22 @@ protocol CanvasToolBehavior {
 struct PointerToolBehavior: CanvasToolBehavior {
     func dragBegan(
         worldStart: CGPoint,
-        store: LocalBoardStore,
+        items: [HitTestItem],
         selection: CanvasSelectionState
-    ) async -> DragMode {
-        let point = SIMD2<Double>(Double(worldStart.x), Double(worldStart.y))
-        if let header = await store.topmostHeader(at: point) {
-            if !selection.selectedIDs.contains(header.id) {
-                await MainActor.run { selection.select(header.id) }
+    ) -> DragMode {
+        if let hit = Self.topmostItem(at: worldStart, in: items) {
+            if !selection.selectedIDs.contains(hit.id) {
+                selection.select(hit.id)
             }
-            await store.moveToTop(elementIDs: Array(selection.selectedIDs))
             return .moveItem
         } else {
             return .pan
         }
+    }
+
+    static func topmostItem(at point: CGPoint, in items: [HitTestItem]) -> HitTestItem? {
+        items.filter { $0.worldRect.contains(point) }
+             .max(by: { $0.zIndex < $1.zIndex })
     }
 
     func tapped(
@@ -56,12 +68,24 @@ struct PointerToolBehavior: CanvasToolBehavior {
 }
 
 struct GroupToolBehavior: CanvasToolBehavior {
-    func dragBegan(worldStart: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async -> DragMode {
-        return .pan
+    func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode {
+        if let hit = PointerToolBehavior.topmostItem(at: worldStart, in: items) {
+            if !selection.selectedIDs.contains(hit.id) {
+                selection.select(hit.id, extending: true)
+            }
+            return .moveItem
+        } else {
+            return .marqueeSelect
+        }
     }
 
     func tapped(worldPoint: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async {
-        // Future: toggle group membership
+        let point = SIMD2<Double>(Double(worldPoint.x), Double(worldPoint.y))
+        if let header = await store.topmostHeader(at: point) {
+            await MainActor.run { selection.select(header.id, extending: true) }
+        } else {
+            await MainActor.run { selection.clearSelection() }
+        }
     }
 }
 
