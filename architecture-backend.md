@@ -20,6 +20,8 @@ Backend architecture has **core data models and persistence layer** implemented,
 - Import accepts both the ZIP-based `.refboard` file and the older directory-style package layout for compatibility.
 - ZIP import/export paths were hardened to avoid path traversal and unstable relative-path generation during archive extraction and creation.
 - Temporary unzip directories are now cleaned up even when archive extraction fails early.
+- Multi-image paste/import placement now arranges images as a square-style batch instead of nudging each image diagonally from the same center point.
+- Batch image insertion shifts the entire grid until it finds a non-overlapping region on the canvas.
 - Board import in the UI is now filtered to `.refboard` only instead of also allowing generic folders and packages.
 - App-open delivery now passes imported `CMCanvasElement` values through the root view into the canvas on first launch/open.
 
@@ -109,9 +111,29 @@ Added viewport and selection helpers to support tile-based culling and hit-testi
 
 ---
 
+## Batch Image Placement
+
+Decision Status: **Implemented**
+
+**File:**
+- `SuperCoolArtReferenceTool/Features/BoardCanvas/BoardCanvasView.swift`
+
+Canvas image insertion now treats a paste/import of multiple images as a single batch layout operation.
+
+Behavior:
+- The canvas computes a near-square grid using the number of incoming images.
+- Each image keeps its own aspect ratio and is centered within a shared grid cell size derived from the largest image in the batch.
+- The batch is initially centered around the requested insertion point.
+- If any image in the batch would overlap an existing placed image, the system first searches nearby candidate offsets on coarse and fine grids, then falls back to moving the full batch outside the currently occupied canvas bounds to guarantee a non-overlapping placement.
+
+This replaces the older one-by-one diagonal nudge behavior, which could still create visually messy overlaps for larger paste operations.
+
+---
+
 # Integration Points
 
 - `ContentView` collects a snapshot of `CMCanvasElement` from `BoardCanvasView` and exports via `BoardArchiver` (macOS uses a save panel to choose the target URL).
 - `BoardArchiver` is the single backend entry point for encoding/decoding `.refboard` files (ZIP or legacy package).
+- `BoardCanvasView` now performs batch image placement for pasted/imported image URLs before writing the resulting `CMCanvasElement` set into `canvasStore`.
 - `CanvasService` provides viewport and selection queries (`elements(in:margin:...)`, `topmostElement(at:...)`) for tile-based culling and hit-testing.
 - `CanvasService` exposes z-order operations (`moveToTop` / `moveToBottom`) for absolute layer adjustments.
