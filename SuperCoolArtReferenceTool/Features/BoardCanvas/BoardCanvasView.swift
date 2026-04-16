@@ -1140,7 +1140,21 @@ struct BoardCanvasView: View {
             }
         }
 
-        return templateRects
+        // Fall back to a finer-grained local search before moving the whole batch
+        // outside the currently occupied canvas region.
+        let fineStepX = max(24, spacing)
+        let fineStepY = max(24, spacing)
+        for offset in candidateBatchOffsets(stepX: fineStepX, stepY: fineStepY, maxRadius: 64) {
+            let candidateRects = templateRects.map { $0.offsetBy(dx: offset.width, dy: offset.height) }
+            if !intersectsPlacedImages(candidateRects) {
+                return candidateRects
+            }
+        }
+
+        return guaranteedNonOverlappingRects(
+            from: templateRects,
+            spacing: spacing
+        )
     }
 
     private func candidateBatchOffsets(stepX: CGFloat, stepY: CGFloat, maxRadius: Int) -> [CGSize] {
@@ -1162,8 +1176,55 @@ struct BoardCanvasView: View {
     }
 
     private func intersectsPlacedImages(_ rects: [CGRect]) -> Bool {
-        rects.contains { rect in
-            placedImages.contains { $0.worldRect.intersects(rect) }
+        guard let batchBounds = union(of: rects) else { return false }
+        let nearbyRects = placedImages
+            .map(\.worldRect)
+            .filter { $0.intersects(batchBounds) }
+
+        guard !nearbyRects.isEmpty else { return false }
+        return rects.contains { rect in
+            nearbyRects.contains { $0.intersects(rect) }
+        }
+    }
+
+    private func guaranteedNonOverlappingRects(from templateRects: [CGRect], spacing: CGFloat) -> [CGRect] {
+        guard !templateRects.isEmpty else { return [] }
+        guard let templateBounds = union(of: templateRects) else { return templateRects }
+        guard let occupiedBounds = union(of: placedImages.map(\.worldRect)) else { return templateRects }
+
+        let padding = max(spacing, 24)
+        let leftOffset = CGSize(
+            width: (occupiedBounds.minX - padding) - templateBounds.maxX,
+            height: occupiedBounds.midY - templateBounds.midY
+        )
+        let rightOffset = CGSize(
+            width: (occupiedBounds.maxX + padding) - templateBounds.minX,
+            height: occupiedBounds.midY - templateBounds.midY
+        )
+        let topOffset = CGSize(
+            width: occupiedBounds.midX - templateBounds.midX,
+            height: (occupiedBounds.minY - padding) - templateBounds.maxY
+        )
+        let bottomOffset = CGSize(
+            width: occupiedBounds.midX - templateBounds.midX,
+            height: (occupiedBounds.maxY + padding) - templateBounds.minY
+        )
+
+        let escapeOffsets = [rightOffset, bottomOffset, leftOffset, topOffset]
+        for offset in escapeOffsets {
+            let candidateRects = templateRects.map { $0.offsetBy(dx: offset.width, dy: offset.height) }
+            if !intersectsPlacedImages(candidateRects) {
+                return candidateRects
+            }
+        }
+
+        return templateRects.map { $0.offsetBy(dx: rightOffset.width, dy: rightOffset.height) }
+    }
+
+    private func union(of rects: [CGRect]) -> CGRect? {
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { partial, rect in
+            partial.union(rect)
         }
     }
 

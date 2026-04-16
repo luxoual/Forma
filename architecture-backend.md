@@ -124,7 +124,7 @@ Behavior:
 - The canvas computes a near-square grid using the number of incoming images.
 - Each image keeps its own aspect ratio and is centered within a shared grid cell size derived from the largest image in the batch.
 - The batch is initially centered around the requested insertion point.
-- If any image in the batch would overlap an existing placed image, the system shifts the whole batch through candidate offsets until it finds a free placement region.
+- If any image in the batch would overlap an existing placed image, the system first searches nearby candidate offsets on coarse and fine grids, then falls back to moving the full batch outside the currently occupied canvas bounds to guarantee a non-overlapping placement.
 
 This replaces the older one-by-one diagonal nudge behavior, which could still create visually messy overlaps for larger paste operations.
 
