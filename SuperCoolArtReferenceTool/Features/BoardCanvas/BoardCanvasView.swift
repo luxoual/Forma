@@ -14,6 +14,7 @@ struct BoardCanvasView: View {
 
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
+    @State private var twoFingerPanStartOffset: CGSize? = nil
     @State private var zoomStartScale: CGFloat? = nil
     @State private var isInteracting: Bool = false
     @State private var interactionEndTask: Task<Void, Never>? = nil
@@ -66,7 +67,8 @@ struct BoardCanvasView: View {
     private let onSnapshot: (([CMCanvasElement]) -> Void)?
     @Binding private var elementsToLoad: [CMCanvasElement]?
 
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory = CanvasCommandHistory(), undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+    @MainActor
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -247,6 +249,7 @@ struct BoardCanvasView: View {
             .onChange(of: elementsToLoad) { oldValue, newValue in
                 if let els = newValue {
                     applyElements(els)
+                    commandHistory.clear()
                     // Clear the binding after applying
                     DispatchQueue.main.async {
                         elementsToLoad = nil
@@ -381,6 +384,7 @@ struct BoardCanvasView: View {
                         endInteraction()
                     }
             )
+            .background(TwoFingerPanView(onPan: handleTwoFingerPan))
         }
     }
 
@@ -402,6 +406,22 @@ struct BoardCanvasView: View {
         interactionEndTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
             isInteracting = false
+        }
+    }
+
+    private func handleTwoFingerPan(phase: TwoFingerPanView.Phase, translation: CGSize) {
+        switch phase {
+        case .began:
+            startInteraction()
+            twoFingerPanStartOffset = offset
+        case .changed:
+            let start = twoFingerPanStartOffset ?? offset
+            offset = CGSize(width: start.width + translation.width,
+                            height: start.height + translation.height)
+            scheduleRefreshVisibleElements()
+        case .ended:
+            twoFingerPanStartOffset = nil
+            endInteraction()
         }
     }
 
@@ -1217,5 +1237,5 @@ extension NSItemProvider {
 }
 
 #Preview {
-    BoardCanvasView()
+    BoardCanvasView(commandHistory: CanvasCommandHistory())
 }

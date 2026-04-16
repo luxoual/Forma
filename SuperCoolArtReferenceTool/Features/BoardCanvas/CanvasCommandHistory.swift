@@ -20,6 +20,7 @@ enum CanvasCommand {
 
 /// Tracks performed commands for undo/redo support.
 @Observable
+@MainActor
 final class CanvasCommandHistory {
     private(set) var undoStack: [CanvasCommand] = []
     private(set) var redoStack: [CanvasCommand] = []
@@ -42,5 +43,10 @@ final class CanvasCommandHistory {
         guard let command = redoStack.popLast() else { return nil }
         undoStack.append(command)
         return command
+    }
+
+    func clear() {
+        undoStack.removeAll()
+        redoStack.removeAll()
     }
 }

@@ -87,6 +87,17 @@ Three simultaneous gestures are attached to the canvas ZStack:
 - Preserves world position at anchor point during zoom
 - Gesture state: `zoomStartScale` stores scale at gesture begin
 
+**Two-Finger Pan (UIKit Bridge):**
+
+**File:** `TwoFingerPanView.swift`
+
+- Provides always-available two-finger panning regardless of active tool so Group-tool marquee doesn't block canvas navigation
+- Implemented as a `UIViewRepresentable` that installs a `UIPanGestureRecognizer` (min/max touches = 2) on the nearest `UIViewController.view` ancestor by walking the `responder.next` chain
+- Recognizer config: `cancelsTouchesInView = false`, `delaysTouchesBegan/Ended = false`, delegate returns `true` for `shouldRecognizeSimultaneouslyWith` so SwiftUI gestures still observe touches
+- Attached via `.background(TwoFingerPanView(onPan:))` on the canvas; routed through `handleTwoFingerPan(phase:translation:)` which updates `offset` relative to a cached `twoFingerPanStartOffset`
+- Works with pinch-zoom simultaneously; single-finger tool gestures are unaffected
+- Teardown: `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()` to remove the recognizer from its host view, clear target/delegate, and replace `onPan` with a no-op — prevents duplicate recognizers and retention cycles if the canvas remounts (e.g. `RootView` toggling `showCanvas`)
+
 **Known Limitation:**
 - Zoom anchors around view center instead of pinch location
 - A `PinchGestureView.swift` component was created to capture UIKit pinch gestures with precise anchor points
@@ -167,20 +178,27 @@ Lightweight root view that routes between the landing screen and the canvas.
 
 - Shows `FilePickerView` on launch; transitions to `ContentView` once files are selected
 - Uses `@State private var showCanvas: Bool` to control which screen is displayed
-- Observes `openHandler.$importedElements` so `.refboard` cold launches navigate directly to canvas
+- Observes `openHandler.importedElements` via `onChange(of:)` so `.refboard` cold launches navigate directly to canvas
 - `ContentView` receives selected URLs as a `let initialURLs: [URL]` (not a binding)
+
+**Observable App Open Handler:**
+
+- `AppOpenHandler` is an `@Observable @MainActor final class` (migrated from `ObservableObject` + `@Published`)
+- Injected through the environment at the app root via `.environment(openHandler)` and read via `@Environment(AppOpenHandler.self)` in `RootView` / `ContentView`
 
 **ContentView:**
 - Hosts `BoardCanvasView` in a `ZStack`
-- Overlays `CanvasToolbar` (centered left) and `CanvasSettingsButton` (bottom-left)
+- Overlays `CanvasOverlayLayout` which places `CanvasToolbar` (centered) and `CanvasSettingsButton` (bottom corner) on the configured side
 - Manages `@State private var urlsToInsert: [URL]?` binding for file picker integration
 - On `.onAppear`, forwards `initialURLs` to `urlsToInsert` for the canvas to consume
 - Presents `.fileImporter` when toolbar "Add Item" is tapped
 - Presents `.sheet` with `CanvasSettingsView` when settings button is tapped
 
 **File Picker Integration:**
-- Toolbar's `onAddItem` callback sets `importerMode = .images`
-- `.fileImporter` allows multiple selection of `.image` and `.gif` types
+- Toolbar's `onAddItem` callback sets `importerMode = .images` (board import sets `.board`)
+- `.fileImporter` presentation is driven by `@State private var importerPresented: Bool`; changes to `importerMode` toggle `importerPresented` via `.onChange(of:)`, and clearing `importerPresented` resets `importerMode` — avoids inline `Binding(get:set:)` closures
+- A latched `lastImporterMode` lets the result handler know which mode was active even after the mode binding clears
+- `.fileImporter` allows multiple selection of `.image` and `.gif` types (images mode) or a single `.refboard` (board mode)
 - Selected URLs are passed to `BoardCanvasView` via `externalInsertURLs` binding
 - `BoardCanvasView` watches binding with `.onChange`, calls `insertImagesAtCenter()`
 - Binding is cleared after processing to reset state
@@ -218,7 +236,7 @@ The Canvas Toolbar provides tool selection and canvas actions through a persiste
 
 - `CanvasToolbar`: Main toolbar view component
 - `ToolbarButton`: Private reusable button component with active state support
-- `CanvasTool`: Enum defining available tools (`.pointer`, `.group`)
+- `CanvasTool`: Enum defining available tools (`.pointer`, `.group`) — lives in its own file `CanvasTool.swift`
 
 **Visual Design:**
 
@@ -455,10 +473,11 @@ ContentView                  — triggers undo/redo from toolbar
 
 **History Management:**
 
-- `CanvasCommandHistory` is an `@Observable` class owned as `@State` in `ContentView` and passed to `BoardCanvasView`
+- `CanvasCommandHistory` is an `@Observable @MainActor` class owned as `@State` in `ContentView` and passed to `BoardCanvasView` (required init parameter, no default)
 - `push(_:)` — appends to undo stack, clears redo stack
 - `popUndo()` / `popRedo()` — moves commands between stacks
 - `canUndo` / `canRedo` — computed properties for UI state
+- `clear()` — wipes both undo and redo stacks; called after a board import so stale commands from the previous board can't resurrect removed assets via redo
 
 **Integration:**
 
@@ -539,11 +558,12 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 
 **Dynamic UI Layout:**
 
-`ContentView` implements two layout variants:
-- `leftSideLayout` - Toolbar + settings on left (default)
-- `rightSideLayout` - Toolbar + settings on right (mirrored)
-- Both maintain 16pt padding from edges
-- Settings button always positioned with toolbar for consistency
+**File:** `CanvasOverlayLayout.swift`
+
+A single reusable view that positions both the `CanvasToolbar` (vertically centered) and the `CanvasSettingsButton` (bottom corner) on the configured side:
+- Takes `side: ToolbarSide` and derives `edge: Edge.Set` and `frameAlignment: Alignment`
+- `ContentView` instantiates `CanvasOverlayLayout(side: toolbarSide, ...)` once instead of branching between `leftSideLayout`/`rightSideLayout` computed properties
+- Both elements maintain 16pt padding from edges
 
 **Visual Styling:**
 

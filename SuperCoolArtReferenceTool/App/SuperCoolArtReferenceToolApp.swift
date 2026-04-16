@@ -9,11 +9,11 @@ import SwiftUI
 
 @main
 struct SuperCoolArtReferenceToolApp: App {
-    @StateObject private var openHandler = AppOpenHandler()
+    @State private var openHandler = AppOpenHandler()
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environmentObject(openHandler)
+                .environment(openHandler)
                 .onOpenURL { url in
                     Task {
                         guard url.pathExtension.lowercased() == "refboard" else { return }

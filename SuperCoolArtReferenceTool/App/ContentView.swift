@@ -9,22 +9,22 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var openHandler: AppOpenHandler
+    @Environment(AppOpenHandler.self) private var openHandler
 
     let initialURLs: [URL]
     let initialElements: [CMCanvasElement]?
 
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
-    @State private var urlsToInsert: [URL]? = nil
+    @State private var urlsToInsert: [URL]?
     
     // Settings
     @State private var showGrid = true
     @State private var toolbarSide: ToolbarSide = .left
     @State private var canvasColor: Color = .white
     
-    @State private var snapshotToken: UUID? = nil
-    @State private var elementsToLoad: [CMCanvasElement]? = nil
+    @State private var snapshotToken: UUID?
+    @State private var elementsToLoad: [CMCanvasElement]?
     @State private var showingExporter = false
     @State private var exportDocument = BoardExportDocument(elements: [])
 
@@ -33,9 +33,10 @@ struct ContentView: View {
     @State private var undoTrigger: UUID?
     @State private var redoTrigger: UUID?
 
-    @State private var importerMode: ImporterMode? = nil
+    @State private var importerMode: ImporterMode?
+    @State private var importerPresented = false
     /// Latched copy so the result handler can read it even after the binding clears importerMode
-    @State private var lastImporterMode: ImporterMode? = nil
+    @State private var lastImporterMode: ImporterMode?
     private enum ImporterMode { case images, board }
 
     var body: some View {
@@ -58,12 +59,14 @@ struct ContentView: View {
                 }
             )
             
-            // Dynamic layout based on toolbar side
-            if toolbarSide == .left {
-                leftSideLayout
-            } else {
-                rightSideLayout
-            }
+            CanvasOverlayLayout(
+                side: toolbarSide,
+                activeTool: $activeTool,
+                onUndo: { undoTrigger = UUID() },
+                onRedo: { redoTrigger = UUID() },
+                onAddItem: openImageImporter,
+                onSettings: { showingSettings = true }
+            )
         }
         .overlay(alignment: .topTrailing) {
             HStack(spacing: 8) {
@@ -94,11 +97,14 @@ struct ContentView: View {
                 print("Export share failed: ", error.localizedDescription)
             }
         }
+        .onChange(of: importerMode) { _, newMode in
+            importerPresented = (newMode != nil)
+        }
+        .onChange(of: importerPresented) { _, presented in
+            if !presented { importerMode = nil }
+        }
         .fileImporter(
-            isPresented: Binding(
-                get: { importerMode != nil },
-                set: { newValue in if !newValue { importerMode = nil } }
-            ),
+            isPresented: $importerPresented,
             allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard],
             allowsMultipleSelection: importerMode == .images
         ) { result in
@@ -134,7 +140,7 @@ struct ContentView: View {
                 urlsToInsert = initialURLs
             }
         }
-        .onReceive(openHandler.$importedElements) { value in
+        .onChange(of: openHandler.importedElements) { _, value in
             if let els = value {
                 elementsToLoad = els
                 // Clear the open handler value to avoid repeated loads
@@ -143,80 +149,14 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Layout Variants
-    
-    private var leftSideLayout: some View {
-        Group {
-            // Main toolbar (centered vertically on left side)
-            HStack {
-                CanvasToolbar(
-                    activeTool: $activeTool,
-                    onUndo: { undoTrigger = UUID() },
-                    onRedo: { redoTrigger = UUID() },
-                    onAddItem: {
-                        print("[UI] Add Item tapped")
-                        importerMode = .images
-                        lastImporterMode = .images
-                    }
-                )
-                .padding(.leading, 16)
-                
-                Spacer()
-            }
-            
-            // Settings button (bottom-left)
-            VStack {
-                Spacer()
-                HStack {
-                    CanvasSettingsButton {
-                        showingSettings = true
-                    }
-                    .padding(.leading, 16)
-                    .padding(.bottom, 16)
-                    
-                    Spacer()
-                }
-            }
-        }
-    }
-    
-    private var rightSideLayout: some View {
-        Group {
-            // Main toolbar (centered vertically on right side)
-            HStack {
-                Spacer()
-                
-                CanvasToolbar(
-                    activeTool: $activeTool,
-                    onUndo: { undoTrigger = UUID() },
-                    onRedo: { redoTrigger = UUID() },
-                    onAddItem: {
-                        print("[UI] Add Item tapped")
-                        importerMode = .images
-                        lastImporterMode = .images
-                    }
-                )
-                .padding(.trailing, 16)
-            }
-            
-            // Settings button (bottom-right)
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    
-                    CanvasSettingsButton {
-                        showingSettings = true
-                    }
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 16)
-                }
-            }
-        }
+    private func openImageImporter() {
+        print("[UI] Add Item tapped")
+        importerMode = .images
+        lastImporterMode = .images
     }
 }
 
 #Preview {
     ContentView(initialURLs: [], initialElements: nil)
-        .environmentObject(AppOpenHandler())
+        .environment(AppOpenHandler())
 }

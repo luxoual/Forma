@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject private var openHandler: AppOpenHandler
+    @Environment(AppOpenHandler.self) private var openHandler
 
     @State private var showCanvas = false
     @State private var initialURLs: [URL] = []
@@ -23,7 +23,7 @@ struct RootView: View {
                 initialURLs = urls
                 showCanvas = true
             })
-            .onReceive(openHandler.$importedElements) { value in
+            .onChange(of: openHandler.importedElements) { _, value in
                 if let value {
                     initialURLs = []
                     initialElements = value
@@ -36,5 +36,5 @@ struct RootView: View {
 
 #Preview {
     RootView()
-        .environmentObject(AppOpenHandler())
+        .environment(AppOpenHandler())
 }

@@ -16,7 +16,7 @@ struct CanvasSettingsView: View {
     @Binding var canvasColor: Color
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 Section("Canvas") {
                     HStack {
