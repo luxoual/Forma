@@ -69,7 +69,6 @@ struct ContentView: View {
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
                 onAddItem: openImageImporter,
-                onAddText: { showingTextPrompt = true },
                 onSettings: { showingSettings = true }
             )
         }
@@ -84,6 +83,11 @@ struct ContentView: View {
                     importerMode = .board
                     lastImporterMode = .board
                     print("[UI] Import Board tapped")
+                }
+                .buttonStyle(.bordered)
+
+                Button("Text") {
+                    showingTextPrompt = true
                 }
                 .buttonStyle(.bordered)
             }

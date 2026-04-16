@@ -9,7 +9,6 @@ struct CanvasOverlayLayout: View {
     let onUndo: () -> Void
     let onRedo: () -> Void
     let onAddItem: () -> Void
-    let onAddText: () -> Void
     let onSettings: () -> Void
 
     var body: some View {
@@ -21,8 +20,7 @@ struct CanvasOverlayLayout: View {
                 activeTool: $activeTool,
                 onUndo: onUndo,
                 onRedo: onRedo,
-                onAddItem: onAddItem,
-                onAddText: onAddText
+                onAddItem: onAddItem
             )
             .padding(edge, 16)
             .frame(maxWidth: .infinity, alignment: frameAlignment)
