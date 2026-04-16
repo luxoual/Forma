@@ -4,7 +4,8 @@ import UIKit
 /// Installs a two-finger UIPanGestureRecognizer on the nearest ancestor UIView
 /// in the SwiftUI host hierarchy. The recognizer observes touches in the canvas
 /// area without consuming them, so SwiftUI's single-finger DragGesture,
-/// SpatialTapGesture, and MagnificationGesture continue to receive their touches.
+/// MagnificationGesture, and per-view `.onTapGesture` handlers continue to
+/// receive their touches.
 struct TwoFingerPanView: UIViewRepresentable {
     enum Phase { case began, changed, ended }
 
