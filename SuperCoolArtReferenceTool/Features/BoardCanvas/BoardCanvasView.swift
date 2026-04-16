@@ -128,6 +128,13 @@ struct BoardCanvasView: View {
                     ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.5)
                 }
                 .ignoresSafeArea()
+                .accessibilityHidden(true)
+                .onTapGesture {
+                    // Empty-canvas tap: SwiftUI's hit-testing routes taps to
+                    // image views / floating overlays first, so this only fires
+                    // when the user actually tapped bare canvas.
+                    toolBehavior(for: activeTool).tappedEmpty(selection: selection)
+                }
 
                 // Render visible images only (world -> screen mapping)
                 ForEach(visibleImages) { item in
@@ -169,10 +176,15 @@ struct BoardCanvasView: View {
                                     .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)
                             }
                         }
-                        .contextMenu {
-                            CanvasContextMenu(onDelete: { deleteForContext(itemID: item.id) })
-                        } preview: {
-                            contextPreview(for: item.id)
+                        .onTapGesture {
+                            let behavior = toolBehavior(for: activeTool)
+                            let store = canvasStore
+                            let sel = selection
+                            let id = item.id
+                            Task {
+                                await behavior.tappedItem(id: id, store: store, selection: sel)
+                                await refreshVisibleElements()
+                            }
                         }
                         .position(x: (liveRect.midX * scale) + offset.width + liveDX,
                                   y: (liveRect.midY * scale) + offset.height + liveDY)
@@ -191,6 +203,19 @@ struct BoardCanvasView: View {
                     MarqueeOverlayView(screenRect: screenRect)
                         .allowsHitTesting(false)
                         .zIndex(Double(Int.max - 1))
+                }
+
+                // Floating action bar under the current selection
+                if let bbox = selectionBoundingBox(),
+                   !selection.isDragging,
+                   !selection.isResizing,
+                   !selection.isGroupResizing,
+                   !selection.isMarqueeing {
+                    let screenX = bbox.midX * scale + offset.width
+                    let screenY = bbox.maxY * scale + offset.height + 24
+                    CanvasSelectionActionBar(onDelete: deleteSelection)
+                        .position(x: screenX, y: screenY)
+                        .zIndex(Double(Int.max))
                 }
 
                 // Group bounding box with resize handles
@@ -350,19 +375,6 @@ struct BoardCanvasView: View {
                         selection.isDragging = false
                         selection.dragOffset = .zero
                         endInteraction()
-                    }
-            )
-            .simultaneousGesture(
-                SpatialTapGesture()
-                    .onEnded { value in
-                        let worldPt = screenToWorld(value.location)
-                        let behavior = toolBehavior(for: activeTool)
-                        let store = canvasStore
-                        let sel = selection
-                        Task {
-                            await behavior.tapped(worldPoint: worldPt, store: store, selection: sel)
-                            await refreshVisibleElements()
-                        }
                     }
             )
             .simultaneousGesture(
@@ -621,6 +633,15 @@ struct BoardCanvasView: View {
 
     // MARK: - Group Resize Logic
 
+    /// World-space union of every currently selected item's rect. Returns nil
+    /// if no items are selected. Unlike `groupBoundingBox()` this works for
+    /// any non-empty selection (single or multi).
+    private func selectionBoundingBox() -> CGRect? {
+        let rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect)
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { $0.union($1) }
+    }
+
     private func groupBoundingBox() -> CGRect? {
         guard selection.selectedIDs.count > 1 else { return nil }
         let rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map { $0.worldRect }
@@ -848,61 +869,15 @@ struct BoardCanvasView: View {
         }
     }
 
-    /// Preview shown in the iPadOS context menu. For a group selection under
-    /// the Group tool (when the pressed item is part of the selection) renders
-    /// every selected item at their relative positions; otherwise renders just
-    /// the pressed item.
-    @ViewBuilder
-    private func contextPreview(for itemID: UUID) -> some View {
-        let targetIDs = previewTargetIDs(for: itemID)
-        let items = placedImages.filter { targetIDs.contains($0.id) }
-
-        if items.count <= 1, let p = items.first ?? placedImages.first(where: { $0.id == itemID }) {
-            FileImageView(url: p.url, targetMaxPixelSize: 1024, isInteracting: false)
-                .frame(width: p.worldRect.width, height: p.worldRect.height)
-        } else if let bbox = boundingBox(of: items.map(\.worldRect)) {
-            let maxDim: CGFloat = 400
-            let s = min(1, maxDim / max(bbox.width, bbox.height, 1))
-            ZStack(alignment: .topLeading) {
-                ForEach(items) { p in
-                    FileImageView(url: p.url, targetMaxPixelSize: 768, isInteracting: false)
-                        .frame(width: p.worldRect.width * s, height: p.worldRect.height * s)
-                        .position(x: (p.worldRect.midX - bbox.origin.x) * s,
-                                  y: (p.worldRect.midY - bbox.origin.y) * s)
-                }
-            }
-            .frame(width: bbox.width * s, height: bbox.height * s)
-        }
-    }
-
-    private func previewTargetIDs(for itemID: UUID) -> Set<UUID> {
-        if activeTool == .group, selection.selectedIDs.contains(itemID) {
-            return selection.selectedIDs
-        }
-        return [itemID]
-    }
-
-    private func boundingBox(of rects: [CGRect]) -> CGRect? {
-        guard let first = rects.first else { return nil }
-        return rects.dropFirst().reduce(first) { $0.union($1) }
-    }
-
-    /// Delete target for a context-menu action on `itemID`.
-    ///
-    /// Rule: if the Group tool is active AND the pressed item is part of the
-    /// current selection, the whole selection is deleted. Otherwise only the
-    /// pressed item is deleted (Pointer tool always deletes just the one).
+    /// Delete every currently selected item. Acts on `selection.selectedIDs`
+    /// regardless of active tool — the action bar only appears when there's a
+    /// selection, so the tool-specific resolution that the old context-menu
+    /// path needed is unnecessary here.
     ///
     /// Snapshots are fetched from the store so undo restores the authoritative
     /// element (transform, layerId, etc.) rather than a reconstructed one.
-    private func deleteForContext(itemID: UUID) {
-        let targetIDs: Set<UUID>
-        if activeTool == .group, selection.selectedIDs.contains(itemID) {
-            targetIDs = selection.selectedIDs
-        } else {
-            targetIDs = [itemID]
-        }
-
+    private func deleteSelection() {
+        let targetIDs = selection.selectedIDs
         let placedByID: [UUID: PlacedImage] = Dictionary(
             uniqueKeysWithValues: placedImages
                 .filter { targetIDs.contains($0.id) }
