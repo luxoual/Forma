@@ -1011,17 +1011,27 @@ struct BoardCanvasView: View {
     }
 
     private func insertImages(atScreenPoint point: CGPoint, urls: [URL]) {
-        var snapshots: [PlacedElementSnapshot] = []
-        var elements: [CMCanvasElement] = []
+        let worldCenter = screenToWorld(point)
+        let insertionSpacing: CGFloat = 24
+        var preparedImages: [(url: URL, size: CGSize)] = []
 
         for originalURL in urls {
             guard let url = makeSandboxCopyIfNeeded(from: originalURL) else { continue }
-            let pixelSize = imagePixelSize(url: url)
-            let worldSize = worldSizeForPixelSize(pixelSize)
-            let worldCenter = screenToWorld(point)
-            let desiredCenter = CGPoint(x: worldCenter.x, y: worldCenter.y)
-            let rect = firstNonOverlappingRect(near: desiredCenter, size: worldSize)
+            preparedImages.append((url: url, size: worldSizeForPixelSize(imagePixelSize(url: url))))
+        }
 
+        let rects = batchInsertionRects(
+            near: CGPoint(x: worldCenter.x, y: worldCenter.y),
+            sizes: preparedImages.map(\.size),
+            spacing: insertionSpacing
+        )
+
+        var snapshots: [PlacedElementSnapshot] = []
+        var elements: [CMCanvasElement] = []
+
+        for (index, preparedImage) in preparedImages.enumerated() {
+            let url = preparedImage.url
+            let rect = rects[index]
             let id = UUID()
             let z = nextZIndex
             placedImages.append(PlacedImage(id: id, url: url, worldRect: rect, zIndex: z))
@@ -1095,21 +1105,66 @@ struct BoardCanvasView: View {
         }
     }
 
-    // Find a nearby non-overlapping rect by nudging diagonally until it doesn't intersect existing items
-    private func firstNonOverlappingRect(near center: CGPoint, size: CGSize) -> CGRect {
-        let maxTries = 64
-        let nudge: CGFloat = 24
-        var attempt = 0
-        var origin = CGPoint(x: center.x - size.width / 2.0,
-                             y: center.y - size.height / 2.0)
-        var rect = CGRect(origin: origin, size: size)
-        while attempt < maxTries && placedImages.contains(where: { $0.worldRect.intersects(rect) }) {
-            origin.x += nudge
-            origin.y += nudge
-            rect.origin = origin
-            attempt += 1
+    private func batchInsertionRects(near center: CGPoint, sizes: [CGSize], spacing: CGFloat) -> [CGRect] {
+        guard !sizes.isEmpty else { return [] }
+
+        let columnCount = max(1, Int(ceil(sqrt(Double(sizes.count)))))
+        let rowCount = Int(ceil(Double(sizes.count) / Double(columnCount)))
+        let cellWidth = sizes.map(\.width).max() ?? maxImageDimensionWorld
+        let cellHeight = sizes.map(\.height).max() ?? maxImageDimensionWorld
+        let stepX = cellWidth + spacing
+        let stepY = cellHeight + spacing
+
+        let gridWidth = CGFloat(columnCount - 1) * stepX + cellWidth
+        let gridHeight = CGFloat(rowCount - 1) * stepY + cellHeight
+        let baseOrigin = CGPoint(x: center.x - gridWidth / 2.0, y: center.y - gridHeight / 2.0)
+
+        let templateRects: [CGRect] = sizes.enumerated().map { index, size in
+            let row = index / columnCount
+            let column = index % columnCount
+            let cellOrigin = CGPoint(
+                x: baseOrigin.x + CGFloat(column) * stepX,
+                y: baseOrigin.y + CGFloat(row) * stepY
+            )
+            let centeredOrigin = CGPoint(
+                x: cellOrigin.x + (cellWidth - size.width) / 2.0,
+                y: cellOrigin.y + (cellHeight - size.height) / 2.0
+            )
+            return CGRect(origin: centeredOrigin, size: size)
         }
-        return rect
+
+        for offset in candidateBatchOffsets(stepX: stepX, stepY: stepY, maxRadius: 24) {
+            let candidateRects = templateRects.map { $0.offsetBy(dx: offset.width, dy: offset.height) }
+            if !intersectsPlacedImages(candidateRects) {
+                return candidateRects
+            }
+        }
+
+        return templateRects
+    }
+
+    private func candidateBatchOffsets(stepX: CGFloat, stepY: CGFloat, maxRadius: Int) -> [CGSize] {
+        var offsets: [CGSize] = [.zero]
+        guard maxRadius > 0 else { return offsets }
+
+        for radius in 1...maxRadius {
+            for y in (-radius)...radius {
+                for x in (-radius)...radius {
+                    if max(abs(x), abs(y)) != radius {
+                        continue
+                    }
+                    offsets.append(CGSize(width: CGFloat(x) * stepX, height: CGFloat(y) * stepY))
+                }
+            }
+        }
+
+        return offsets
+    }
+
+    private func intersectsPlacedImages(_ rects: [CGRect]) -> Bool {
+        rects.contains { rect in
+            placedImages.contains { $0.worldRect.intersects(rect) }
+        }
     }
 
     // Copy a picked URL into the app's Application Support/ImportedImages directory for reliable access
