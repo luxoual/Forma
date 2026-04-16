@@ -21,8 +21,8 @@ extension DesignSystem{
         /// Text color - #FFFFFF (White)
         static let text = Color.white
 
-        /// Destructive color - #FE8686 (matches tertiary's saturation/lightness
-        /// with a red hue). Used for delete actions and other destructive UI.
+        /// Destructive color - #FE8686 (matches tertiary's saturation and lightness,
+        /// but with a red hue). Used for delete actions and other destructive UI.
         static let destructive = Color(red: 254/255, green: 134/255, blue: 134/255)
     }
 }
