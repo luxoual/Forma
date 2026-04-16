@@ -115,6 +115,12 @@ enum BoardArchiver {
                 }
                 let element = CMCanvasElement(header: m.header, payload: .image(url: finalURL, size: size))
                 results.append(element)
+            case .text(let content, let fontName, let fontSize, let color):
+                let element = CMCanvasElement(
+                    header: m.header,
+                    payload: .text(content: content, fontName: fontName, fontSize: fontSize, color: color)
+                )
+                results.append(element)
             }
         }
         return results
@@ -171,8 +177,15 @@ enum BoardArchiver {
                 }
                 let payload = ManifestPayload.image(relativePath: "assets/\(assetName)", size: size)
                 manifestElements.append(ManifestElement(header: el.header, payload: payload))
+            case .text(let content, let fontName, let fontSize, let color):
+                let payload = ManifestPayload.text(
+                    content: content,
+                    fontName: fontName,
+                    fontSize: fontSize,
+                    color: color
+                )
+                manifestElements.append(ManifestElement(header: el.header, payload: payload))
             default:
-                // Skip non-image payloads for this MVP
                 continue
             }
         }
@@ -269,9 +282,10 @@ enum BoardArchiver {
 
     private enum ManifestPayload: Codable {
         case image(relativePath: String, size: SIMD2<Double>)
+        case text(content: String, fontName: String, fontSize: Double, color: String)
 
-        private enum CodingKeys: String, CodingKey { case type, relativePath, size }
-        private enum PayloadType: String, Codable { case image }
+        private enum CodingKeys: String, CodingKey { case type, relativePath, size, content, fontName, fontSize, color }
+        private enum PayloadType: String, Codable { case image, text }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -281,6 +295,12 @@ enum BoardArchiver {
                 let path = try container.decode(String.self, forKey: .relativePath)
                 let size = try container.decode(SIMD2<Double>.self, forKey: .size)
                 self = .image(relativePath: path, size: size)
+            case .text:
+                let content = try container.decode(String.self, forKey: .content)
+                let fontName = try container.decode(String.self, forKey: .fontName)
+                let fontSize = try container.decode(Double.self, forKey: .fontSize)
+                let color = try container.decode(String.self, forKey: .color)
+                self = .text(content: content, fontName: fontName, fontSize: fontSize, color: color)
             }
         }
 
@@ -291,6 +311,12 @@ enum BoardArchiver {
                 try container.encode(PayloadType.image, forKey: .type)
                 try container.encode(path, forKey: .relativePath)
                 try container.encode(size, forKey: .size)
+            case .text(let content, let fontName, let fontSize, let color):
+                try container.encode(PayloadType.text, forKey: .type)
+                try container.encode(content, forKey: .content)
+                try container.encode(fontName, forKey: .fontName)
+                try container.encode(fontSize, forKey: .fontSize)
+                try container.encode(color, forKey: .color)
             }
         }
     }

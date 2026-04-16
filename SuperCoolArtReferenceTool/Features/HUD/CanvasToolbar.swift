@@ -14,6 +14,7 @@ struct CanvasToolbar: View {
     var onUndo: () -> Void
     var onRedo: () -> Void
     var onAddItem: () -> Void
+    var onAddText: () -> Void
     
     @Namespace private var toolNamespace
     
@@ -68,7 +69,16 @@ struct CanvasToolbar: View {
                 .background(DesignSystem.Colors.secondary)
                 .frame(height: 1)
                 .padding(.vertical, 4)
-            
+
+            ToolbarButton(
+                icon: "textformat",
+                isActive: false,
+                namespace: nil,
+                id: nil
+            ) {
+                onAddText()
+            }
+
             // Add new item
             ToolbarButton(
                 icon: "plus",
@@ -130,7 +140,8 @@ private struct ToolbarButton: View {
             activeTool: $activeTool,
             onUndo: { print("Undo") },
             onRedo: { print("Redo") },
-            onAddItem: { print("Add Item") }
+            onAddItem: { print("Add Item") },
+            onAddText: { print("Add Text") }
         )
         .padding(.leading, 16)
     }
@@ -147,7 +158,8 @@ private struct ToolbarButton: View {
             activeTool: $activeTool,
             onUndo: { print("Undo") },
             onRedo: { print("Redo") },
-            onAddItem: { print("Add Item") }
+            onAddItem: { print("Add Item") },
+            onAddText: { print("Add Text") }
         )
         .padding(.leading, 16)
     }
@@ -164,7 +176,8 @@ private struct ToolbarButton: View {
             activeTool: $activeTool,
             onUndo: { print("Undo") },
             onRedo: { print("Redo") },
-            onAddItem: { print("Add Item") }
+            onAddItem: { print("Add Item") },
+            onAddText: { print("Add Text") }
         )
         .padding(.leading, 16)
     }

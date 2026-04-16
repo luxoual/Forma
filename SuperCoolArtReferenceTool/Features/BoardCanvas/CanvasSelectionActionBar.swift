@@ -4,10 +4,22 @@ import SwiftUI
 /// whenever one or more items are selected and no drag/resize/marquee is in
 /// progress. Host view is responsible for positioning the bar in screen space.
 struct CanvasSelectionActionBar: View {
+    let onEdit: (() -> Void)?
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
+            if let onEdit {
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(DesignSystem.Colors.secondary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit")
+            }
+
             Button(action: onDelete) {
                 Image(systemName: "trash")
                     .font(.system(size: 18, weight: .medium))
@@ -24,7 +36,7 @@ struct CanvasSelectionActionBar: View {
 }
 
 #Preview {
-    CanvasSelectionActionBar(onDelete: {})
+    CanvasSelectionActionBar(onEdit: {}, onDelete: {})
         .padding()
         .background(Color.gray.opacity(0.2))
 }

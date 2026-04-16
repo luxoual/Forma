@@ -17,6 +17,9 @@ struct ContentView: View {
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
     @State private var urlsToInsert: [URL]?
+    @State private var pendingTextInsert: PendingTextInsert?
+    @State private var showingTextPrompt = false
+    @State private var draftTextContent = "New Text"
     
     // Settings
     @State private var showGrid = true
@@ -44,6 +47,7 @@ struct ContentView: View {
             BoardCanvasView(
                 activeTool: $activeTool,
                 externalInsertURLs: $urlsToInsert,
+                pendingTextInsert: $pendingTextInsert,
                 showGrid: $showGrid,
                 canvasColor: $canvasColor,
                 snapshotTrigger: $snapshotToken,
@@ -65,6 +69,7 @@ struct ContentView: View {
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
                 onAddItem: openImageImporter,
+                onAddText: { showingTextPrompt = true },
                 onSettings: { showingSettings = true }
             )
         }
@@ -131,6 +136,18 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingSettings) {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
+        }
+        .alert("New Text Box", isPresented: $showingTextPrompt) {
+            TextField("Text", text: $draftTextContent)
+            Button("Add") {
+                pendingTextInsert = PendingTextInsert(content: draftTextContent)
+                draftTextContent = "New Text"
+            }
+            Button("Cancel", role: .cancel) {
+                draftTextContent = "New Text"
+            }
+        } message: {
+            Text("Add a text box to the canvas.")
         }
         .onAppear {
             if let initialElements, !initialElements.isEmpty {
