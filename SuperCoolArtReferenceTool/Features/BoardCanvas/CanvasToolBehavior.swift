@@ -23,12 +23,19 @@ protocol CanvasToolBehavior {
         selection: CanvasSelectionState
     ) -> DragMode
 
-    /// Called on tap (drag that ends without meaningful translation).
-    func tapped(
-        worldPoint: CGPoint,
+    /// Called when a specific item was tapped. Hit-testing is already done by
+    /// the view layer (per-item `.onTapGesture`), so no world-point lookup is
+    /// needed here.
+    @MainActor
+    func tappedItem(
+        id: UUID,
         store: LocalBoardStore,
         selection: CanvasSelectionState
     ) async
+
+    /// Called when the empty canvas was tapped (no item under the tap).
+    @MainActor
+    func tappedEmpty(selection: CanvasSelectionState)
 }
 
 struct PointerToolBehavior: CanvasToolBehavior {
@@ -52,18 +59,19 @@ struct PointerToolBehavior: CanvasToolBehavior {
              .max(by: { $0.zIndex < $1.zIndex })
     }
 
-    func tapped(
-        worldPoint: CGPoint,
+    @MainActor
+    func tappedItem(
+        id: UUID,
         store: LocalBoardStore,
         selection: CanvasSelectionState
     ) async {
-        let point = SIMD2<Double>(Double(worldPoint.x), Double(worldPoint.y))
-        if let header = await store.topmostHeader(at: point) {
-            await MainActor.run { selection.select(header.id) }
-            await store.moveToTop(elementIDs: [header.id])
-        } else {
-            await MainActor.run { selection.clearSelection() }
-        }
+        selection.select(id)
+        await store.moveToTop(elementIDs: [id])
+    }
+
+    @MainActor
+    func tappedEmpty(selection: CanvasSelectionState) {
+        selection.clearSelection()
     }
 }
 
@@ -79,13 +87,14 @@ struct GroupToolBehavior: CanvasToolBehavior {
         }
     }
 
-    func tapped(worldPoint: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async {
-        let point = SIMD2<Double>(Double(worldPoint.x), Double(worldPoint.y))
-        if let header = await store.topmostHeader(at: point) {
-            await MainActor.run { selection.select(header.id, extending: true) }
-        } else {
-            await MainActor.run { selection.clearSelection() }
-        }
+    @MainActor
+    func tappedItem(id: UUID, store: LocalBoardStore, selection: CanvasSelectionState) async {
+        selection.select(id, extending: true)
+    }
+
+    @MainActor
+    func tappedEmpty(selection: CanvasSelectionState) {
+        selection.clearSelection()
     }
 }
 

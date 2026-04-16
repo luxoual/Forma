@@ -128,6 +128,13 @@ struct BoardCanvasView: View {
                     ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.5)
                 }
                 .ignoresSafeArea()
+                .accessibilityHidden(true)
+                .onTapGesture {
+                    // Empty-canvas tap: SwiftUI's hit-testing routes taps to
+                    // image views / floating overlays first, so this only fires
+                    // when the user actually tapped bare canvas.
+                    toolBehavior(for: activeTool).tappedEmpty(selection: selection)
+                }
 
                 // Render visible images only (world -> screen mapping)
                 ForEach(visibleImages) { item in
@@ -169,6 +176,16 @@ struct BoardCanvasView: View {
                                     .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)
                             }
                         }
+                        .onTapGesture {
+                            let behavior = toolBehavior(for: activeTool)
+                            let store = canvasStore
+                            let sel = selection
+                            let id = item.id
+                            Task {
+                                await behavior.tappedItem(id: id, store: store, selection: sel)
+                                await refreshVisibleElements()
+                            }
+                        }
                         .position(x: (liveRect.midX * scale) + offset.width + liveDX,
                                   y: (liveRect.midY * scale) + offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
@@ -186,6 +203,19 @@ struct BoardCanvasView: View {
                     MarqueeOverlayView(screenRect: screenRect)
                         .allowsHitTesting(false)
                         .zIndex(Double(Int.max - 1))
+                }
+
+                // Floating action bar under the current selection
+                if let bbox = selectionBoundingBox(),
+                   !selection.isDragging,
+                   !selection.isResizing,
+                   !selection.isGroupResizing,
+                   !selection.isMarqueeing {
+                    let screenX = bbox.midX * scale + offset.width
+                    let screenY = bbox.maxY * scale + offset.height + 24
+                    CanvasSelectionActionBar(onDelete: deleteSelection)
+                        .position(x: screenX, y: screenY)
+                        .zIndex(Double(Int.max))
                 }
 
                 // Group bounding box with resize handles
@@ -345,19 +375,6 @@ struct BoardCanvasView: View {
                         selection.isDragging = false
                         selection.dragOffset = .zero
                         endInteraction()
-                    }
-            )
-            .simultaneousGesture(
-                SpatialTapGesture()
-                    .onEnded { value in
-                        let worldPt = screenToWorld(value.location)
-                        let behavior = toolBehavior(for: activeTool)
-                        let store = canvasStore
-                        let sel = selection
-                        Task {
-                            await behavior.tapped(worldPoint: worldPt, store: store, selection: sel)
-                            await refreshVisibleElements()
-                        }
                     }
             )
             .simultaneousGesture(
@@ -616,6 +633,15 @@ struct BoardCanvasView: View {
 
     // MARK: - Group Resize Logic
 
+    /// World-space union of every currently selected item's rect. Returns nil
+    /// if no items are selected. Unlike `groupBoundingBox()` this works for
+    /// any non-empty selection (single or multi).
+    private func selectionBoundingBox() -> CGRect? {
+        let rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect)
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { $0.union($1) }
+    }
+
     private func groupBoundingBox() -> CGRect? {
         guard selection.selectedIDs.count > 1 else { return nil }
         let rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map { $0.worldRect }
@@ -841,6 +867,62 @@ struct BoardCanvasView: View {
         enqueueStoreMutation { store in
             await store.upsert(elements: elements)
         }
+    }
+
+    /// Delete every currently selected item. Acts on `selection.selectedIDs`
+    /// regardless of active tool — the action bar only appears when there's a
+    /// selection, so the tool-specific resolution that the old context-menu
+    /// path needed is unnecessary here.
+    ///
+    /// Snapshots are fetched from the store so undo restores the authoritative
+    /// element (transform, layerId, etc.) rather than a reconstructed one.
+    private func deleteSelection() {
+        let targetIDs = selection.selectedIDs
+        let placedByID: [UUID: PlacedImage] = Dictionary(
+            uniqueKeysWithValues: placedImages
+                .filter { targetIDs.contains($0.id) }
+                .map { ($0.id, $0) }
+        )
+        guard !placedByID.isEmpty else { return }
+
+        let store = canvasStore
+        Task { @MainActor in
+            let elementsByID = await store.elements(for: Array(placedByID.keys))
+            let snapshots: [PlacedElementSnapshot] = placedByID.map { id, placed in
+                let element = elementsByID[id] ?? fallbackElement(for: placed)
+                return PlacedElementSnapshot(
+                    id: id,
+                    url: placed.url,
+                    worldRect: placed.worldRect,
+                    zIndex: placed.zIndex,
+                    element: element
+                )
+            }
+            commandHistory.push(.delete(snapshots: snapshots))
+            removeElements(snapshots: snapshots)
+        }
+    }
+
+    /// Used only if the store has no record of the element (shouldn't happen
+    /// in normal flow, but keeps delete resilient to a store/view desync).
+    private func fallbackElement(for placed: PlacedImage) -> CMCanvasElement {
+        let rect = placed.worldRect
+        let header = CMElementHeader(
+            id: placed.id,
+            type: .image,
+            transform: CMAffineTransform2D(),
+            bounds: CMWorldRect(
+                origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+            ),
+            layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+            zIndex: placed.zIndex
+        )
+        let payload = CMCanvasElementPayload.image(
+            url: placed.url,
+            size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+        )
+        return CMCanvasElement(header: header, payload: payload)
     }
 
     private func removeElements(snapshots: [PlacedElementSnapshot]) {

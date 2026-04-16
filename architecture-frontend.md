@@ -76,10 +76,12 @@ Three simultaneous gestures are attached to the canvas ZStack:
 - `.moveItem` mode: updates `selection.dragOffset` in world space (item move with live visual feedback)
 - On `.onEnded`: if `.moveItem`, calls `commitMove()` to persist positions; resets all drag state
 
-**Spatial Tap Gesture:**
-- `SpatialTapGesture()` as `.simultaneousGesture` — handles taps independently of drag
-- Required because `DragGesture(minimumDistance: 8)` never fires for taps (< 8pt movement)
-- Delegates to active tool's `tapped()` method for hit-testing and selection changes
+**Tap Routing (Native Hit-Testing):**
+- Taps are routed via per-view `.onTapGesture`, not a parent `SpatialTapGesture`:
+  - Each `FileImageView` has `.onTapGesture { ... tappedItem(id:) }` attached **before** `.position(...)` so the tappable frame tracks the item
+  - The background `Canvas` grid has `.onTapGesture { ... tappedEmpty() }`
+- This lets SwiftUI's native hit-testing arbitrate taps — the topmost child wins and no parent gesture fires alongside. Prior architecture used `.simultaneousGesture(SpatialTapGesture())` on the outer ZStack, which caused tap-passthrough (e.g. tapping the trash button in the selection action bar also tapped the image beneath it). SwiftUI has no `stopPropagation` equivalent for simultaneous gestures; moving tap routing onto the children is the idiomatic fix.
+- The `DragGesture(minimumDistance: 8)` on the ZStack still handles drag-mode routing; taps (< 8pt movement) never fire it, so the two systems don't overlap.
 
 **Zoom (Magnification Gesture):**
 - `MagnificationGesture()` as `.simultaneousGesture` — always active regardless of tool
@@ -312,9 +314,16 @@ struct HitTestItem { let id: UUID; let worldRect: CGRect; let zIndex: Int }
 
 protocol CanvasToolBehavior {
     func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode
-    func tapped(worldPoint: CGPoint, store: LocalBoardStore, selection: CanvasSelectionState) async
+
+    @MainActor
+    func tappedItem(id: UUID, store: LocalBoardStore, selection: CanvasSelectionState) async
+
+    @MainActor
+    func tappedEmpty(selection: CanvasSelectionState)
 }
 ```
+
+Tap methods are split so the view layer can call the right one based on which `.onTapGesture` fired. `tappedItem` receives the `UUID` directly (hit-testing already done by SwiftUI) instead of doing a world-point lookup. Both tap methods are `@MainActor` so implementations can mutate `CanvasSelectionState` directly without `MainActor.run` trampolines.
 
 `dragBegan` is **synchronous** — it hit-tests against in-memory `placedImages` (mapped to `HitTestItem`) instead of querying the async store. This eliminates a race where quick drags could end before the async mode decision completed. The `moveToTop` z-order persistence is fired as a non-blocking side effect after mode is set.
 
@@ -493,6 +502,33 @@ ContentView                  — triggers undo/redo from toolbar
 
 ---
 
+### Selection Action Bar
+
+**Status: Implemented**
+
+**File:** `CanvasSelectionActionBar.swift`
+
+Floating action bar that appears next to the current canvas selection, hosting selection-scoped actions (currently: delete). Chosen over a context menu after trials with `.contextMenu(menuItems:preview:)` — the default preview couldn't elevate the whole group, and a custom preview couldn't blur non-source items. An action bar gives Figma-style affordances that scale to more actions without preview constraints.
+
+**Visual Design:**
+- Horizontal `HStack` containing a 44×44pt trash `Button` with `.buttonStyle(.plain)`
+- Trash icon: `DesignSystem.Colors.destructive` (#FE8686)
+- Background: `DesignSystem.Colors.primary`, 10pt corner radius, 4pt horizontal padding
+- Shadow: `color: .black.opacity(0.3), radius: 8, x: 2, y: 2`
+- `.accessibilityLabel("Delete")` on the button
+
+**Positioning (in `BoardCanvasView`):**
+- Rendered inside the canvas ZStack only when `selectionBoundingBox()` returns non-nil **and** no gesture is active (`!isDragging && !isResizing && !isGroupResizing && !isMarqueeing`)
+- Screen position: `x = bbox.midX * scale + offset.width`, `y = bbox.maxY * scale + offset.height + 24` — centered under the selection bounding box
+- `.zIndex(Double(Int.max))` so it always sits above canvas items
+
+**Delete Flow:**
+- `deleteSelection()` fetches authoritative `CMCanvasElement`s from `LocalBoardStore` via `elements(for:)` before snapshotting — avoids fabricating elements from the view's `placedImages` cache, which could be stale
+- Snapshots feed a `.delete(snapshots:)` command pushed onto `CanvasCommandHistory`, then `removeElements()` applies the change
+- Fallback path: `fallbackElement(for:)` handles rare view/store desync
+
+---
+
 ### Canvas Settings Button
 
 **Status: Implemented**
@@ -589,10 +625,11 @@ Central design token system for consistent styling across the application.
 **Color Palette:**
 
 ```swift
-DesignSystem.Colors.primary   // #191919 (25, 25, 25) - Dark gray
-DesignSystem.Colors.secondary // #535353 (83, 83, 83) - Medium gray  
-DesignSystem.Colors.tertiary  // #86B8FE (134, 184, 254) - Light blue
-DesignSystem.Colors.text      // #FFFFFF (255, 255, 255) - White
+DesignSystem.Colors.primary     // #191919 (25, 25, 25) - Dark gray
+DesignSystem.Colors.secondary   // #535353 (83, 83, 83) - Medium gray
+DesignSystem.Colors.tertiary    // #86B8FE (134, 184, 254) - Light blue
+DesignSystem.Colors.text        // #FFFFFF (255, 255, 255) - White
+DesignSystem.Colors.destructive // #FE8686 (254, 134, 134) - Red (same S/L as tertiary)
 ```
 
 **Usage:**
@@ -600,6 +637,19 @@ DesignSystem.Colors.text      // #FFFFFF (255, 255, 255) - White
 - Secondary text/values: `secondary` (subtle information, picker options)
 - Interactive accents: `tertiary` (active states, toggles, buttons)
 - Primary text: `text` (main labels, readable content)
+- Destructive actions: `destructive` (delete buttons, destructive confirmations)
+
+**Usage Guidance (important):**
+
+**Always prefer a `DesignSystem.Colors` token over a hard-coded color** (`.red`, `Color(red:…)`, hex literals, system semantic colors). New UI should pull from the palette so the app stays visually coherent and themeable.
+
+If a color you need isn't in the palette:
+1. Stop — don't reach for `.red`, `.orange`, `Color(hex:)`, etc. as a shortcut.
+2. Decide whether it's a **new semantic token** (e.g. `destructive`, `warning`, `success`) or a one-off tint. Semantic tokens belong in `Colors.swift`.
+3. Pick a hue that matches the palette's saturation/lightness so it sits with the existing colors (e.g. `destructive` #FE8686 matches `tertiary`'s S/L with a red hue).
+4. Add it to `DesignSystem.Colors` with a doc comment describing intent, then consume it by name.
+
+This applies to any other design primitive that lives (or should live) in the design system — spacing, corner radii, shadows, typography. If you find yourself hard-coding the same value in two places, it's a candidate for a `DesignSystem` token.
 
 **Color Hierarchy:**
 - **White** - Primary labels and important text for maximum readability
@@ -710,7 +760,7 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
    - ~~Multi-selection via marquee and toggle-tap~~ ✅ Done
    - ~~Group move (all selected items move together)~~ ✅ Done
    - ~~Group resize (proportional scaling relative to group bounding box)~~ ✅ Done
-   - Delete selected items (command exists, needs UI trigger)
+   - ~~Delete selected items (via floating selection action bar)~~ ✅ Done
    - Rotation gestures
 
 4. **File Import Refactor:**
