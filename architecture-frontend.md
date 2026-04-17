@@ -702,38 +702,75 @@ File loading logic (`loadURLs(from:preferredTypes:)`) is duplicated between `Ins
 
 ### Other UI Components
 
-**FilePickerView**
+**FilePickerView (Landing Page)**
 
-**Status: Implemented (Landing Screen)**
+**Status: Implemented**
 
-**File:** `FilePickerView.swift`
+**Files:** `FilePickerView.swift`, `RecentBoardsManager.swift`
 
-A full-screen empty state view that serves as the app's landing screen for initial file selection.
+The app's landing screen with three entry paths to the canvas and a recent boards section.
 
-**Purpose:**
-- First screen users see on app launch
-- Large drop zone with dashed border for drag-and-drop
-- "Browse" button to open file picker
-- Once files are selected, transitions to the canvas
+**Entry Paths:**
+
+1. **"New Board" (primary CTA)** — filled tertiary button, transitions to an empty canvas immediately (no file picker)
+2. **"Open Board" (secondary)** — outlined tertiary button, opens `.fileImporter` for `.refboard` files. Imports via `BoardArchiver.importElements`, records in recents, passes elements + URL to `ContentView`
+3. **Drag-and-drop** — drop images/GIFs onto the dashed rectangle area. `.contentShape(.rect)` ensures the entire padded area is a valid drop target, not just the icon/text
 
 **Visual Design:**
-- Large photo icon (`photo.on.rectangle.angled`, size 80pt)
-- "Drag and drop images here" / "or" / "Browse" button
-- Dashed border that highlights on drag target (`isTargeted` state)
-- Uses `DesignSystem.Colors` for consistency
+- Large photo icon (`photo.on.rectangle.angled`, `@ScaledMetric` for Dynamic Type) with `.accessibilityHidden(true)`
+- Dashed border rectangle highlights on drag target (`isTargeted` state)
+- "New Board" and "Open Board" buttons side-by-side below
+- "Recent Boards" section below buttons (up to 5 entries)
+- Error alert (`showImportError` bool + `importErrorMessage` string) for failed imports
 
-**File Selection:**
-- `.fileImporter` supports `.image` and `.gif` types with multiple selection
-- Drag-and-drop saves `UIImage` objects to temp PNG files via `loadImageToTempFile(from:)` so they flow through the same URL-based pipeline as the browse button
+**Recent Boards:**
 
-**API:**
+`RecentBoardsManager` is an `@Observable @MainActor` class that persists up to 10 recent board entries as JSON in App Support (`recent_boards.json`). Each entry stores:
+- `name` — derived from filename
+- `filePath` — standardized path string, used as stable `Identifiable.id` and dedup key
+- `bookmarkData` — security-scoped bookmark `Data` so the app can reopen files across launches regardless of location
+- `lastOpened` — timestamp for sorting
+
+The landing page displays up to 5 valid entries (list rows with doc icon, name, and relative date). Tapping an entry resolves the bookmark via `resolveURL()`, starts security-scoped access, and imports the board.
+
+Pruning: invalid entries (where `resolveURL()` returns nil) are removed on init. `validEntries(limit:)` does no I/O — it just slices the already-pruned array.
+
+Injection: `RecentBoardsManager` is created as `@State` in `RootView` and injected via `.environment()` to both `FilePickerView` and `ContentView`.
+
+Recording happens on:
+- Board open (from file picker or recents) — in `FilePickerView.openBoard(at:)`
+- Board import (from canvas toolbar) — in `ContentView`
+- Board export (file exporter success) — in `ContentView`
+- Board save-on-back — in `ContentView.saveAndGoBack()`
+
+**Callbacks:**
 ```swift
-FilePickerView(onFilesSelected: ([URL]) -> Void)
+FilePickerView(
+    onNewBoard: () -> Void,
+    onBoardSelected: ([CMCanvasElement], URL) -> Void,
+    onFilesDropped: ([URL]) -> Void
+)
 ```
 
 **Integration:**
-- `RootView` hosts `FilePickerView` and passes an `onFilesSelected` callback
-- Callback triggers navigation to `ContentView` with the selected URLs
+- `RootView` hosts `FilePickerView` and routes to `ContentView` based on which callback fires
+- `initialBoardURL` is tracked through `RootView` → `ContentView` so save-on-back writes to the correct location
+
+### Canvas Back Button
+
+**Status: Implemented**
+
+**File:** `CanvasOverlayLayout.swift`
+
+A back button positioned in the top corner of the canvas (same side as toolbar, flips with `toolbarSide` setting). Styled to match the toolbar/settings button: 68pt wide, primary background, 12pt corner radius, matching shadow.
+
+**Save-on-back flow:**
+1. Back button tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
+2. `onSnapshot` callback checks the flag — if pending back, calls `saveAndGoBack(elements:)` instead of presenting the file exporter
+3. `saveAndGoBack` writes to `currentBoardURL` via `BoardArchiver.export`, records in recents, then calls `onBack()` which sets `showCanvas = false` in `RootView`
+4. If `currentBoardURL` is nil (new board that was never saved/exported), the board is not saved — navigates back without saving
+
+**Known limitation:** New boards created via "New Board" have no `currentBoardURL`, so pressing back discards them silently. This needs a "Save As" prompt (file exporter) before navigating back. See Future Work.
 
 ---
 
@@ -776,8 +813,9 @@ FilePickerView(onFilesSelected: ([URL]) -> Void)
 6. **Navigation Flow:**
    - ~~Integrate `FilePickerView` as initial screen~~ ✅ Done
    - ~~Transition from file picker → canvas~~ ✅ Done
-   - Board selection/management UI
-   - Back navigation from canvas to file picker
+   - ~~Back navigation from canvas to landing page (with save-on-back)~~ ✅ Done
+   - ~~Recent boards list on landing page~~ ✅ Done
+   - **Save-As prompt for new boards on back:** When a user creates a new board (no `currentBoardURL`) and taps back, the app should present a file exporter (like the Export button does) so the user can name and choose a save location before navigating back. Without this, new unsaved boards are silently discarded on back navigation. The flow should be: back tap → snapshot → file exporter → on success, record in recents and navigate back; on cancel, stay on canvas.
 
 7. **Performance:**
    - Implement viewport-based culling
