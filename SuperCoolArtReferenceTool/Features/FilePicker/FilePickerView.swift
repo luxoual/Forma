@@ -17,7 +17,7 @@ struct FilePickerView: View {
     @Environment(RecentBoardsManager.self) private var recentsManager
 
     var onNewBoard: () -> Void
-    var onBoardSelected: ([CMCanvasElement]) -> Void
+    var onBoardSelected: ([CMCanvasElement], URL) -> Void
     var onFilesDropped: ([URL]) -> Void
 
     var body: some View {
@@ -33,7 +33,7 @@ struct FilePickerView: View {
     }
 
     private var landingView: some View {
-        VStack(spacing: 32) {
+        VStack(spacing: 32)     {
             VStack(spacing: 16) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: iconSize))
@@ -171,7 +171,7 @@ struct FilePickerView: View {
         do {
             let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
             recentsManager.record(url: url)
-            onBoardSelected(elements)
+            onBoardSelected(elements, url)
         } catch {
             importErrorMessage = error.localizedDescription
             showImportError = true
@@ -191,6 +191,6 @@ struct FilePickerView: View {
 }
 
 #Preview {
-    FilePickerView(onNewBoard: {}, onBoardSelected: { _ in }, onFilesDropped: { _ in })
+    FilePickerView(onNewBoard: {}, onBoardSelected: { _, _ in }, onFilesDropped: { _ in })
         .environment(RecentBoardsManager())
 }

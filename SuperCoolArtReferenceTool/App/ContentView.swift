@@ -14,6 +14,8 @@ struct ContentView: View {
 
     let initialURLs: [URL]
     let initialElements: [CMCanvasElement]?
+    let initialBoardURL: URL?
+    var onBack: () -> Void = {}
 
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
@@ -39,6 +41,8 @@ struct ContentView: View {
     /// Latched copy so the result handler can read it even after the binding clears importerMode
     @State private var lastImporterMode: ImporterMode?
     private enum ImporterMode { case images, board }
+    @State private var pendingBackNavigation = false
+    @State private var currentBoardURL: URL?
 
     var body: some View {
         ZStack {
@@ -54,15 +58,20 @@ struct ContentView: View {
                 redoTrigger: $redoTrigger,
                 onInsertURLs: { _ in },
                 onSnapshot: { elements in
-                    // When snapshot arrives, prepare a FileDocument and present the exporter
-                    exportDocument = BoardExportDocument(elements: elements)
-                    showingExporter = true
+                    if pendingBackNavigation {
+                        pendingBackNavigation = false
+                        saveAndGoBack(elements: elements)
+                    } else {
+                        exportDocument = BoardExportDocument(elements: elements)
+                        showingExporter = true
+                    }
                 }
             )
             
             CanvasOverlayLayout(
                 side: toolbarSide,
                 activeTool: $activeTool,
+                onBack: handleBack,
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
                 onAddItem: openImageImporter,
@@ -93,6 +102,7 @@ struct ContentView: View {
         ) { result in
             switch result {
             case .success(let url):
+                currentBoardURL = url
                 recentsManager.record(url: url)
             case .failure(let error):
                 print("Export share failed: ", error.localizedDescription)
@@ -121,6 +131,7 @@ struct ContentView: View {
                     do {
                         let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                         recentsManager.record(url: url)
+                        currentBoardURL = url
                         elementsToLoad = elements
                     } catch {
                         print("Import failed: ", error)
@@ -135,6 +146,7 @@ struct ContentView: View {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
         }
         .onAppear {
+            currentBoardURL = initialBoardURL
             if let initialElements, !initialElements.isEmpty {
                 elementsToLoad = initialElements
                 openHandler.importedElements = nil
@@ -156,10 +168,29 @@ struct ContentView: View {
         importerMode = .images
         lastImporterMode = .images
     }
+
+    private func handleBack() {
+        pendingBackNavigation = true
+        snapshotToken = UUID()
+    }
+
+    private func saveAndGoBack(elements: [CMCanvasElement]) {
+        if let url = currentBoardURL {
+            do {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                _ = try BoardArchiver.export(elements: elements, to: url)
+                recentsManager.record(url: url)
+            } catch {
+                print("[Save] Failed to save board: \(error.localizedDescription)")
+            }
+        }
+        onBack()
+    }
 }
 
 #Preview {
-    ContentView(initialURLs: [], initialElements: nil)
+    ContentView(initialURLs: [], initialElements: nil, initialBoardURL: nil)
         .environment(AppOpenHandler())
         .environment(RecentBoardsManager())
 }

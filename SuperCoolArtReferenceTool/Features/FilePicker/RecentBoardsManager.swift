@@ -1,8 +1,9 @@
 import Foundation
 
 struct RecentBoardEntry: Codable, Identifiable {
-    var id: String { name + lastOpened.timeIntervalSince1970.description }
+    var id: String { filePath }
     let name: String
+    let filePath: String
     let bookmarkData: Data
     var lastOpened: Date
 
@@ -29,7 +30,7 @@ final class RecentBoardsManager {
         pruneInvalid()
     }
 
-    func validEntries(limit: Int = 3) -> [RecentBoardEntry] {
+    func validEntries(limit: Int = 5) -> [RecentBoardEntry] {
         Array(entries.prefix(limit))
     }
 
@@ -44,12 +45,18 @@ final class RecentBoardsManager {
         ) else { return }
 
         let name = url.deletingPathExtension().lastPathComponent
+        let path = url.standardizedFileURL.path
 
-        if let idx = entries.firstIndex(where: { $0.name == name && $0.resolveURL() == url }) {
-            entries[idx].lastOpened = .now
+        if let idx = entries.firstIndex(where: { $0.filePath == path }) {
+            entries[idx] = RecentBoardEntry(
+                name: name,
+                filePath: path,
+                bookmarkData: bookmark,
+                lastOpened: .now
+            )
         } else {
             entries.insert(
-                RecentBoardEntry(name: name, bookmarkData: bookmark, lastOpened: .now),
+                RecentBoardEntry(name: name, filePath: path, bookmarkData: bookmark, lastOpened: .now),
                 at: 0
             )
         }

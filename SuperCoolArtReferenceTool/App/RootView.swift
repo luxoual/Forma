@@ -13,27 +13,33 @@ struct RootView: View {
     @State private var showCanvas = false
     @State private var initialURLs: [URL] = []
     @State private var initialElements: [CMCanvasElement]?
+    @State private var initialBoardURL: URL?
     @State private var recentsManager = RecentBoardsManager()
 
     var body: some View {
         if showCanvas {
-            ContentView(initialURLs: initialURLs, initialElements: initialElements)
+            ContentView(initialURLs: initialURLs, initialElements: initialElements, initialBoardURL: initialBoardURL, onBack: {
+                    showCanvas = false
+                })
                 .environment(recentsManager)
         } else {
             FilePickerView(
                 onNewBoard: {
                     initialElements = nil
                     initialURLs = []
+                    initialBoardURL = nil
                     showCanvas = true
                 },
-                onBoardSelected: { elements in
+                onBoardSelected: { elements, url in
                     initialURLs = []
                     initialElements = elements
+                    initialBoardURL = url
                     showCanvas = true
                 },
                 onFilesDropped: { urls in
                     initialElements = nil
                     initialURLs = urls
+                    initialBoardURL = nil
                     showCanvas = true
                 }
             )
