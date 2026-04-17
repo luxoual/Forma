@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
     @State private var urlsToInsert: [URL]?
+    @State private var pendingTextInsertion: PendingTextInsertion?
     
     // Settings
     @State private var showGrid = true
@@ -44,6 +45,7 @@ struct ContentView: View {
             BoardCanvasView(
                 activeTool: $activeTool,
                 externalInsertURLs: $urlsToInsert,
+                pendingTextInsertion: $pendingTextInsertion,
                 showGrid: $showGrid,
                 canvasColor: $canvasColor,
                 snapshotTrigger: $snapshotToken,
@@ -79,6 +81,11 @@ struct ContentView: View {
                     importerMode = .board
                     lastImporterMode = .board
                     print("[UI] Import Board tapped")
+                }
+                .buttonStyle(.bordered)
+
+                Button("Text") {
+                    pendingTextInsertion = PendingTextInsertion()
                 }
                 .buttonStyle(.bordered)
             }

@@ -1,12 +1,23 @@
 import Foundation
+import CoreGraphics
 
 /// Snapshot of a placed element, sufficient to add/remove from the board.
 struct PlacedElementSnapshot {
-    let id: UUID
-    let url: URL
-    let worldRect: CGRect
-    let zIndex: Int
     let element: CMCanvasElement
+
+    var id: UUID { element.id }
+
+    var worldRect: CGRect {
+        let bounds = element.header.bounds
+        return CGRect(
+            x: CGFloat(bounds.origin.x),
+            y: CGFloat(bounds.origin.y),
+            width: CGFloat(bounds.size.x),
+            height: CGFloat(bounds.size.y)
+        )
+    }
+
+    var zIndex: Int { element.header.zIndex }
 }
 
 /// A reversible canvas operation.
