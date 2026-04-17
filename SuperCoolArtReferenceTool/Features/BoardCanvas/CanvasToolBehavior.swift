@@ -17,6 +17,7 @@ struct HitTestItem {
 
 protocol CanvasToolBehavior {
     /// Synchronous mode decision using in-memory placed images (no store round-trip).
+    @MainActor
     func dragBegan(
         worldStart: CGPoint,
         items: [HitTestItem],
@@ -39,6 +40,7 @@ protocol CanvasToolBehavior {
 }
 
 struct PointerToolBehavior: CanvasToolBehavior {
+    @MainActor
     func dragBegan(
         worldStart: CGPoint,
         items: [HitTestItem],
@@ -76,6 +78,7 @@ struct PointerToolBehavior: CanvasToolBehavior {
 }
 
 struct GroupToolBehavior: CanvasToolBehavior {
+    @MainActor
     func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode {
         if let hit = PointerToolBehavior.topmostItem(at: worldStart, in: items) {
             if !selection.selectedIDs.contains(hit.id) {
