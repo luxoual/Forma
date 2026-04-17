@@ -10,38 +10,34 @@ import UniformTypeIdentifiers
 
 struct FilePickerView: View {
     @State private var isTargeted = false
-    @State private var showingImagePicker = false
+    @State private var showingBoardPicker = false
 
-    var onFilesSelected: ([URL]) -> Void
+    var onNewBoard: () -> Void
+    var onBoardSelected: ([CMCanvasElement]) -> Void
+    var onFilesDropped: ([URL]) -> Void
 
     var body: some View {
         ZStack {
-            // Background
             DesignSystem.Colors.primary
                 .ignoresSafeArea()
-            emptyStateView
+            landingView
         }
     }
 
-    // MARK: - Empty State
-
-    private var emptyStateView: some View {
+    private var landingView: some View {
         VStack(spacing: 24) {
-            // Drop zone
             VStack(spacing: 16) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 80))
                     .foregroundStyle(DesignSystem.Colors.secondary)
 
-                VStack(spacing: 8) {
-                    Text("Drag and drop images here")
-                        .font(.title3)
-                        .foregroundStyle(DesignSystem.Colors.secondary)
-
-                    Text("or")
-                        .font(.subheadline)
-                        .foregroundStyle(DesignSystem.Colors.secondary.opacity(0.7))
-                }
+                Text("Drag and drop an image here")
+                    .font(.title3)
+                    .foregroundStyle(DesignSystem.Colors.secondary)
+                
+                Text("OR")
+                    .font(.title3)
+                    .foregroundStyle(DesignSystem.Colors.secondary)
             }
             .frame(maxWidth: 400)
             .padding(60)
@@ -56,43 +52,64 @@ struct FilePickerView: View {
                     .foregroundStyle(isTargeted ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary.opacity(0.5))
             )
             .animation(.easeInOut(duration: 0.2), value: isTargeted)
-
-            // Browse button
-            Button {
-                showingImagePicker = true
-            } label: {
-                Text("Browse")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(DesignSystem.Colors.primary)
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 12)
-                    .background(DesignSystem.Colors.tertiary, in: .rect(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-        }
-        .onDrop(of: [.image, .gif], isTargeted: $isTargeted) { providers in
-            Task {
-                let urls = await loadURLsFromProviders(providers, preferredTypes: [.image, .gif])
-                if !urls.isEmpty {
-                    await MainActor.run {
-                        onFilesSelected(urls)
+            .contentShape(.rect)
+            .onDrop(of: [.image, .gif], isTargeted: $isTargeted) { providers in
+                Task {
+                    let urls = await loadURLsFromProviders(providers, preferredTypes: [.image, .gif])
+                    if !urls.isEmpty {
+                        await MainActor.run {
+                            onFilesDropped(urls)
+                        }
                     }
                 }
+                return true
             }
-            return true
+
+            HStack(spacing: 16) {
+                Button {
+                    onNewBoard()
+                } label: {
+                    Text("New Board")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(DesignSystem.Colors.primary)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 12)
+                        .background(DesignSystem.Colors.tertiary, in: .rect(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    showingBoardPicker = true
+                } label: {
+                    Text("Open Board")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(DesignSystem.Colors.tertiary)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
         }
         .fileImporter(
-            isPresented: $showingImagePicker,
-            allowedContentTypes: [.image, .gif],
-            allowsMultipleSelection: true
+            isPresented: $showingBoardPicker,
+            allowedContentTypes: [.refboard],
+            allowsMultipleSelection: false
         ) { result in
             switch result {
             case .success(let urls):
-                if !urls.isEmpty {
-                    onFilesSelected(urls)
+                guard let url = urls.first else { return }
+                do {
+                    let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                    onBoardSelected(elements)
+                } catch {
+                    print("Error importing board: \(error.localizedDescription)")
                 }
             case .failure(let error):
-                print("Error selecting images: \(error.localizedDescription)")
+                print("Error selecting board: \(error.localizedDescription)")
             }
         }
     }
@@ -100,5 +117,5 @@ struct FilePickerView: View {
 }
 
 #Preview {
-    FilePickerView(onFilesSelected: { _ in })
+    FilePickerView(onNewBoard: {}, onBoardSelected: { _ in }, onFilesDropped: { _ in })
 }

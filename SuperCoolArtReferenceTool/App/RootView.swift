@@ -18,11 +18,23 @@ struct RootView: View {
         if showCanvas {
             ContentView(initialURLs: initialURLs, initialElements: initialElements)
         } else {
-            FilePickerView(onFilesSelected: { urls in
-                initialElements = nil
-                initialURLs = urls
-                showCanvas = true
-            })
+            FilePickerView(
+                onNewBoard: {
+                    initialElements = nil
+                    initialURLs = []
+                    showCanvas = true
+                },
+                onBoardSelected: { elements in
+                    initialURLs = []
+                    initialElements = elements
+                    showCanvas = true
+                },
+                onFilesDropped: { urls in
+                    initialElements = nil
+                    initialURLs = urls
+                    showCanvas = true
+                }
+            )
             .onChange(of: openHandler.importedElements) { _, value in
                 if let value {
                     initialURLs = []
@@ -35,6 +47,7 @@ struct RootView: View {
 }
 
 #Preview {
+    @Previewable @State var handler = AppOpenHandler()
     RootView()
-        .environment(AppOpenHandler())
+        .environment(handler)
 }
