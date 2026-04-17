@@ -12,7 +12,7 @@ struct RootView: View {
 
     @State private var showCanvas = false
     @State private var initialURLs: [URL] = []
-    @State private var initialElements: [CMCanvasElement]? = nil
+    @State private var initialElements: [CMCanvasElement]?
 
     var body: some View {
         if showCanvas {

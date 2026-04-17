@@ -11,6 +11,8 @@ import UniformTypeIdentifiers
 struct FilePickerView: View {
     @State private var isTargeted = false
     @State private var showingBoardPicker = false
+    @State private var importError: String?
+    @ScaledMetric(relativeTo: .largeTitle) private var iconSize: CGFloat = 80
 
     var onNewBoard: () -> Void
     var onBoardSelected: ([CMCanvasElement]) -> Void
@@ -22,19 +24,25 @@ struct FilePickerView: View {
                 .ignoresSafeArea()
             landingView
         }
+        .alert("Import Failed", isPresented: .constant(importError != nil)) {
+            Button("OK") { importError = nil }
+        } message: {
+            Text(importError ?? "")
+        }
     }
 
     private var landingView: some View {
         VStack(spacing: 24) {
             VStack(spacing: 16) {
                 Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 80))
+                    .font(.system(size: iconSize))
                     .foregroundStyle(DesignSystem.Colors.secondary)
+                    .accessibilityHidden(true)
 
                 Text("Drag and drop an image here")
                     .font(.title3)
                     .foregroundStyle(DesignSystem.Colors.secondary)
-                
+
                 Text("OR")
                     .font(.title3)
                     .foregroundStyle(DesignSystem.Colors.secondary)
@@ -57,9 +65,7 @@ struct FilePickerView: View {
                 Task {
                     let urls = await loadURLsFromProviders(providers, preferredTypes: [.image, .gif])
                     if !urls.isEmpty {
-                        await MainActor.run {
-                            onFilesDropped(urls)
-                        }
+                        onFilesDropped(urls)
                     }
                 }
                 return true
@@ -106,10 +112,10 @@ struct FilePickerView: View {
                     let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                     onBoardSelected(elements)
                 } catch {
-                    print("Error importing board: \(error.localizedDescription)")
+                    importError = error.localizedDescription
                 }
             case .failure(let error):
-                print("Error selecting board: \(error.localizedDescription)")
+                importError = error.localizedDescription
             }
         }
     }
