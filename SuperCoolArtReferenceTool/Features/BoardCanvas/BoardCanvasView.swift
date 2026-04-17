@@ -280,6 +280,7 @@ struct BoardCanvasView: View {
                 if let els = newValue {
                     applyElements(els)
                     commandHistory.clear()
+                    selection.clearSelection()
                     // Clear the binding after applying
                     DispatchQueue.main.async {
                         elementsToLoad = nil
@@ -889,12 +890,30 @@ struct BoardCanvasView: View {
         Task { @MainActor in
             let elementsByID = await store.elements(for: Array(placedByID.keys))
             let snapshots: [PlacedElementSnapshot] = placedByID.map { id, placed in
-                let element = elementsByID[id] ?? fallbackElement(for: placed)
+                let authElement = elementsByID[id]
+                let element = authElement ?? fallbackElement(for: placed)
+                let worldRect: CGRect
+                let zIndex: Int
+
+                if let authElement {
+                    let bounds = authElement.header.bounds
+                    worldRect = CGRect(
+                        x: CGFloat(bounds.origin.x),
+                        y: CGFloat(bounds.origin.y),
+                        width: CGFloat(bounds.size.x),
+                        height: CGFloat(bounds.size.y)
+                    )
+                    zIndex = authElement.header.zIndex
+                } else {
+                    worldRect = placed.worldRect
+                    zIndex = placed.zIndex
+                }
+
                 return PlacedElementSnapshot(
                     id: id,
                     url: placed.url,
-                    worldRect: placed.worldRect,
-                    zIndex: placed.zIndex,
+                    worldRect: worldRect,
+                    zIndex: zIndex,
                     element: element
                 )
             }
