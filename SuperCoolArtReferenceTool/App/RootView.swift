@@ -13,10 +13,12 @@ struct RootView: View {
     @State private var showCanvas = false
     @State private var initialURLs: [URL] = []
     @State private var initialElements: [CMCanvasElement]?
+    @State private var recentsManager = RecentBoardsManager()
 
     var body: some View {
         if showCanvas {
             ContentView(initialURLs: initialURLs, initialElements: initialElements)
+                .environment(recentsManager)
         } else {
             FilePickerView(
                 onNewBoard: {
@@ -35,6 +37,7 @@ struct RootView: View {
                     showCanvas = true
                 }
             )
+            .environment(recentsManager)
             .onChange(of: openHandler.importedElements) { _, value in
                 if let value {
                     initialURLs = []

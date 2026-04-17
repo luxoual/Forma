@@ -11,8 +11,10 @@ import UniformTypeIdentifiers
 struct FilePickerView: View {
     @State private var isTargeted = false
     @State private var showingBoardPicker = false
-    @State private var importError: String?
+    @State private var showImportError = false
+    @State private var importErrorMessage = ""
     @ScaledMetric(relativeTo: .largeTitle) private var iconSize: CGFloat = 80
+    @Environment(RecentBoardsManager.self) private var recentsManager
 
     var onNewBoard: () -> Void
     var onBoardSelected: ([CMCanvasElement]) -> Void
@@ -24,15 +26,14 @@ struct FilePickerView: View {
                 .ignoresSafeArea()
             landingView
         }
-        .alert("Import Failed", isPresented: .constant(importError != nil)) {
-            Button("OK") { importError = nil }
+        .alert("Import Failed", isPresented: $showImportError) {
         } message: {
-            Text(importError ?? "")
+            Text(importErrorMessage)
         }
     }
 
     private var landingView: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 32) {
             VStack(spacing: 16) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: iconSize))
@@ -99,6 +100,8 @@ struct FilePickerView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            recentBoardsSection
         }
         .fileImporter(
             isPresented: $showingBoardPicker,
@@ -108,20 +111,86 @@ struct FilePickerView: View {
             switch result {
             case .success(let urls):
                 guard let url = urls.first else { return }
-                do {
-                    let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
-                    onBoardSelected(elements)
-                } catch {
-                    importError = error.localizedDescription
-                }
+                openBoard(at: url)
             case .failure(let error):
-                importError = error.localizedDescription
+                importErrorMessage = error.localizedDescription
+                showImportError = true
             }
         }
     }
 
+    @ViewBuilder
+    private var recentBoardsSection: some View {
+        let recents = recentsManager.validEntries(limit: 5)
+        if !recents.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Recent Boards")
+                    .font(.headline)
+                    .foregroundStyle(DesignSystem.Colors.text)
+
+                VStack(spacing: 0) {
+                    ForEach(recents.enumerated().map { $0 }, id: \.element.id) { index, entry in
+                        Button {
+                            openRecentBoard(entry)
+                        } label: {
+                            HStack {
+                                Image(systemName: "doc.fill")
+                                    .foregroundStyle(DesignSystem.Colors.tertiary)
+                                    .frame(width: 24)
+
+                                Text(entry.name)
+                                    .foregroundStyle(DesignSystem.Colors.text)
+
+                                Spacer()
+
+                                Text(entry.lastOpened.formatted(.relative(presentation: .named)))
+                                    .font(.caption)
+                                    .foregroundStyle(DesignSystem.Colors.secondary)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < recents.count - 1 {
+                            Divider()
+                                .background(DesignSystem.Colors.secondary.opacity(0.3))
+                                .padding(.leading, 56)
+                        }
+                    }
+                }
+                .background(DesignSystem.Colors.secondary.opacity(0.15), in: .rect(cornerRadius: 10))
+            }
+            .frame(maxWidth: 500)
+            .padding(.top, 8)
+        }
+    }
+
+    private func openBoard(at url: URL) {
+        do {
+            let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+            recentsManager.record(url: url)
+            onBoardSelected(elements)
+        } catch {
+            importErrorMessage = error.localizedDescription
+            showImportError = true
+        }
+    }
+
+    private func openRecentBoard(_ entry: RecentBoardEntry) {
+        guard let url = entry.resolveURL() else {
+            importErrorMessage = "This board can no longer be found."
+            showImportError = true
+            return
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        openBoard(at: url)
+    }
 }
 
 #Preview {
     FilePickerView(onNewBoard: {}, onBoardSelected: { _ in }, onFilesDropped: { _ in })
+        .environment(RecentBoardsManager())
 }

@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppOpenHandler.self) private var openHandler
+    @Environment(RecentBoardsManager.self) private var recentsManager
 
     let initialURLs: [URL]
     let initialElements: [CMCanvasElement]?
@@ -91,8 +92,8 @@ struct ContentView: View {
             defaultFilename: "Board"
         ) { result in
             switch result {
-            case .success:
-                break
+            case .success(let url):
+                recentsManager.record(url: url)
             case .failure(let error):
                 print("Export share failed: ", error.localizedDescription)
             }
@@ -119,6 +120,7 @@ struct ContentView: View {
                     guard let url = urls.first else { return }
                     do {
                         let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                        recentsManager.record(url: url)
                         elementsToLoad = elements
                     } catch {
                         print("Import failed: ", error)
@@ -159,4 +161,5 @@ struct ContentView: View {
 #Preview {
     ContentView(initialURLs: [], initialElements: nil)
         .environment(AppOpenHandler())
+        .environment(RecentBoardsManager())
 }
