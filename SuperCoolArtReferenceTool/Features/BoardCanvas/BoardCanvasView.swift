@@ -259,8 +259,11 @@ struct BoardCanvasView: View {
             }
             .onChange(of: externalInsertURLs) { oldValue, newValue in
                 if let urls = newValue, !urls.isEmpty {
+                    let isFirstInsert = placedImages.isEmpty
                     insertImagesAtCenter(urls)
-                    // Clear the binding after processing
+                    if isFirstInsert {
+                        commandHistory.clear()
+                    }
                     DispatchQueue.main.async {
                         externalInsertURLs = nil
                     }

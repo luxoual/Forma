@@ -12,17 +12,38 @@ struct RootView: View {
 
     @State private var showCanvas = false
     @State private var initialURLs: [URL] = []
-    @State private var initialElements: [CMCanvasElement]? = nil
+    @State private var initialElements: [CMCanvasElement]?
+    @State private var initialBoardURL: URL?
+    @State private var recentsManager = RecentBoardsManager()
 
     var body: some View {
         if showCanvas {
-            ContentView(initialURLs: initialURLs, initialElements: initialElements)
+            ContentView(initialURLs: initialURLs, initialElements: initialElements, initialBoardURL: initialBoardURL, onBack: {
+                    showCanvas = false
+                })
+                .environment(recentsManager)
         } else {
-            FilePickerView(onFilesSelected: { urls in
-                initialElements = nil
-                initialURLs = urls
-                showCanvas = true
-            })
+            FilePickerView(
+                onNewBoard: {
+                    initialElements = nil
+                    initialURLs = []
+                    initialBoardURL = nil
+                    showCanvas = true
+                },
+                onBoardSelected: { elements, url in
+                    initialURLs = []
+                    initialElements = elements
+                    initialBoardURL = url
+                    showCanvas = true
+                },
+                onFilesDropped: { urls in
+                    initialElements = nil
+                    initialURLs = urls
+                    initialBoardURL = nil
+                    showCanvas = true
+                }
+            )
+            .environment(recentsManager)
             .onChange(of: openHandler.importedElements) { _, value in
                 if let value {
                     initialURLs = []
@@ -35,6 +56,7 @@ struct RootView: View {
 }
 
 #Preview {
+    @Previewable @State var handler = AppOpenHandler()
     RootView()
-        .environment(AppOpenHandler())
+        .environment(handler)
 }
