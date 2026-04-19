@@ -24,10 +24,10 @@ struct RootView: View {
                 .environment(recentsManager)
         } else {
             FilePickerView(
-                onNewBoard: {
+                onNewBoard: { url in
                     initialElements = nil
                     initialURLs = []
-                    initialBoardURL = nil
+                    initialBoardURL = url
                     showCanvas = true
                 },
                 onBoardSelected: { elements, url in

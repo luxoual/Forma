@@ -11,12 +11,14 @@ import UniformTypeIdentifiers
 struct FilePickerView: View {
     @State private var isTargeted = false
     @State private var showingBoardPicker = false
+    @State private var showingNewBoardExporter = false
+    @State private var newBoardDocument = BoardExportDocument(elements: [])
     @State private var showImportError = false
     @State private var importErrorMessage = ""
     @ScaledMetric(relativeTo: .largeTitle) private var iconSize: CGFloat = 80
     @Environment(RecentBoardsManager.self) private var recentsManager
 
-    var onNewBoard: () -> Void
+    var onNewBoard: (URL) -> Void
     var onBoardSelected: ([CMCanvasElement], URL) -> Void
     var onFilesDropped: ([URL]) -> Void
 
@@ -74,7 +76,8 @@ struct FilePickerView: View {
 
             HStack(spacing: 16) {
                 Button {
-                    onNewBoard()
+                    newBoardDocument = BoardExportDocument(elements: [])
+                    showingNewBoardExporter = true
                 } label: {
                     Text("New Board")
                         .fontWeight(.semibold)
@@ -117,6 +120,21 @@ struct FilePickerView: View {
                 showImportError = true
             }
         }
+        .fileExporter(
+            isPresented: $showingNewBoardExporter,
+            document: newBoardDocument,
+            contentType: .refboard,
+            defaultFilename: "Untitled Board"
+        ) { result in
+            switch result {
+            case .success(let url):
+                recentsManager.record(url: url)
+                onNewBoard(url)
+            case .failure(let error):
+                importErrorMessage = error.localizedDescription
+                showImportError = true
+            }
+        }
     }
 
     @ViewBuilder
@@ -129,7 +147,7 @@ struct FilePickerView: View {
                     .foregroundStyle(DesignSystem.Colors.text)
 
                 VStack(spacing: 0) {
-                    ForEach(recents.enumerated().map { $0 }, id: \.element.id) { index, entry in
+                    ForEach(recents) { entry in
                         Button {
                             openRecentBoard(entry)
                         } label: {
@@ -153,7 +171,7 @@ struct FilePickerView: View {
                         }
                         .buttonStyle(.plain)
 
-                        if index < recents.count - 1 {
+                        if entry.id != recents.last?.id {
                             Divider()
                                 .background(DesignSystem.Colors.secondary.opacity(0.3))
                                 .padding(.leading, 56)
@@ -168,29 +186,32 @@ struct FilePickerView: View {
     }
 
     private func openBoard(at url: URL) {
-        do {
-            let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
-            recentsManager.record(url: url)
-            onBoardSelected(elements, url)
-        } catch {
-            importErrorMessage = error.localizedDescription
-            showImportError = true
+        Task {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                recentsManager.record(url: url)
+                onBoardSelected(elements, url)
+            } catch {
+                importErrorMessage = error.localizedDescription
+                showImportError = true
+            }
         }
     }
 
     private func openRecentBoard(_ entry: RecentBoardEntry) {
-        guard let url = entry.resolveURL() else {
+        guard let resolved = entry.resolveURL() else {
             importErrorMessage = "This board can no longer be found."
             showImportError = true
             return
         }
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        openBoard(at: url)
+        // `record(url:)` refreshes the bookmark as a side-effect, so stale entries heal on open.
+        openBoard(at: resolved.url)
     }
 }
 
 #Preview {
-    FilePickerView(onNewBoard: {}, onBoardSelected: { _, _ in }, onFilesDropped: { _ in })
+    FilePickerView(onNewBoard: { _ in }, onBoardSelected: { _, _ in }, onFilesDropped: { _ in })
         .environment(RecentBoardsManager())
 }

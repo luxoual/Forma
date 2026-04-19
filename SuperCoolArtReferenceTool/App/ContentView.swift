@@ -43,6 +43,10 @@ struct ContentView: View {
     private enum ImporterMode { case images, board }
     @State private var pendingBackNavigation = false
     @State private var currentBoardURL: URL?
+    @State private var showSaveError = false
+    @State private var saveErrorMessage = ""
+    @State private var showBoardError = false
+    @State private var boardErrorMessage = ""
 
     var body: some View {
         ZStack {
@@ -105,7 +109,8 @@ struct ContentView: View {
                 currentBoardURL = url
                 recentsManager.record(url: url)
             case .failure(let error):
-                print("Export share failed: ", error.localizedDescription)
+                boardErrorMessage = "Export failed: \(error.localizedDescription)"
+                showBoardError = true
             }
         }
         .onChange(of: importerMode) { _, newMode in
@@ -134,16 +139,28 @@ struct ContentView: View {
                         currentBoardURL = url
                         elementsToLoad = elements
                     } catch {
-                        print("Import failed: ", error)
+                        boardErrorMessage = "Could not open board: \(error.localizedDescription)"
+                        showBoardError = true
                     }
                 }
             case .failure(let error):
-                print("[Importer] Import selection failed: \(error.localizedDescription)")
+                boardErrorMessage = error.localizedDescription
+                showBoardError = true
             }
             importerMode = nil
         }
         .sheet(isPresented: $showingSettings) {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
+        }
+        .alert("Save Failed", isPresented: $showSaveError) {
+            Button("Discard & Leave", role: .destructive) { onBack() }
+            Button("Stay", role: .cancel) { }
+        } message: {
+            Text(saveErrorMessage)
+        }
+        .alert("Board Error", isPresented: $showBoardError) {
+        } message: {
+            Text(boardErrorMessage)
         }
         .onAppear {
             currentBoardURL = initialBoardURL
@@ -182,7 +199,9 @@ struct ContentView: View {
                 _ = try BoardArchiver.export(elements: elements, to: url)
                 recentsManager.record(url: url)
             } catch {
-                print("[Save] Failed to save board: \(error.localizedDescription)")
+                saveErrorMessage = "Could not save board: \(error.localizedDescription)"
+                showSaveError = true
+                return
             }
         }
         onBack()

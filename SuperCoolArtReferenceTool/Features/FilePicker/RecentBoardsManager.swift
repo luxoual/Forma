@@ -4,16 +4,34 @@ struct RecentBoardEntry: Codable, Identifiable {
     var id: String { filePath }
     let name: String
     let filePath: String
-    let bookmarkData: Data
+    var bookmarkData: Data
     var lastOpened: Date
 
-    func resolveURL() -> URL? {
+    /// Resolves the bookmark to a URL. If the bookmark is stale, returns a refreshed `Data` blob
+    /// that the caller is responsible for persisting back to storage. Returns `nil` if the
+    /// bookmark can't be resolved or the file no longer exists on disk.
+    func resolveURL() -> (url: URL, refreshedBookmark: Data?)? {
         var isStale = false
         guard let url = try? URL(
             resolvingBookmarkData: bookmarkData,
             bookmarkDataIsStale: &isStale
         ) else { return nil }
-        return url
+
+        // iCloud "delete" moves the file into a hidden `.Trash` folder, and security-scoped
+        // bookmarks follow it. Treat trashed files as deleted so stale entries get pruned.
+        if url.path.contains("/.Trash/") { return nil }
+
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard (try? url.checkResourceIsReachable()) == true else { return nil }
+
+        guard isStale else { return (url, nil) }
+        let fresh = try? url.bookmarkData(
+            options: .suitableForBookmarkFile,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        return (url, fresh)
     }
 }
 
@@ -26,7 +44,7 @@ final class RecentBoardsManager {
     private let storageURL = URL.applicationSupportDirectory.appending(path: "recent_boards.json")
 
     init() {
-        load()
+        entries = Self.loadFromDisk(url: storageURL)
         pruneInvalid()
     }
 
@@ -38,14 +56,17 @@ final class RecentBoardsManager {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
+        let path = url.standardizedFileURL.path
+        // Never record files that live in iCloud's trash.
+        if path.contains("/.Trash/") { return }
+
         guard let bookmark = try? url.bookmarkData(
-            options: [],
+            options: .suitableForBookmarkFile,
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         ) else { return }
 
         let name = url.deletingPathExtension().lastPathComponent
-        let path = url.standardizedFileURL.path
 
         if let idx = entries.firstIndex(where: { $0.filePath == path }) {
             entries[idx] = RecentBoardEntry(
@@ -64,37 +85,55 @@ final class RecentBoardsManager {
         if entries.count > maxStored {
             entries = Array(entries.prefix(maxStored))
         }
-        save()
-    }
 
-    private func load() {
-        guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
-        do {
-            let data = try Data(contentsOf: storageURL)
-            entries = try JSONDecoder().decode([RecentBoardEntry].self, from: data)
-            entries.sort { $0.lastOpened > $1.lastOpened }
-        } catch {
-            print("[RecentBoards] Failed to load: \(error.localizedDescription)")
-            entries = []
-        }
-    }
-
-    private func save() {
-        do {
-            let data = try JSONEncoder().encode(entries)
-            let dir = storageURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try data.write(to: storageURL, options: .atomic)
-        } catch {
-            print("[RecentBoards] Failed to save: \(error.localizedDescription)")
-        }
+        let snapshot = entries
+        let saveURL = storageURL
+        Task.detached { Self.saveToDisk(snapshot, url: saveURL) }
     }
 
     private func pruneInvalid() {
-        let before = entries.count
-        entries.removeAll { $0.resolveURL() == nil }
-        if entries.count != before {
-            save()
+        var didChange = false
+        entries = entries.compactMap { entry in
+            guard let resolved = entry.resolveURL() else {
+                didChange = true
+                return nil
+            }
+            if let refreshed = resolved.refreshedBookmark {
+                didChange = true
+                var updated = entry
+                updated.bookmarkData = refreshed
+                return updated
+            }
+            return entry
+        }
+        if didChange {
+            let snapshot = entries
+            let saveURL = storageURL
+            Task.detached { Self.saveToDisk(snapshot, url: saveURL) }
+        }
+    }
+
+    private nonisolated static func loadFromDisk(url: URL) -> [RecentBoardEntry] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        do {
+            let data = try Data(contentsOf: url)
+            var entries = try JSONDecoder().decode([RecentBoardEntry].self, from: data)
+            entries.sort { $0.lastOpened > $1.lastOpened }
+            return entries
+        } catch {
+            print("[RecentBoards] Failed to load: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private nonisolated static func saveToDisk(_ entries: [RecentBoardEntry], url: URL) {
+        do {
+            let data = try JSONEncoder().encode(entries)
+            let dir = url.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[RecentBoards] Failed to save: \(error.localizedDescription)")
         }
     }
 }
