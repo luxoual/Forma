@@ -36,6 +36,7 @@ struct ContentView: View {
     @State private var commandHistory = CanvasCommandHistory()
     @State private var undoTrigger: UUID?
     @State private var redoTrigger: UUID?
+    @State private var markCleanTrigger: UUID?
 
     @State private var importerMode: ImporterMode?
     @State private var importerPresented = false
@@ -62,6 +63,7 @@ struct ContentView: View {
                 commandHistory: commandHistory,
                 undoTrigger: $undoTrigger,
                 redoTrigger: $redoTrigger,
+                markCleanTrigger: $markCleanTrigger,
                 onInsertURLs: { _ in },
                 onSnapshot: { elements, wasDirty in
                     if pendingBackNavigation {
@@ -113,6 +115,7 @@ struct ContentView: View {
             case .success(let url):
                 currentBoardURL = url
                 recentsManager.record(url: url)
+                markCleanTrigger = UUID()
             case .failure(let error):
                 boardErrorMessage = "Export failed: \(error.localizedDescription)"
                 showBoardError = true
@@ -228,6 +231,7 @@ struct ContentView: View {
             _ = try BoardArchiver.export(elements: elements, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
             print("[Save] Autosave wrote \(elements.count) elements to \(url.lastPathComponent) in \(ms)ms")
+            markCleanTrigger = UUID()
         } catch {
             print("[Save] Autosave failed: \(error.localizedDescription)")
         }
@@ -253,6 +257,7 @@ struct ContentView: View {
                 saveErrorMessage = "Could not save board: \(failure.localizedDescription)"
                 showSaveError = true
             } else {
+                markCleanTrigger = UUID()
                 onBack()
             }
         }

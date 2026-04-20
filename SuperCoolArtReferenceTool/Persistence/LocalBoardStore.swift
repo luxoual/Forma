@@ -19,16 +19,18 @@ actor LocalBoardStore {
 
     private let cache = TileCache(capacity: 256)
 
-    /// True when content has changed since the last `consumeDirty()`. Set by every mutating
+    /// True when content has changed since the last `markClean()`. Set by every mutating
     /// method; read by autosave to skip redundant writes.
     private var isDirty = false
 
-    /// Atomically returns whether the store is dirty and clears the flag.
-    func consumeDirty() async -> Bool {
-        let was = isDirty
-        isDirty = false
-        return was
-    }
+    /// Returns whether the store has changed since the last `markClean()`. Non-consuming —
+    /// callers must follow up with `markClean()` only after the save has actually succeeded,
+    /// otherwise a cancelled exporter would silently drop the dirty flag and the next autosave
+    /// would incorrectly skip writing.
+    func peekDirty() async -> Bool { isDirty }
+
+    /// Clears the dirty flag. Call only on confirmed-successful persistence.
+    func markClean() async { isDirty = false }
 
     /// Returns all full elements currently stored, unsafely exposing internal order.
     /// Sorted by zIndex then UUID for stable export ordering.
