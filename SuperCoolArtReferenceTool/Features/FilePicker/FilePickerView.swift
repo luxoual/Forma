@@ -187,10 +187,12 @@ struct FilePickerView: View {
 
     private func openBoard(at url: URL) {
         Task {
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
             do {
-                let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                let elements = try await Task.detached(priority: .userInitiated) {
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                }.value
                 recentsManager.record(url: url)
                 onBoardSelected(elements, url)
             } catch {

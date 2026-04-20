@@ -138,14 +138,20 @@ struct ContentView: View {
                     urlsToInsert = urls
                 } else if currentMode == .board {
                     guard let url = urls.first else { return }
-                    do {
-                        let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
-                        recentsManager.record(url: url)
-                        currentBoardURL = url
-                        elementsToLoad = elements
-                    } catch {
-                        boardErrorMessage = "Could not open board: \(error.localizedDescription)"
-                        showBoardError = true
+                    Task {
+                        do {
+                            let elements = try await Task.detached(priority: .userInitiated) {
+                                let accessing = url.startAccessingSecurityScopedResource()
+                                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                                return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                            }.value
+                            recentsManager.record(url: url)
+                            currentBoardURL = url
+                            elementsToLoad = elements
+                        } catch {
+                            boardErrorMessage = "Could not open board: \(error.localizedDescription)"
+                            showBoardError = true
+                        }
                     }
                 }
             case .failure(let error):
