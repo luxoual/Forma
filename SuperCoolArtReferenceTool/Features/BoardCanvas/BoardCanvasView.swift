@@ -64,11 +64,14 @@ struct BoardCanvasView: View {
     @Binding private var externalInsertURLs: [URL]?
 
     @Binding private var snapshotTrigger: UUID?
-    private let onSnapshot: (([CMCanvasElement]) -> Void)?
+    /// Snapshot callback. `wasDirty` reflects whether the store had unsaved mutations since the
+    /// last snapshot — the store's dirty flag is consumed by this call. Use it to skip writes
+    /// when nothing changed. Callers doing explicit Export/Save-As should ignore it.
+    private let onSnapshot: (([CMCanvasElement], Bool) -> Void)?
     @Binding private var elementsToLoad: [CMCanvasElement]?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -270,13 +273,14 @@ struct BoardCanvasView: View {
                 }
             }
             .onChange(of: snapshotTrigger) { oldValue, newValue in
-                // When token changes, produce a snapshot and call back
+                // When token changes, produce a snapshot and call back with the dirty flag.
+                // Task{} inherits MainActor from this view, and the actor `await`s hop back on
+                // return, so no explicit MainActor.run is needed to call onSnapshot.
                 guard newValue != nil else { return }
                 Task {
                     let elements = await canvasStore.allElements()
-                    await MainActor.run {
-                        onSnapshot?(elements)
-                    }
+                    let wasDirty = await canvasStore.consumeDirty()
+                    onSnapshot?(elements, wasDirty)
                 }
             }
             .onChange(of: elementsToLoad) { oldValue, newValue in

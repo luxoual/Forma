@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @Environment(AppOpenHandler.self) private var openHandler
     @Environment(RecentBoardsManager.self) private var recentsManager
+    @Environment(\.scenePhase) private var scenePhase
 
     let initialURLs: [URL]
     let initialElements: [CMCanvasElement]?
@@ -42,6 +43,7 @@ struct ContentView: View {
     @State private var lastImporterMode: ImporterMode?
     private enum ImporterMode { case images, board }
     @State private var pendingBackNavigation = false
+    @State private var pendingBackgroundSave = false
     @State private var currentBoardURL: URL?
     @State private var showSaveError = false
     @State private var saveErrorMessage = ""
@@ -61,10 +63,13 @@ struct ContentView: View {
                 undoTrigger: $undoTrigger,
                 redoTrigger: $redoTrigger,
                 onInsertURLs: { _ in },
-                onSnapshot: { elements in
+                onSnapshot: { elements, wasDirty in
                     if pendingBackNavigation {
                         pendingBackNavigation = false
-                        saveAndGoBack(elements: elements)
+                        saveAndGoBack(elements: elements, wasDirty: wasDirty)
+                    } else if pendingBackgroundSave {
+                        pendingBackgroundSave = false
+                        saveInPlace(elements: elements, wasDirty: wasDirty)
                     } else {
                         exportDocument = BoardExportDocument(elements: elements)
                         showingExporter = true
@@ -178,6 +183,18 @@ struct ContentView: View {
                 openHandler.importedElements = nil
             }
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Autosave on `.inactive`. We can't use `.background` because force-quit from the
+            // app switcher sends SIGKILL before `.background` fires — the lifecycle goes
+            // `.active → .inactive → killed`, skipping `.background`. `.inactive` does fire on
+            // Control Center / Notification Center pulls too, but the dirty flag makes those
+            // a cheap no-op, and the incremental export keeps real saves fast enough to finish
+            // before the user can swipe the app card away.
+            if newPhase == .inactive, currentBoardURL != nil, !pendingBackNavigation {
+                pendingBackgroundSave = true
+                snapshotToken = UUID()
+            }
+        }
     }
     
     private func openImageImporter() {
@@ -191,20 +208,48 @@ struct ContentView: View {
         snapshotToken = UUID()
     }
 
-    private func saveAndGoBack(elements: [CMCanvasElement]) {
-        if let url = currentBoardURL {
-            do {
+    /// Autosave runs synchronously on MainActor so the write completes before the user can
+    /// force-quit. The incremental `BoardArchiver.export` is fast enough — a clean-board save
+    /// is a manifest-only rewrite (~5 ms); adding one image copies a single file (~50 ms).
+    /// Off-main would be smoother for active use, but nothing calls this during active use —
+    /// `.inactive` means the user is already out of the canvas view.
+    private func saveInPlace(elements: [CMCanvasElement], wasDirty: Bool) {
+        guard wasDirty, let url = currentBoardURL else { return }
+        let startedAt = Date()
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            _ = try BoardArchiver.export(elements: elements, to: url)
+            let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+            print("[Save] Autosave wrote \(elements.count) elements to \(url.lastPathComponent) in \(ms)ms")
+        } catch {
+            print("[Save] Autosave failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func saveAndGoBack(elements: [CMCanvasElement], wasDirty: Bool) {
+        guard wasDirty, let url = currentBoardURL else {
+            onBack()
+            return
+        }
+        Task {
+            let failure: Error? = await Task.detached(priority: .userInitiated) {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                _ = try BoardArchiver.export(elements: elements, to: url)
-                recentsManager.record(url: url)
-            } catch {
-                saveErrorMessage = "Could not save board: \(error.localizedDescription)"
+                do {
+                    _ = try BoardArchiver.export(elements: elements, to: url)
+                    return nil as Error?
+                } catch {
+                    return error
+                }
+            }.value
+            if let failure {
+                saveErrorMessage = "Could not save board: \(failure.localizedDescription)"
                 showSaveError = true
-                return
+            } else {
+                onBack()
             }
         }
-        onBack()
     }
 }
 
