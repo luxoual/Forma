@@ -10,6 +10,10 @@ struct RecentBoardEntry: Codable, Identifiable {
     /// Resolves the bookmark to a URL. If the bookmark is stale, returns a refreshed `Data` blob
     /// that the caller is responsible for persisting back to storage. Returns `nil` if the
     /// bookmark can't be resolved or the file no longer exists on disk.
+    /// On iOS, URLs returned by `.fileImporter` are already security-scoped. `URL.bookmarkData`
+    /// with `.suitableForBookmarkFile` (or no options) preserves that scope automatically; the
+    /// `.withSecurityScope` option is macOS-only (unavailable in iOS) — trying to use it produces
+    /// a compile error, not a runtime one.
     func resolveURL() -> (url: URL, refreshedBookmark: Data?)? {
         var isStale = false
         guard let url = try? URL(

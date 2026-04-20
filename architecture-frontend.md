@@ -712,8 +712,8 @@ The app's landing screen with three entry paths to the canvas and a recent board
 
 **Entry Paths:**
 
-1. **"New Board" (primary CTA)** — filled tertiary button, transitions to an empty canvas immediately (no file picker)
-2. **"Open Board" (secondary)** — outlined tertiary button, opens `.fileImporter` for `.refboard` files. Imports via `BoardArchiver.importElements`, records in recents, passes elements + URL to `ContentView`
+1. **"New Board" (primary CTA)** — filled tertiary button, presents a `.fileExporter` for `Untitled Board.refboard`. On success, an empty canvas opens with that save location as its `currentBoardURL`, so the back button can write straight to it.
+2. **"Open Board" (secondary)** — outlined tertiary button, opens `.fileImporter` for `.refboard` files. Imports via `BoardArchiver.importElements` on a detached task, records in recents, passes elements + URL to `ContentView`
 3. **Drag-and-drop** — drop images/GIFs onto the dashed rectangle area. `.contentShape(.rect)` ensures the entire padded area is a valid drop target, not just the icon/text
 
 **Visual Design:**
@@ -728,7 +728,7 @@ The app's landing screen with three entry paths to the canvas and a recent board
 `RecentBoardsManager` is an `@Observable @MainActor` class that persists up to 10 recent board entries as JSON in App Support (`recent_boards.json`). Each entry stores:
 - `name` — derived from filename
 - `filePath` — standardized path string, used as stable `Identifiable.id` and dedup key
-- `bookmarkData` — security-scoped bookmark `Data` so the app can reopen files across launches regardless of location
+- `bookmarkData` — bookmark `Data` created with `.suitableForBookmarkFile` from the fileImporter-vended URL, which preserves the URL's implicit security scope on iOS (the explicit `.withSecurityScope` option is macOS-only). Lets the app reopen files across launches regardless of location.
 - `lastOpened` — timestamp for sorting
 
 The landing page displays up to 5 valid entries (list rows with doc icon, name, and relative date). Tapping an entry resolves the bookmark via `resolveURL()`, starts security-scoped access, and imports the board.
@@ -746,11 +746,13 @@ Recording happens on:
 **Callbacks:**
 ```swift
 FilePickerView(
-    onNewBoard: () -> Void,
+    onNewBoard: (URL) -> Void,
     onBoardSelected: ([CMCanvasElement], URL) -> Void,
     onFilesDropped: ([URL]) -> Void
 )
 ```
+
+`onNewBoard` receives the save URL chosen in the file exporter so `ContentView` can seed `currentBoardURL` for save-on-back.
 
 **Integration:**
 - `RootView` hosts `FilePickerView` and routes to `ContentView` based on which callback fires
@@ -766,11 +768,11 @@ A back button positioned in the top corner of the canvas (same side as toolbar, 
 
 **Save-on-back flow:**
 1. Back button tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
-2. `onSnapshot` callback checks the flag — if pending back, calls `saveAndGoBack(elements:)` instead of presenting the file exporter
-3. `saveAndGoBack` writes to `currentBoardURL` via `BoardArchiver.export`, records in recents, then calls `onBack()` which sets `showCanvas = false` in `RootView`
-4. If `currentBoardURL` is nil (new board that was never saved/exported), the board is not saved — navigates back without saving
+2. `onSnapshot` callback checks the flag — if pending back, calls `saveAndGoBack(elements:wasDirty:)` instead of presenting the file exporter
+3. `saveAndGoBack` writes to `currentBoardURL` via `BoardArchiver.export` on a detached task, flips `markCleanTrigger`, then calls `onBack()` which sets `showCanvas = false` in `RootView`
+4. If the export throws, an alert offers "Discard & Leave" or "Stay"; otherwise navigation proceeds
 
-**Known limitation:** New boards created via "New Board" have no `currentBoardURL`, so pressing back discards them silently. This needs a "Save As" prompt (file exporter) before navigating back. See Future Work.
+Because "New Board" requires choosing a save location up front, `currentBoardURL` is always set by the time the canvas appears, so the back button always has somewhere to write to.
 
 ---
 
