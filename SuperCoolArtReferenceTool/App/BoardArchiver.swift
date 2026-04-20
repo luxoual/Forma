@@ -154,12 +154,19 @@ enum BoardArchiver {
 
         let destinationExisted = fm.fileExists(atPath: destination.path)
         let accessMode: Archive.AccessMode = destinationExisted ? .update : .create
-        guard let archive = Archive(url: destination, accessMode: accessMode) else {
-            // If .update failed (e.g. corrupted file from a prior crash), nuke and retry as create.
-            if destinationExisted {
-                try? fm.removeItem(at: destination)
-                return try export(elements: elements, to: destination)
+        let archive: Archive
+        if let opened = Archive(url: destination, accessMode: accessMode) {
+            archive = opened
+        } else if destinationExisted {
+            // `.update` failed — file is corrupted (likely from a prior crash). Delete is
+            // throwing so permission/lock errors surface instead of triggering infinite
+            // recursion. One-shot retry as `.create`; bail if that still fails.
+            try fm.removeItem(at: destination)
+            guard let fresh = Archive(url: destination, accessMode: .create) else {
+                throw ImportError.ioFailure
             }
+            archive = fresh
+        } else {
             throw ImportError.ioFailure
         }
 
