@@ -64,11 +64,15 @@ struct BoardCanvasView: View {
     @Binding private var externalInsertURLs: [URL]?
 
     @Binding private var snapshotTrigger: UUID?
-    private let onSnapshot: (([CMCanvasElement]) -> Void)?
+    /// Snapshot callback. `wasDirty` is a non-consuming peek at the store's dirty flag. Save
+    /// paths must flip `markCleanTrigger` after a confirmed-successful write; the dirty flag
+    /// survives a cancelled exporter this way.
+    private let onSnapshot: (([CMCanvasElement], Bool) -> Void)?
     @Binding private var elementsToLoad: [CMCanvasElement]?
+    @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement]) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -78,6 +82,7 @@ struct BoardCanvasView: View {
         self.commandHistory = commandHistory
         self._undoTrigger = undoTrigger
         self._redoTrigger = redoTrigger
+        self._markCleanTrigger = markCleanTrigger
         self.onInsertURLs = onInsertURLs
         self._snapshotTrigger = snapshotTrigger
         self._elementsToLoad = loadElements
@@ -259,22 +264,31 @@ struct BoardCanvasView: View {
             }
             .onChange(of: externalInsertURLs) { oldValue, newValue in
                 if let urls = newValue, !urls.isEmpty {
+                    let isFirstInsert = placedImages.isEmpty
                     insertImagesAtCenter(urls)
-                    // Clear the binding after processing
+                    if isFirstInsert {
+                        commandHistory.clear()
+                    }
                     DispatchQueue.main.async {
                         externalInsertURLs = nil
                     }
                 }
             }
             .onChange(of: snapshotTrigger) { oldValue, newValue in
-                // When token changes, produce a snapshot and call back
+                // Emit snapshot + a peek at the dirty flag. Non-consuming: callers must flip
+                // `markCleanTrigger` after a confirmed save, not here, so a cancelled exporter
+                // leaves the dirty flag intact.
                 guard newValue != nil else { return }
                 Task {
                     let elements = await canvasStore.allElements()
-                    await MainActor.run {
-                        onSnapshot?(elements)
-                    }
+                    let wasDirty = await canvasStore.peekDirty()
+                    onSnapshot?(elements, wasDirty)
                 }
+            }
+            .onChange(of: markCleanTrigger) { _, newValue in
+                guard newValue != nil else { return }
+                Task { await canvasStore.markClean() }
+                DispatchQueue.main.async { markCleanTrigger = nil }
             }
             .onChange(of: elementsToLoad) { oldValue, newValue in
                 if let els = newValue {

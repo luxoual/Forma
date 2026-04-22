@@ -6,6 +6,7 @@ import SwiftUI
 struct CanvasOverlayLayout: View {
     let side: ToolbarSide
     @Binding var activeTool: CanvasTool
+    let onBack: () -> Void
     let onUndo: () -> Void
     let onRedo: () -> Void
     let onAddItem: () -> Void
@@ -16,6 +17,14 @@ struct CanvasOverlayLayout: View {
         let frameAlignment: Alignment = (side == .left) ? .leading : .trailing
 
         Group {
+            VStack {
+                CanvasBackButton(onTap: onBack)
+                    .padding(edge, 16)
+                    .padding(.top, 16)
+                    .frame(maxWidth: .infinity, alignment: frameAlignment)
+                Spacer()
+            }
+
             CanvasToolbar(
                 activeTool: $activeTool,
                 onUndo: onUndo,
@@ -33,5 +42,27 @@ struct CanvasOverlayLayout: View {
                     .frame(maxWidth: .infinity, alignment: frameAlignment)
             }
         }
+    }
+}
+
+struct CanvasBackButton: View {
+    var onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(DesignSystem.Colors.text)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .frame(width: 68)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(DesignSystem.Colors.primary)
+                .shadow(color: .black.opacity(0.3), radius: 8, x: 2, y: 2)
+        )
+        .accessibilityLabel("Back to home")
     }
 }

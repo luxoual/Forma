@@ -19,6 +19,19 @@ actor LocalBoardStore {
 
     private let cache = TileCache(capacity: 256)
 
+    /// True when content has changed since the last `markClean()`. Set by every mutating
+    /// method; read by autosave to skip redundant writes.
+    private var isDirty = false
+
+    /// Returns whether the store has changed since the last `markClean()`. Non-consuming —
+    /// callers must follow up with `markClean()` only after the save has actually succeeded,
+    /// otherwise a cancelled exporter would silently drop the dirty flag and the next autosave
+    /// would incorrectly skip writing.
+    func peekDirty() async -> Bool { isDirty }
+
+    /// Clears the dirty flag. Call only on confirmed-successful persistence.
+    func markClean() async { isDirty = false }
+
     /// Returns all full elements currently stored, unsafely exposing internal order.
     /// Sorted by zIndex then UUID for stable export ordering.
     func allElements() async -> [CMCanvasElement] {
@@ -32,6 +45,8 @@ actor LocalBoardStore {
     }
 
     /// Replaces the entire store with the provided elements, rebuilding indices and cache.
+    /// Does not mark the store dirty — this is the load path and the in-memory state now matches disk.
+    /// In-session "clear all" should go through `delete` instead.
     func replaceAll(with newElements: [CMCanvasElement]) async {
         // Clear existing
         tileIndex.removeAll()
@@ -53,6 +68,7 @@ actor LocalBoardStore {
 
     /// Insert or update element headers and update tile index.
     func upsert(headers: [CMElementHeader]) async {
+        guard !headers.isEmpty else { return }
         var affected: Set<CMTileKey> = []
         for header in headers {
             elements[header.id] = header
@@ -62,10 +78,12 @@ actor LocalBoardStore {
             }
         }
         for key in affected { cache.remove(key) }
+        isDirty = true
     }
-    
+
     /// Insert or update full elements (header + payload) and update tile index.
     func upsert(elements: [CMCanvasElement]) async {
+        guard !elements.isEmpty else { return }
         var affected: Set<CMTileKey> = []
         for element in elements {
             let header = element.header
@@ -77,6 +95,7 @@ actor LocalBoardStore {
             }
         }
         for key in affected { cache.remove(key) }
+        isDirty = true
     }
 
     private func produceTileEvents(
@@ -109,10 +128,13 @@ actor LocalBoardStore {
     
     /// Delete elements and clear any cached tiles (naive for demo).
     func delete(elementIDs: [UUID]) async {
+        guard !elementIDs.isEmpty else { return }
+        var removedAny = false
         for id in elementIDs {
-            elements.removeValue(forKey: id)
+            if elements.removeValue(forKey: id) != nil { removedAny = true }
             fullElements.removeValue(forKey: id)
         }
+        guard removedAny else { return }
         // Rebuild tile index naively
         tileIndex.removeAll()
         for header in elements.values {
@@ -121,6 +143,7 @@ actor LocalBoardStore {
             }
         }
         cache.removeAll()
+        isDirty = true
     }
 
     /// Query element headers intersecting a region.
@@ -174,6 +197,7 @@ actor LocalBoardStore {
         let maxZ = elements.values.map { $0.zIndex }.max() ?? 0
         var nextZ = maxZ + 1
         let ordered = elementIDs.compactMap { elements[$0] }.sorted { $0.zIndex < $1.zIndex }
+        guard !ordered.isEmpty else { return }
         for header in ordered {
             var updated = header
             updated.zIndex = nextZ
@@ -185,6 +209,7 @@ actor LocalBoardStore {
             }
         }
         cache.removeAll()
+        isDirty = true
     }
 
     /// Moves the provided elements below all others by adjusting zIndex.
@@ -193,6 +218,7 @@ actor LocalBoardStore {
         let minZ = elements.values.map { $0.zIndex }.min() ?? 0
         var nextZ = minZ - elementIDs.count
         let ordered = elementIDs.compactMap { elements[$0] }.sorted { $0.zIndex < $1.zIndex }
+        guard !ordered.isEmpty else { return }
         for header in ordered {
             var updated = header
             updated.zIndex = nextZ
@@ -204,6 +230,7 @@ actor LocalBoardStore {
             }
         }
         cache.removeAll()
+        isDirty = true
     }
     
     /// Fetch a full element by ID (if present).

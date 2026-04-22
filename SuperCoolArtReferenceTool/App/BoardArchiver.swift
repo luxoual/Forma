@@ -136,83 +136,95 @@ enum BoardArchiver {
     }
     
     /// Export elements to a single-file `.refboard` ZIP at the given destination URL.
-    /// Returns the final URL written (which may be adjusted if needed).
-    static func export(elements: [CMCanvasElement], to destination: URL) throws -> URL {
+    ///
+    /// Mutates the archive in place when the destination already exists: only assets for
+    /// newly-added element UUIDs are written, removed elements' assets are dropped, and the
+    /// manifest is rewritten. Unchanged asset bytes are never re-read, re-compressed, or
+    /// re-written — the common "move/resize/add-one-image" autosave is near-free even on
+    /// boards with hundreds of assets.
+    ///
+    /// Image assets use `.none` compression (already compressed; deflate is pure CPU waste).
+    /// The manifest itself uses deflate since it's small JSON.
+    ///
+    /// `nonisolated` so autosave can run this on a utility-priority detached task without
+    /// hopping to the main actor.
+    nonisolated static func export(elements: [CMCanvasElement], to destination: URL) throws -> URL {
         let fm = FileManager.default
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-        // Create a temporary package directory
-        let temp = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("refboard")
-        try? fm.removeItem(at: temp)
-        try fm.createDirectory(at: temp, withIntermediateDirectories: true)
-        let assetsDir = temp.appendingPathComponent("assets", isDirectory: true)
-        try fm.createDirectory(at: assetsDir, withIntermediateDirectories: true)
+        let destinationExisted = fm.fileExists(atPath: destination.path)
+        let accessMode: Archive.AccessMode = destinationExisted ? .update : .create
+        let archive: Archive
+        if let opened = Archive(url: destination, accessMode: accessMode) {
+            archive = opened
+        } else if destinationExisted {
+            // `.update` failed — file is corrupted (likely from a prior crash). Delete is
+            // throwing so permission/lock errors surface instead of triggering infinite
+            // recursion. One-shot retry as `.create`; bail if that still fails.
+            try fm.removeItem(at: destination)
+            guard let fresh = Archive(url: destination, accessMode: .create) else {
+                throw ImportError.ioFailure
+            }
+            archive = fresh
+        } else {
+            throw ImportError.ioFailure
+        }
 
+        // Compute the desired state: manifest elements + set of asset paths that should exist.
         var manifestElements: [ManifestElement] = []
+        manifestElements.reserveCapacity(elements.count)
+        var desiredAssetPaths: Set<String> = []
+        var plannedCopies: [(entryPath: String, sourceURL: URL)] = []
 
         for el in elements {
             switch el.payload {
             case .image(let url, let size):
                 let ext = url.pathExtension.isEmpty ? "png" : url.pathExtension
-                let assetName = "\(el.id.uuidString).\(ext)"
-                let destAssetURL = assetsDir.appendingPathComponent(assetName)
-                // Prefer direct copy; fall back to Data read/write
-                do {
-                    try? fm.removeItem(at: destAssetURL)
-                    try fm.copyItem(at: url, to: destAssetURL)
-                } catch {
-                    if let data = try? Data(contentsOf: url) {
-                        try data.write(to: destAssetURL, options: [.atomic])
-                    } else {
-                        // Skip this element if asset can't be written
-                        continue
-                    }
+                let assetPath = "assets/\(el.id.uuidString).\(ext)"
+                desiredAssetPaths.insert(assetPath)
+                if archive[assetPath] == nil {
+                    plannedCopies.append((assetPath, url))
                 }
-                let payload = ManifestPayload.image(relativePath: "assets/\(assetName)", size: size)
-                manifestElements.append(ManifestElement(header: el.header, payload: payload))
+                manifestElements.append(
+                    ManifestElement(header: el.header, payload: .image(relativePath: assetPath, size: size))
+                )
             default:
-                // Skip non-image payloads for this MVP
                 continue
             }
         }
 
-        // Write manifest.json
-        let manifest = BoardManifest(version: 1, elements: manifestElements)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let manifestData = try encoder.encode(manifest)
-        try manifestData.write(to: temp.appendingPathComponent("manifest.json"), options: [.atomic])
+        // Remove asset entries no longer referenced. Collect first — `archive.remove` mutates
+        // the central directory and iterating it while removing is undefined.
+        let orphanedAssets = archive.filter { entry in
+            entry.path.hasPrefix("assets/") && !desiredAssetPaths.contains(entry.path)
+        }
+        for entry in orphanedAssets {
+            try archive.remove(entry)
+        }
 
-        // Zip the package into the destination file
-        try? fm.removeItem(at: destination)
-        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try zipItem(at: temp, to: destination)
-        try? fm.removeItem(at: temp)
+        // Add new asset entries. Use `.none` — the image bytes are already compressed.
+        for copy in plannedCopies {
+            try archive.addEntry(with: copy.entryPath, fileURL: copy.sourceURL, compressionMethod: .none)
+        }
+
+        // Rewrite the manifest entry.
+        if let existing = archive["manifest.json"] {
+            try archive.remove(existing)
+        }
+        let manifestData = try JSONEncoder().encode(BoardManifest(version: 1, elements: manifestElements))
+        try archive.addEntry(
+            with: "manifest.json",
+            type: .file,
+            uncompressedSize: Int64(manifestData.count),
+            compressionMethod: .deflate,
+            provider: { position, size in
+                let start = Int(position)
+                let end = min(manifestData.count, start + Int(size))
+                return manifestData.subdata(in: start..<end)
+            }
+        )
+
         return destination
-    }
-
-    private static func zipItem(at sourceURL: URL, to destinationURL: URL) throws {
-        guard let archive = Archive(url: destinationURL, accessMode: .create) else {
-            throw ImportError.ioFailure
-        }
-
-        let fm = FileManager.default
-        let sourceRoot = sourceURL.standardizedFileURL
-        let sourceRootPath = sourceRoot.path.hasSuffix("/") ? sourceRoot.path : sourceRoot.path + "/"
-        let enumerator = fm.enumerator(at: sourceURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-        while let item = enumerator?.nextObject() as? URL {
-            let values = try item.resourceValues(forKeys: [.isDirectoryKey])
-            if values.isDirectory == true {
-                continue
-            }
-            let itemPath = item.standardizedFileURL.path
-            guard itemPath.hasPrefix(sourceRootPath) else {
-                throw ImportError.ioFailure
-            }
-            let relativePath = String(itemPath.dropFirst(sourceRootPath.count))
-            try archive.addEntry(with: relativePath, fileURL: item, compressionMethod: .deflate)
-        }
     }
 
     private static func unzipItem(at sourceURL: URL, to destinationURL: URL) throws {

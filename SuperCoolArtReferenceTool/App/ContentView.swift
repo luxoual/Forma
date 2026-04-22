@@ -10,9 +10,13 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppOpenHandler.self) private var openHandler
+    @Environment(RecentBoardsManager.self) private var recentsManager
+    @Environment(\.scenePhase) private var scenePhase
 
     let initialURLs: [URL]
     let initialElements: [CMCanvasElement]?
+    let initialBoardURL: URL?
+    var onBack: () -> Void = {}
 
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
@@ -32,12 +36,20 @@ struct ContentView: View {
     @State private var commandHistory = CanvasCommandHistory()
     @State private var undoTrigger: UUID?
     @State private var redoTrigger: UUID?
+    @State private var markCleanTrigger: UUID?
 
     @State private var importerMode: ImporterMode?
     @State private var importerPresented = false
     /// Latched copy so the result handler can read it even after the binding clears importerMode
     @State private var lastImporterMode: ImporterMode?
     private enum ImporterMode { case images, board }
+    @State private var pendingBackNavigation = false
+    @State private var pendingBackgroundSave = false
+    @State private var currentBoardURL: URL?
+    @State private var showSaveError = false
+    @State private var saveErrorMessage = ""
+    @State private var showBoardError = false
+    @State private var boardErrorMessage = ""
 
     var body: some View {
         ZStack {
@@ -51,17 +63,26 @@ struct ContentView: View {
                 commandHistory: commandHistory,
                 undoTrigger: $undoTrigger,
                 redoTrigger: $redoTrigger,
+                markCleanTrigger: $markCleanTrigger,
                 onInsertURLs: { _ in },
-                onSnapshot: { elements in
-                    // When snapshot arrives, prepare a FileDocument and present the exporter
-                    exportDocument = BoardExportDocument(elements: elements)
-                    showingExporter = true
+                onSnapshot: { elements, wasDirty in
+                    if pendingBackNavigation {
+                        pendingBackNavigation = false
+                        saveAndGoBack(elements: elements, wasDirty: wasDirty)
+                    } else if pendingBackgroundSave {
+                        pendingBackgroundSave = false
+                        saveInPlace(elements: elements, wasDirty: wasDirty)
+                    } else {
+                        exportDocument = BoardExportDocument(elements: elements)
+                        showingExporter = true
+                    }
                 }
             )
             
             CanvasOverlayLayout(
                 side: toolbarSide,
                 activeTool: $activeTool,
+                onBack: handleBack,
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
                 onAddItem: openImageImporter,
@@ -91,10 +112,13 @@ struct ContentView: View {
             defaultFilename: "Board"
         ) { result in
             switch result {
-            case .success:
-                break
+            case .success(let url):
+                currentBoardURL = url
+                recentsManager.record(url: url)
+                markCleanTrigger = UUID()
             case .failure(let error):
-                print("Export share failed: ", error.localizedDescription)
+                boardErrorMessage = "Export failed: \(error.localizedDescription)"
+                showBoardError = true
             }
         }
         .onChange(of: importerMode) { _, newMode in
@@ -117,22 +141,43 @@ struct ContentView: View {
                     urlsToInsert = urls
                 } else if currentMode == .board {
                     guard let url = urls.first else { return }
-                    do {
-                        let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
-                        elementsToLoad = elements
-                    } catch {
-                        print("Import failed: ", error)
+                    Task {
+                        do {
+                            let elements = try await Task.detached(priority: .userInitiated) {
+                                let accessing = url.startAccessingSecurityScopedResource()
+                                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                                return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                            }.value
+                            recentsManager.record(url: url)
+                            currentBoardURL = url
+                            elementsToLoad = elements
+                        } catch {
+                            boardErrorMessage = "Could not open board: \(error.localizedDescription)"
+                            showBoardError = true
+                        }
                     }
                 }
             case .failure(let error):
-                print("[Importer] Import selection failed: \(error.localizedDescription)")
+                boardErrorMessage = error.localizedDescription
+                showBoardError = true
             }
             importerMode = nil
         }
         .sheet(isPresented: $showingSettings) {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
         }
+        .alert("Save Failed", isPresented: $showSaveError) {
+            Button("Discard & Leave", role: .destructive) { onBack() }
+            Button("Stay", role: .cancel) { }
+        } message: {
+            Text(saveErrorMessage)
+        }
+        .alert("Board Error", isPresented: $showBoardError) {
+        } message: {
+            Text(boardErrorMessage)
+        }
         .onAppear {
+            currentBoardURL = initialBoardURL
             if let initialElements, !initialElements.isEmpty {
                 elementsToLoad = initialElements
                 openHandler.importedElements = nil
@@ -147,6 +192,18 @@ struct ContentView: View {
                 openHandler.importedElements = nil
             }
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Autosave on `.inactive`. We can't use `.background` because force-quit from the
+            // app switcher sends SIGKILL before `.background` fires — the lifecycle goes
+            // `.active → .inactive → killed`, skipping `.background`. `.inactive` does fire on
+            // Control Center / Notification Center pulls too, but the dirty flag makes those
+            // a cheap no-op, and the incremental export keeps real saves fast enough to finish
+            // before the user can swipe the app card away.
+            if newPhase == .inactive, currentBoardURL != nil, !pendingBackNavigation {
+                pendingBackgroundSave = true
+                snapshotToken = UUID()
+            }
+        }
     }
     
     private func openImageImporter() {
@@ -154,9 +211,61 @@ struct ContentView: View {
         importerMode = .images
         lastImporterMode = .images
     }
+
+    private func handleBack() {
+        pendingBackNavigation = true
+        snapshotToken = UUID()
+    }
+
+    /// Autosave runs synchronously on MainActor so the write completes before the user can
+    /// force-quit. The incremental `BoardArchiver.export` is fast enough — a clean-board save
+    /// is a manifest-only rewrite (~5 ms); adding one image copies a single file (~50 ms).
+    /// Off-main would be smoother for active use, but nothing calls this during active use —
+    /// `.inactive` means the user is already out of the canvas view.
+    private func saveInPlace(elements: [CMCanvasElement], wasDirty: Bool) {
+        guard wasDirty, let url = currentBoardURL else { return }
+        let startedAt = Date()
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            _ = try BoardArchiver.export(elements: elements, to: url)
+            let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+            print("[Save] Autosave wrote \(elements.count) elements to \(url.lastPathComponent) in \(ms)ms")
+            markCleanTrigger = UUID()
+        } catch {
+            print("[Save] Autosave failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func saveAndGoBack(elements: [CMCanvasElement], wasDirty: Bool) {
+        guard wasDirty, let url = currentBoardURL else {
+            onBack()
+            return
+        }
+        Task {
+            let failure: Error? = await Task.detached(priority: .userInitiated) {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    _ = try BoardArchiver.export(elements: elements, to: url)
+                    return nil as Error?
+                } catch {
+                    return error
+                }
+            }.value
+            if let failure {
+                saveErrorMessage = "Could not save board: \(failure.localizedDescription)"
+                showSaveError = true
+            } else {
+                markCleanTrigger = UUID()
+                onBack()
+            }
+        }
+    }
 }
 
 #Preview {
-    ContentView(initialURLs: [], initialElements: nil)
+    ContentView(initialURLs: [], initialElements: nil, initialBoardURL: nil)
         .environment(AppOpenHandler())
+        .environment(RecentBoardsManager())
 }
