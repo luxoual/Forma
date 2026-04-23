@@ -1,30 +1,33 @@
 import SwiftUI
 import UIKit
 
-/// Installs a two-finger UIPanGestureRecognizer on the nearest ancestor UIView
-/// in the SwiftUI host hierarchy. The recognizer observes touches in the canvas
-/// area without consuming them, so SwiftUI's single-finger DragGesture,
-/// MagnificationGesture, and per-view `.onTapGesture` handlers continue to
-/// receive their touches.
-struct TwoFingerPanView: UIViewRepresentable {
+/// Installs a UIPinchGestureRecognizer on the nearest ancestor UIView in the
+/// SwiftUI host hierarchy. Unlike SwiftUI's MagnificationGesture, this exposes
+/// the pinch centroid so the canvas can zoom around the user's fingers rather
+/// than the view center. Touches are observed without being consumed, so the
+/// existing two-finger pan and single-finger drag gestures keep working.
+struct PinchGestureView: UIViewRepresentable {
     enum Phase { case began, changed, ended }
 
-    /// Phase + per-tick translation delta in screen points (additive; .zero = no change).
-    /// Deltas compose cleanly with a simultaneous pinch gesture that also writes `offset`,
-    /// since each tick reads and updates current state instead of a frozen baseline.
-    let onPan: (Phase, CGSize) -> Void
+    /// Phase + per-tick scale delta (multiplicative; 1.0 = no change) + pinch centroid
+    /// in installer-local coordinates. Deltas compose cleanly with other gestures that
+    /// also write `offset`/`scale`, since each tick reads and updates current state
+    /// instead of a frozen baseline. Caller should snapshot the anchor on `.began` and
+    /// reuse it during `.changed` for Option A (stable-anchor) zoom.
+    let onPinch: (Phase, CGFloat, CGPoint) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPan: onPan) }
+    func makeCoordinator() -> Coordinator { Coordinator(onPinch: onPinch) }
 
     func makeUIView(context: Context) -> UIView {
         let view = InstallerView()
         view.coordinator = context.coordinator
         view.isUserInteractionEnabled = false
+        context.coordinator.installerView = view
         return view
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.onPan = onPan
+        context.coordinator.onPinch = onPinch
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
@@ -32,17 +35,16 @@ struct TwoFingerPanView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var onPan: (Phase, CGSize) -> Void
-        let recognizer: UIPanGestureRecognizer
-        /// Cumulative translation reported at the previous tick; used to derive per-tick deltas.
-        private var lastCumulativeTranslation: CGPoint = .zero
+        var onPinch: (Phase, CGFloat, CGPoint) -> Void
+        let recognizer: UIPinchGestureRecognizer
+        weak var installerView: UIView?
+        /// Cumulative scale reported at the previous tick; used to derive per-tick deltas.
+        private var lastCumulativeScale: CGFloat = 1.0
 
-        init(onPan: @escaping (Phase, CGSize) -> Void) {
-            self.onPan = onPan
-            self.recognizer = UIPanGestureRecognizer()
+        init(onPinch: @escaping (Phase, CGFloat, CGPoint) -> Void) {
+            self.onPinch = onPinch
+            self.recognizer = UIPinchGestureRecognizer()
             super.init()
-            recognizer.minimumNumberOfTouches = 2
-            recognizer.maximumNumberOfTouches = 2
             recognizer.cancelsTouchesInView = false
             recognizer.delaysTouchesBegan = false
             recognizer.delaysTouchesEnded = false
@@ -50,20 +52,25 @@ struct TwoFingerPanView: UIViewRepresentable {
             recognizer.addTarget(self, action: #selector(handle(_:)))
         }
 
-        @objc func handle(_ recognizer: UIPanGestureRecognizer) {
-            let t = recognizer.translation(in: recognizer.view)
+        @objc func handle(_ recognizer: UIPinchGestureRecognizer) {
+            // Report the centroid in the installer's coordinate space so it
+            // matches the SwiftUI canvas geometry even if the host view has a
+            // non-zero origin relative to the window.
+            let anchorView: UIView? = installerView ?? recognizer.view
+            let location = recognizer.location(in: anchorView)
             switch recognizer.state {
             case .began:
-                lastCumulativeTranslation = t
-                onPan(.began, .zero)
+                lastCumulativeScale = recognizer.scale
+                onPinch(.began, 1.0, location)
             case .changed:
-                let dx = t.x - lastCumulativeTranslation.x
-                let dy = t.y - lastCumulativeTranslation.y
-                lastCumulativeTranslation = t
-                onPan(.changed, CGSize(width: dx, height: dy))
+                let prev = lastCumulativeScale
+                let current = recognizer.scale
+                let delta = prev > 0 ? current / prev : 1.0
+                lastCumulativeScale = current
+                onPinch(.changed, delta, location)
             case .ended, .cancelled, .failed:
-                lastCumulativeTranslation = .zero
-                onPan(.ended, .zero)
+                lastCumulativeScale = 1.0
+                onPinch(.ended, 1.0, location)
             default: break
             }
         }
@@ -74,12 +81,12 @@ struct TwoFingerPanView: UIViewRepresentable {
         }
 
         /// Remove the recognizer from its host and break retention so the coordinator
-        /// and onPan closure can be released when the representable is dismantled.
+        /// and onPinch closure can be released when the representable is dismantled.
         func detach() {
             recognizer.view?.removeGestureRecognizer(recognizer)
             recognizer.removeTarget(self, action: #selector(handle(_:)))
             recognizer.delegate = nil
-            onPan = { _, _ in }
+            onPinch = { _, _, _ in }
         }
     }
 
@@ -104,7 +111,6 @@ struct TwoFingerPanView: UIViewRepresentable {
             guard window != nil else { return }
             let host = hostingAncestor() ?? superview
             guard let host, host !== installedHost else { return }
-            // Move recognizer to the new host (in case of view recycling)
             coordinator.recognizer.view?.removeGestureRecognizer(coordinator.recognizer)
             host.addGestureRecognizer(coordinator.recognizer)
             installedHost = host
