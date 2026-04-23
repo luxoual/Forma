@@ -83,28 +83,44 @@ Three simultaneous gestures are attached to the canvas ZStack:
 - This lets SwiftUI's native hit-testing arbitrate taps — the topmost child wins and no parent gesture fires alongside. Prior architecture used `.simultaneousGesture(SpatialTapGesture())` on the outer ZStack, which caused tap-passthrough (e.g. tapping the trash button in the selection action bar also tapped the image beneath it). SwiftUI has no `stopPropagation` equivalent for simultaneous gestures; moving tap routing onto the children is the idiomatic fix.
 - The `DragGesture(minimumDistance: 8)` on the ZStack still handles drag-mode routing; taps (< 8pt movement) never fire it, so the two systems don't overlap.
 
-**Zoom (Magnification Gesture):**
-- `MagnificationGesture()` as `.simultaneousGesture` — always active regardless of tool
-- Zooms around **view center** (not finger/cursor location)
-- Preserves world position at anchor point during zoom
-- Gesture state: `zoomStartScale` stores scale at gesture begin
+**Pinch Zoom (UIKit Bridge):**
+
+**File:** `PinchGestureView.swift`
+
+- Replaces the earlier `MagnificationGesture` approach, which only zoomed around view center. Exposes the pinch centroid so zoom pivots where the fingers are (matches Apple Freeform).
+- `UIViewRepresentable` wrapping a `UIPinchGestureRecognizer`; installed on the hosting ancestor via the shared `GestureInstallerView` (see below).
+- Emits **per-tick scale deltas** (not cumulative) plus the **live centroid** in installer-local coordinates. `.began`/`.ended` emit delta = 1.0; only `.changed` emits real deltas.
+- Centroid is reported in the installer's coordinate space (not `recognizer.view` / window space) so it matches the canvas's `.position(...)` space — important if the canvas is ever inset by a toolbar or safe area.
+- Attached via `.background(PinchGestureView(onPinch:))` on the canvas ZStack; routed through `handlePinch(phase:scaleDelta:anchor:)`.
+- Zoom math is extracted into a **pure static function**, `BoardCanvasView.zoomAnchoredOffset(anchor:oldOffset:oldScale:newScale:)`, which preserves `worldPoint = (anchor - offset) / scale` across the scale change. Testable without a live view.
 
 **Two-Finger Pan (UIKit Bridge):**
 
 **File:** `TwoFingerPanView.swift`
 
-- Provides always-available two-finger panning regardless of active tool so Group-tool marquee doesn't block canvas navigation
-- Implemented as a `UIViewRepresentable` that installs a `UIPanGestureRecognizer` (min/max touches = 2) on the nearest `UIViewController.view` ancestor by walking the `responder.next` chain
-- Recognizer config: `cancelsTouchesInView = false`, `delaysTouchesBegan/Ended = false`, delegate returns `true` for `shouldRecognizeSimultaneouslyWith` so SwiftUI gestures still observe touches
-- Attached via `.background(TwoFingerPanView(onPan:))` on the canvas; routed through `handleTwoFingerPan(phase:translation:)` which updates `offset` relative to a cached `twoFingerPanStartOffset`
-- Works with pinch-zoom simultaneously; single-finger tool gestures are unaffected
-- Teardown: `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()` to remove the recognizer from its host view, clear target/delegate, and replace `onPan` with a no-op — prevents duplicate recognizers and retention cycles if the canvas remounts (e.g. `RootView` toggling `showCanvas`)
+- Provides always-available two-finger panning regardless of active tool so Group-tool marquee doesn't block canvas navigation.
+- `UIViewRepresentable` wrapping a `UIPanGestureRecognizer` (min/max touches = 2); installed on the hosting ancestor via the shared `GestureInstallerView`.
+- Emits **per-tick translation deltas** (not cumulative + baseline); `handleTwoFingerPan(phase:delta:)` just adds the delta to current `offset`.
+- Recognizer config: `cancelsTouchesInView = false`, `delaysTouchesBegan/Ended = false`, delegate returns `true` for `shouldRecognizeSimultaneouslyWith` so SwiftUI gestures still observe touches.
 
-**Known Limitation:**
-- Zoom anchors around view center instead of pinch location
-- A `PinchGestureView.swift` component was created to capture UIKit pinch gestures with precise anchor points
-- Initial integration attempts had issues; reverted to `MagnificationGesture` for stability
-- Anchor-based zoom remains a future enhancement
+**Delta-Based Composition (why both bridges emit deltas):**
+
+Pinch and two-finger-pan fire simultaneously and both write `offset`. An earlier cumulative-plus-frozen-baseline design had a race: whichever handler ran second read a stale baseline captured before the other handler's writes. Switching both bridges to emit per-tick deltas and having each handler read/write current `offset`/`scale` every frame eliminates the race — there's no baseline to clobber. Partial ends (pinch ends before pan, or vice versa) are free for the same reason.
+
+**Shared Gesture Installer:**
+
+**File:** `GestureInstallerView.swift`
+
+- `GestureInstallerView` + `GestureInstallerCoordinator` protocol — shared infrastructure for any `UIViewRepresentable` gesture bridge that needs to install a recognizer on the SwiftUI hosting ancestor.
+- Responsibilities: walks the responder chain (`responder.next`) to find the first `UIViewController.view`, installs the coordinator's recognizer there on `didMoveToWindow`/`didMoveToSuperview`, relocates on re-parenting, and guarantees `isUserInteractionEnabled = false` on the installer itself so it never shadows hit-testing.
+- Consumers (pinch + two-finger pan today) conform their `Coordinator` to `GestureInstallerCoordinator` and expose their recognizer via `installedRecognizer`.
+- Teardown: each bridge's `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()`, which removes the recognizer from its host view, clears target/delegate, and replaces the event closure with a no-op — prevents duplicate recognizers and retention cycles if the canvas remounts (e.g. `RootView` toggling `showCanvas`).
+
+**Flag for future — camera model tipping point:**
+
+`offset` and `scale` currently live on `BoardCanvasView` as `@State` and are mutated directly from two gesture handlers plus read from several places (`Canvas` grid closure, every visible-image `.position(...)`, `screenToWorld`, marquee/bbox mapping). When a **third** write site appears (e.g. a programmatic "fit to selection" action, or a new gesture bridge), lift both into an `@Observable CanvasCamera` with `zoom(by:around:)` and `pan(by:)` methods. `zoomAnchoredOffset` moves in as an instance method at that point. Do not do this refactor pre-emptively — it's a cross-cutting change and the single-caller benefit today is small.
+
+Related coordinate-space subtlety to watch: `PinchGestureView` reports its centroid in installer-local coordinates; `TwoFingerPanView` uses `recognizer.view` (the hosting ancestor). These coincide today because the installer is mounted as a `.background` of the canvas ZStack, but would drift if the canvas becomes inset. Prefer installer-local coordinates for any new recognizer that reports points.
 
 ---
 
@@ -780,17 +796,13 @@ Because "New Board" requires choosing a save location up front, `currentBoardURL
 
 ### Planned Enhancements
 
-1. **Anchor-based Zoom:**
-   - Integrate `PinchGestureView` to zoom toward finger location instead of view center
-   - Debug UIKit gesture recognizer interaction with SwiftUI gestures
-
-2. **Tool Behavior:**
+1. **Tool Behavior:**
    - ~~Connect `activeTool` state to actual canvas interactions~~ ✅ Done
    - ~~Implement selection via pointer tool~~ ✅ Done
    - ~~Implement selection rectangles / marquee select for group tool~~ ✅ Done
    - ~~Implement group move/resize behavior for group tool~~ ✅ Done
 
-3. **Item Interaction:**
+2. **Item Interaction:**
    - ~~Select items on tap~~ ✅ Done
    - ~~Move items by dragging~~ ✅ Done
    - ~~Resize handle visuals~~ ✅ Done
@@ -802,24 +814,24 @@ Because "New Board" requires choosing a save location up front, `currentBoardURL
    - ~~Delete selected items (via floating selection action bar)~~ ✅ Done
    - Rotation gestures
 
-4. **File Import Refactor:**
+3. **File Import Refactor:**
    - Extract duplicate file loading code into `FileImportHelpers.swift`
    - Consolidate loading logic between `BoardCanvasView` and `InsertFileControl`
 
-5. **Settings Implementation:**
+4. **Settings Implementation:**
    - Make `CanvasSettingsView` functional
    - Bind grid toggle to `BoardCanvasView.showGrid`
    - Grid spacing slider
    - Add export options
 
-6. **Navigation Flow:**
+5. **Navigation Flow:**
    - ~~Integrate `FilePickerView` as initial screen~~ ✅ Done
    - ~~Transition from file picker → canvas~~ ✅ Done
    - ~~Back navigation from canvas to landing page (with save-on-back)~~ ✅ Done
    - ~~Recent boards list on landing page~~ ✅ Done
    - **Save-As prompt for new boards on back:** When a user creates a new board (no `currentBoardURL`) and taps back, the app should present a file exporter (like the Export button does) so the user can name and choose a save location before navigating back. Without this, new unsaved boards are silently discarded on back navigation. The flow should be: back tap → snapshot → file exporter → on success, record in recents and navigate back; on cancel, stay on canvas.
 
-7. **Performance:**
+6. **Performance:**
    - Implement viewport-based culling
    - Optimize render updates
    - Image caching strategy
