@@ -6,40 +6,44 @@ import UIKit
 /// the pinch centroid so the canvas can zoom around the user's fingers rather
 /// than the view center. Touches are observed without being consumed, so the
 /// existing two-finger pan and single-finger drag gestures keep working.
+///
+/// See `GestureInstallerView` for the responder-chain host-finding logic.
 struct PinchGestureView: UIViewRepresentable {
     enum Phase { case began, changed, ended }
 
     /// Phase + per-tick scale delta (multiplicative; 1.0 = no change) + pinch centroid
     /// in installer-local coordinates. Deltas compose cleanly with other gestures that
     /// also write `offset`/`scale`, since each tick reads and updates current state
-    /// instead of a frozen baseline. Caller should snapshot the anchor on `.began` and
-    /// reuse it during `.changed` for Option A (stable-anchor) zoom.
+    /// instead of a frozen baseline. Each `.changed` tick reports the *live* centroid,
+    /// so the caller should re-anchor zoom at the current centroid every tick — this
+    /// matches Apple Freeform's behavior. `.began` and `.ended` emit delta = 1.0.
     let onPinch: (Phase, CGFloat, CGPoint) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onPinch: onPinch) }
 
-    func makeUIView(context: Context) -> UIView {
-        let view = InstallerView()
+    func makeUIView(context: Context) -> GestureInstallerView {
+        let view = GestureInstallerView()
         view.coordinator = context.coordinator
-        view.isUserInteractionEnabled = false
         context.coordinator.installerView = view
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    func updateUIView(_ uiView: GestureInstallerView, context: Context) {
         context.coordinator.onPinch = onPinch
     }
 
-    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+    static func dismantleUIView(_ uiView: GestureInstallerView, coordinator: Coordinator) {
         coordinator.detach()
     }
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate, GestureInstallerCoordinator {
         var onPinch: (Phase, CGFloat, CGPoint) -> Void
         let recognizer: UIPinchGestureRecognizer
         weak var installerView: UIView?
         /// Cumulative scale reported at the previous tick; used to derive per-tick deltas.
         private var lastCumulativeScale: CGFloat = 1.0
+
+        var installedRecognizer: UIGestureRecognizer { recognizer }
 
         init(onPinch: @escaping (Phase, CGFloat, CGPoint) -> Void) {
             self.onPinch = onPinch
@@ -53,9 +57,13 @@ struct PinchGestureView: UIViewRepresentable {
         }
 
         @objc func handle(_ recognizer: UIPinchGestureRecognizer) {
-            // Report the centroid in the installer's coordinate space so it
-            // matches the SwiftUI canvas geometry even if the host view has a
-            // non-zero origin relative to the window.
+            // Report the centroid in the installer's coordinate space. The installer
+            // is mounted as a `.background` of the canvas's ZStack, so its bounds
+            // match the coordinate space that SwiftUI uses for `.position(...)` and
+            // the `offset`/`scale` math in `handlePinch`. Falling back to
+            // `recognizer.view` (the hosting ancestor) would give coordinates in
+            // window space, which would misplace the zoom pivot if the canvas is
+            // inset by a toolbar or safe area.
             let anchorView: UIView? = installerView ?? recognizer.view
             let location = recognizer.location(in: anchorView)
             switch recognizer.state {
@@ -87,44 +95,6 @@ struct PinchGestureView: UIViewRepresentable {
             recognizer.removeTarget(self, action: #selector(handle(_:)))
             recognizer.delegate = nil
             onPinch = { _, _, _ in }
-        }
-    }
-
-    /// Non-interactive marker view; once mounted, walks up to find a hosting
-    /// ancestor and installs the recognizer there so it sees all canvas touches.
-    private final class InstallerView: UIView {
-        weak var coordinator: Coordinator?
-        private weak var installedHost: UIView?
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            installIfNeeded()
-        }
-
-        override func didMoveToSuperview() {
-            super.didMoveToSuperview()
-            installIfNeeded()
-        }
-
-        private func installIfNeeded() {
-            guard let coordinator else { return }
-            guard window != nil else { return }
-            let host = hostingAncestor() ?? superview
-            guard let host, host !== installedHost else { return }
-            coordinator.recognizer.view?.removeGestureRecognizer(coordinator.recognizer)
-            host.addGestureRecognizer(coordinator.recognizer)
-            installedHost = host
-        }
-
-        /// Walk up the responder chain to the first UIViewController's root view —
-        /// that's the SwiftUI hosting view, ancestor of all canvas content.
-        private func hostingAncestor() -> UIView? {
-            var responder: UIResponder? = self.next
-            while let r = responder {
-                if let vc = r as? UIViewController { return vc.view }
-                responder = r.next
-            }
-            return nil
         }
     }
 }

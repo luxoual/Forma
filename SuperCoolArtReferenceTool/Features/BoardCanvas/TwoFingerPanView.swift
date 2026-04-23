@@ -6,6 +6,8 @@ import UIKit
 /// area without consuming them, so SwiftUI's single-finger DragGesture,
 /// MagnificationGesture, and per-view `.onTapGesture` handlers continue to
 /// receive their touches.
+///
+/// See `GestureInstallerView` for the responder-chain host-finding logic.
 struct TwoFingerPanView: UIViewRepresentable {
     enum Phase { case began, changed, ended }
 
@@ -16,26 +18,27 @@ struct TwoFingerPanView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(onPan: onPan) }
 
-    func makeUIView(context: Context) -> UIView {
-        let view = InstallerView()
+    func makeUIView(context: Context) -> GestureInstallerView {
+        let view = GestureInstallerView()
         view.coordinator = context.coordinator
-        view.isUserInteractionEnabled = false
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    func updateUIView(_ uiView: GestureInstallerView, context: Context) {
         context.coordinator.onPan = onPan
     }
 
-    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+    static func dismantleUIView(_ uiView: GestureInstallerView, coordinator: Coordinator) {
         coordinator.detach()
     }
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate, GestureInstallerCoordinator {
         var onPan: (Phase, CGSize) -> Void
         let recognizer: UIPanGestureRecognizer
         /// Cumulative translation reported at the previous tick; used to derive per-tick deltas.
         private var lastCumulativeTranslation: CGPoint = .zero
+
+        var installedRecognizer: UIGestureRecognizer { recognizer }
 
         init(onPan: @escaping (Phase, CGSize) -> Void) {
             self.onPan = onPan
@@ -80,45 +83,6 @@ struct TwoFingerPanView: UIViewRepresentable {
             recognizer.removeTarget(self, action: #selector(handle(_:)))
             recognizer.delegate = nil
             onPan = { _, _ in }
-        }
-    }
-
-    /// Non-interactive marker view; once mounted, walks up to find a hosting
-    /// ancestor and installs the recognizer there so it sees all canvas touches.
-    private final class InstallerView: UIView {
-        weak var coordinator: Coordinator?
-        private weak var installedHost: UIView?
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            installIfNeeded()
-        }
-
-        override func didMoveToSuperview() {
-            super.didMoveToSuperview()
-            installIfNeeded()
-        }
-
-        private func installIfNeeded() {
-            guard let coordinator else { return }
-            guard window != nil else { return }
-            let host = hostingAncestor() ?? superview
-            guard let host, host !== installedHost else { return }
-            // Move recognizer to the new host (in case of view recycling)
-            coordinator.recognizer.view?.removeGestureRecognizer(coordinator.recognizer)
-            host.addGestureRecognizer(coordinator.recognizer)
-            installedHost = host
-        }
-
-        /// Walk up the responder chain to the first UIViewController's root view —
-        /// that's the SwiftUI hosting view, ancestor of all canvas content.
-        private func hostingAncestor() -> UIView? {
-            var responder: UIResponder? = self.next
-            while let r = responder {
-                if let vc = r as? UIViewController { return vc.view }
-                responder = r.next
-            }
-            return nil
         }
     }
 }

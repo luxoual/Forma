@@ -395,12 +395,30 @@ struct BoardCanvasView: View {
         }
     }
 
-    // MARK: - Debug
-
     // MARK: - Helpers
 
     private func clamp(_ value: CGFloat, _ minVal: CGFloat, _ maxVal: CGFloat) -> CGFloat {
         min(max(value, minVal), maxVal)
+    }
+
+    /// Pure function: compute the new `offset` that keeps the world point under
+    /// `anchor` (in screen-space points) fixed while scale changes from `oldScale`
+    /// to `newScale`. Extracted from `handlePinch` so the pivot-preserving math is
+    /// callable without a live view (e.g. from future unit tests).
+    ///
+    /// Preserves `worldPoint = (anchor - offset) / scale` across the zoom step.
+    static func zoomAnchoredOffset(
+        anchor: CGPoint,
+        oldOffset: CGSize,
+        oldScale: CGFloat,
+        newScale: CGFloat
+    ) -> CGSize {
+        let worldXBefore = (anchor.x - oldOffset.width) / oldScale
+        let worldYBefore = (anchor.y - oldOffset.height) / oldScale
+        return CGSize(
+            width: anchor.x - worldXBefore * newScale,
+            height: anchor.y - worldYBefore * newScale
+        )
     }
 
     private func startInteraction() {
@@ -426,11 +444,17 @@ struct BoardCanvasView: View {
             let newScale = clamp(scale * scaleDelta, minScale, maxScale)
             // Clamp can cancel the delta; skip to avoid unnecessary offset churn.
             guard newScale != scale else { return }
-            let worldXBefore = (anchor.x - offset.width) / scale
-            let worldYBefore = (anchor.y - offset.height) / scale
+            // Pivot-preserving zoom: keep the world point currently under `anchor`
+            // pinned to the same screen position after the scale change. Reading
+            // `offset`/`scale` fresh every tick is what lets this compose with the
+            // simultaneous two-finger pan (no frozen baselines to clobber).
+            offset = Self.zoomAnchoredOffset(
+                anchor: anchor,
+                oldOffset: offset,
+                oldScale: scale,
+                newScale: newScale
+            )
             scale = newScale
-            offset = CGSize(width: anchor.x - worldXBefore * newScale,
-                            height: anchor.y - worldYBefore * newScale)
             scheduleRefreshVisibleElements()
         case .ended:
             endInteraction()
