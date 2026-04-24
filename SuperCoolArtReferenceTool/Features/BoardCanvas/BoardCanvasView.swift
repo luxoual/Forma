@@ -14,8 +14,6 @@ struct BoardCanvasView: View {
 
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
-    @State private var twoFingerPanStartOffset: CGSize? = nil
-    @State private var zoomStartScale: CGFloat? = nil
     @State private var isInteracting: Bool = false
     @State private var interactionEndTask: Task<Void, Never>? = nil
 
@@ -392,31 +390,8 @@ struct BoardCanvasView: View {
                         endInteraction()
                     }
             )
-            .simultaneousGesture(
-                MagnificationGesture()
-                    .onChanged { value in
-                        startInteraction()
-                        if zoomStartScale == nil { zoomStartScale = scale }
-                        let startScale = zoomStartScale ?? scale
-                        let newScale = clamp(startScale * value, minScale, maxScale)
-
-                        // Zoom around the view center
-                        let anchor = CGPoint(x: geo.size.width / 2.0, y: geo.size.height / 2.0)
-                        let worldXBefore = (anchor.x - offset.width) / scale
-                        let worldYBefore = (anchor.y - offset.height) / scale
-
-                        scale = newScale
-                        let newOffsetX = anchor.x - worldXBefore * newScale
-                        let newOffsetY = anchor.y - worldYBefore * newScale
-                        offset = CGSize(width: newOffsetX, height: newOffsetY)
-                        scheduleRefreshVisibleElements()
-                    }
-                    .onEnded { _ in
-                        zoomStartScale = nil
-                        endInteraction()
-                    }
-            )
             .background(TwoFingerPanView(onPan: handleTwoFingerPan))
+            .background(PinchGestureView(onPinch: handlePinch))
         }
     }
 
@@ -424,6 +399,26 @@ struct BoardCanvasView: View {
 
     private func clamp(_ value: CGFloat, _ minVal: CGFloat, _ maxVal: CGFloat) -> CGFloat {
         min(max(value, minVal), maxVal)
+    }
+
+    /// Pure function: compute the new `offset` that keeps the world point under
+    /// `anchor` (in screen-space points) fixed while scale changes from `oldScale`
+    /// to `newScale`. Extracted from `handlePinch` so the pivot-preserving math is
+    /// callable without a live view (e.g. from future unit tests).
+    ///
+    /// Preserves `worldPoint = (anchor - offset) / scale` across the zoom step.
+    static func zoomAnchoredOffset(
+        anchor: CGPoint,
+        oldOffset: CGSize,
+        oldScale: CGFloat,
+        newScale: CGFloat
+    ) -> CGSize {
+        let worldXBefore = (anchor.x - oldOffset.width) / oldScale
+        let worldYBefore = (anchor.y - oldOffset.height) / oldScale
+        return CGSize(
+            width: anchor.x - worldXBefore * newScale,
+            height: anchor.y - worldYBefore * newScale
+        )
     }
 
     private func startInteraction() {
@@ -441,18 +436,40 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func handleTwoFingerPan(phase: TwoFingerPanView.Phase, translation: CGSize) {
+    private func handlePinch(phase: PinchGestureView.Phase, scaleDelta: CGFloat, anchor: CGPoint) {
         switch phase {
         case .began:
             startInteraction()
-            twoFingerPanStartOffset = offset
         case .changed:
-            let start = twoFingerPanStartOffset ?? offset
-            offset = CGSize(width: start.width + translation.width,
-                            height: start.height + translation.height)
+            let newScale = clamp(scale * scaleDelta, minScale, maxScale)
+            // Clamp can cancel the delta; skip to avoid unnecessary offset churn.
+            guard newScale != scale else { return }
+            // Pivot-preserving zoom: keep the world point currently under `anchor`
+            // pinned to the same screen position after the scale change. Reading
+            // `offset`/`scale` fresh every tick is what lets this compose with the
+            // simultaneous two-finger pan (no frozen baselines to clobber).
+            offset = Self.zoomAnchoredOffset(
+                anchor: anchor,
+                oldOffset: offset,
+                oldScale: scale,
+                newScale: newScale
+            )
+            scale = newScale
             scheduleRefreshVisibleElements()
         case .ended:
-            twoFingerPanStartOffset = nil
+            endInteraction()
+        }
+    }
+
+    private func handleTwoFingerPan(phase: TwoFingerPanView.Phase, delta: CGSize) {
+        switch phase {
+        case .began:
+            startInteraction()
+        case .changed:
+            offset = CGSize(width: offset.width + delta.width,
+                            height: offset.height + delta.height)
+            scheduleRefreshVisibleElements()
+        case .ended:
             endInteraction()
         }
     }
