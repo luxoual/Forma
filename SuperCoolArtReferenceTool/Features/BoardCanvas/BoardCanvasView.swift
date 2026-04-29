@@ -156,6 +156,13 @@ struct BoardCanvasView: View {
                     // Empty-canvas tap: SwiftUI's hit-testing routes taps to
                     // image views / floating overlays first, so this only fires
                     // when the user actually tapped bare canvas.
+                    // Commit any in-flight text edit before doing anything
+                    // else — the empty tap doesn't mutate selection (which
+                    // would otherwise be the trigger), so without this an
+                    // editing TextField would keep capturing keystrokes.
+                    if let editing = editingTextID {
+                        commitTextEdit(id: editing)
+                    }
                     if activeTool == .text {
                         let world = screenToWorld(location)
                         insertText(at: world)
@@ -368,6 +375,25 @@ struct BoardCanvasView: View {
                 if let editing = editingTextID {
                     commitTextEdit(id: editing)
                 }
+            }
+            .onChange(of: selection.selectedIDs) { _, newIDs in
+                // Tapping or marquee-selecting any other element while a text
+                // is being edited should commit the edit — TextField's
+                // `@FocusState` only fires on focus changes between focusable
+                // views, but image / text taps don't acquire focus, so we
+                // commit explicitly when selection changes to something other
+                // than the editing text itself.
+                //
+                // Skip when newIDs is empty: that's a deselection (e.g.
+                // `insertText` calling `clearSelection()` right after setting
+                // `editingTextID` to a new draft). Without this guard the
+                // brand-new text would be committed-and-removed in the same
+                // frame it was placed, which tore down the focused TextField
+                // mid-creation and crashed on real device.
+                guard let editing = editingTextID,
+                      !newIDs.isEmpty,
+                      !newIDs.contains(editing) else { return }
+                commitTextEdit(id: editing)
             }
             .onChange(of: undoTrigger) { _, newValue in
                 guard newValue != nil else { return }
