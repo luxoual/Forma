@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct RecentBoardEntry: Codable, Identifiable {
     var id: String { filePath }
@@ -125,7 +126,7 @@ final class RecentBoardsManager {
             entries.sort { $0.lastOpened > $1.lastOpened }
             return entries
         } catch {
-            print("[RecentBoards] Failed to load: \(error.localizedDescription)")
+            Logger.recents.logFailure("Failed to load", error: error)
             return []
         }
     }
@@ -137,7 +138,7 @@ final class RecentBoardsManager {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         } catch {
-            print("[RecentBoards] Failed to save: \(error.localizedDescription)")
+            Logger.recents.logFailure("Failed to save", error: error)
         }
     }
 }
