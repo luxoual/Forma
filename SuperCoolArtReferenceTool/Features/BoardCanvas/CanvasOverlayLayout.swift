@@ -19,9 +19,9 @@ struct CanvasOverlayLayout: View {
         Group {
             VStack {
                 CanvasBackButton(onTap: onBack)
-                    .padding(edge, 16)
+                    .padding(.leading, 16)
                     .padding(.top, 16)
-                    .frame(maxWidth: .infinity, alignment: frameAlignment)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer()
             }
 
@@ -37,9 +37,9 @@ struct CanvasOverlayLayout: View {
             VStack {
                 Spacer()
                 CanvasSettingsButton(onTap: onSettings)
-                    .padding(edge, 16)
+                    .padding(.leading, 16)
                     .padding(.bottom, 16)
-                    .frame(maxWidth: .infinity, alignment: frameAlignment)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
