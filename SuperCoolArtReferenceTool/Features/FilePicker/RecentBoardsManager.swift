@@ -1,8 +1,6 @@
 import Foundation
 import os
 
-private let recentsLog = Logger(subsystem: "AxI.SuperCoolArtReferenceTool1", category: "RecentBoards")
-
 struct RecentBoardEntry: Codable, Identifiable {
     var id: String { filePath }
     let name: String
@@ -128,7 +126,7 @@ final class RecentBoardsManager {
             entries.sort { $0.lastOpened > $1.lastOpened }
             return entries
         } catch {
-            recentsLog.error("Failed to load: \(error.localizedDescription, privacy: .public)")
+            Logger.recents.error("Failed to load: \(error.localizedDescription, privacy: .public)")
             return []
         }
     }
@@ -140,7 +138,7 @@ final class RecentBoardsManager {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         } catch {
-            recentsLog.error("Failed to save: \(error.localizedDescription, privacy: .public)")
+            Logger.recents.error("Failed to save: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

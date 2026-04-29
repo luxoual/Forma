@@ -8,8 +8,6 @@
 import SwiftUI
 import os
 
-private let appLog = Logger(subsystem: "AxI.SuperCoolArtReferenceTool1", category: "App")
-
 @main
 struct SuperCoolArtReferenceToolApp: App {
     @State private var openHandler = AppOpenHandler()
@@ -18,6 +16,7 @@ struct SuperCoolArtReferenceToolApp: App {
             RootView()
                 .environment(openHandler)
                 .onOpenURL { url in
+                    Logger.app.notice("onOpenURL received: \(url.lastPathComponent, privacy: .public) (provider: \(fileProviderDescription(for: url), privacy: .public))")
                     Task {
                         guard url.pathExtension.lowercased() == "refboard" else { return }
                         do {
@@ -26,7 +25,7 @@ struct SuperCoolArtReferenceToolApp: App {
                                 openHandler.importedElements = elements
                             }
                         } catch {
-                            appLog.error("Failed to import .refboard: \(error.localizedDescription, privacy: .public)")
+                            Logger.app.error("Failed to import .refboard: \(error.localizedDescription, privacy: .public)")
                         }
                     }
                 }

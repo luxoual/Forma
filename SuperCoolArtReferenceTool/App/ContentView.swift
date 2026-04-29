@@ -9,8 +9,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import os
 
-private let saveLog = Logger(subsystem: "AxI.SuperCoolArtReferenceTool1", category: "Save")
-
 struct ContentView: View {
     @Environment(AppOpenHandler.self) private var openHandler
     @Environment(RecentBoardsManager.self) private var recentsManager
@@ -102,7 +100,7 @@ struct ContentView: View {
                 Button("Import") {
                     importerMode = .board
                     lastImporterMode = .board
-                    print("[UI] Import Board tapped")
+                    Logger.importer.notice("Import Board tapped")
                 }
                 .buttonStyle(.bordered)
             }
@@ -136,11 +134,11 @@ struct ContentView: View {
             allowsMultipleSelection: importerMode == .images
         ) { result in
             let currentMode = lastImporterMode
-            print("[Importer] Unified fileImporter fired (mode: \(String(describing: currentMode)))")
+            Logger.importer.info("fileImporter fired (mode: \(String(describing: currentMode), privacy: .public))")
             switch result {
             case .success(let urls):
                 if currentMode == .images {
-                    print("[Importer] Selected image URLs count = \(urls.count)")
+                    Logger.importer.info("Selected image URLs count = \(urls.count)")
                     urlsToInsert = urls
                 } else if currentMode == .board {
                     guard let url = urls.first else { return }
@@ -195,7 +193,8 @@ struct ContentView: View {
                 openHandler.importedElements = nil
             }
         }
-        .onChange(of: scenePhase) { _, newPhase in
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            Logger.scenePhase.info("phase: \(String(describing: oldPhase), privacy: .public) → \(String(describing: newPhase), privacy: .public)")
             // Autosave on `.inactive`. We can't use `.background` because force-quit from the
             // app switcher sends SIGKILL before `.background` fires — the lifecycle goes
             // `.active → .inactive → killed`, skipping `.background`. `.inactive` does fire on
@@ -210,7 +209,7 @@ struct ContentView: View {
     }
     
     private func openImageImporter() {
-        print("[UI] Add Item tapped")
+        Logger.importer.notice("Add Item tapped")
         importerMode = .images
         lastImporterMode = .images
     }
@@ -233,10 +232,10 @@ struct ContentView: View {
         do {
             _ = try BoardArchiver.export(elements: elements, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-            saveLog.info("Autosave wrote \(elements.count) elements to \(url.lastPathComponent, privacy: .public) in \(ms)ms")
+            Logger.save.info("Autosave wrote \(elements.count) elements to \(url.lastPathComponent, privacy: .public) in \(ms)ms (provider: \(fileProviderDescription(for: url), privacy: .public))")
             markCleanTrigger = UUID()
         } catch {
-            saveLog.error("Autosave failed: \(error.localizedDescription, privacy: .public)")
+            Logger.save.error("Autosave failed for \(url.lastPathComponent, privacy: .public) (provider: \(fileProviderDescription(for: url), privacy: .public)): \(error.localizedDescription, privacy: .public)")
         }
     }
 
