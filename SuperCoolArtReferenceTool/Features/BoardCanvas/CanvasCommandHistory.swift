@@ -1,9 +1,11 @@
 import Foundation
 
 /// Snapshot of a placed element, sufficient to add/remove from the board.
+/// `url` is populated for image elements (so the in-memory `PlacedImage`
+/// can be reconstructed) and nil for text and other URL-less element types.
 struct PlacedElementSnapshot {
     let id: UUID
-    let url: URL
+    let url: URL?
     let worldRect: CGRect
     let zIndex: Int
     let element: CMCanvasElement

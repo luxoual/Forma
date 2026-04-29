@@ -27,6 +27,18 @@ struct BoardCanvasView: View {
     @State private var placedImages: [PlacedImage] = []
     // Render-only set from viewport culling
     @State private var visibleImages: [PlacedImage] = []
+
+    // Placed texts. No viewport culling — text count is expected to be small
+    // and each element's world footprint depends on screen-space rendering, so
+    // tile-based culling adds complexity for little benefit at v1 scale.
+    @State private var placedTexts: [PlacedText] = []
+    /// Id of the text element currently in edit mode (nil when none).
+    @State private var editingTextID: UUID? = nil
+    /// Newly placed text ids that have not yet been committed to history/store.
+    /// Cleared on first commitTextEdit so subsequent focus-loss callbacks
+    /// for the same id can't push duplicate `.insert` commands.
+    @State private var pendingTextInserts: Set<UUID> = []
+
     @State private var nextZIndex: Int = 0
     @State private var canvasSize: CGSize = .zero
 
@@ -41,6 +53,14 @@ struct BoardCanvasView: View {
     // Image sizing constraints in world units (adjust as desired)
     private let maxImageDimensionWorld: CGFloat = 512
     private let minImageDimensionWorld: CGFloat = 64
+
+    // Text element defaults. Font size is in screen points and stays fixed
+    // across zoom — text renders at constant visible size regardless of scale.
+    // Color hex is round-tripped through CMCanvasElementPayload.text but in v1
+    // the read path always falls back to DesignSystem.Colors.primary.
+    private let defaultTextFontSize: CGFloat = 24
+    private let defaultTextFontName: String = "system"
+    private let defaultTextColorHex: String = "#191919"
 
     // Zoom bounds
     private let minScale: CGFloat = 0.05
@@ -132,10 +152,15 @@ struct BoardCanvasView: View {
                 }
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
-                .onTapGesture {
+                .onTapGesture(coordinateSpace: .local) { location in
                     // Empty-canvas tap: SwiftUI's hit-testing routes taps to
                     // image views / floating overlays first, so this only fires
                     // when the user actually tapped bare canvas.
+                    if activeTool == .text {
+                        let world = screenToWorld(location)
+                        insertText(at: world)
+                        return
+                    }
                     toolBehavior(for: activeTool).tappedEmpty(selection: selection)
                 }
 
@@ -193,6 +218,43 @@ struct BoardCanvasView: View {
                                   y: (liveRect.midY * scale) + offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
+                }
+
+                // Render placed text elements. Position is computed in screen
+                // space; font size stays fixed in screen points so visual size
+                // is constant regardless of zoom. The element's world rect is
+                // recomputed from rendered screen size / scale via
+                // `.onGeometryChange` so hit-testing/selection still operate
+                // in world space.
+                ForEach($placedTexts) { $placed in
+                    let isSelected = selection.selectedIDs.contains(placed.id)
+                    let isMultiSelected = selection.selectedIDs.count > 1
+                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
+                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+                    let id = placed.id
+                    let isEditing = editingTextID == id
+
+                    TextElementView(
+                        placed: $placed,
+                        scale: scale,
+                        isEditing: isEditing,
+                        isSelected: isSelected,
+                        isMultiSelected: isMultiSelected,
+                        onCommitEdit: { commitTextEdit(id: id) }
+                    )
+                    .position(
+                        x: (placed.worldRect.midX * scale) + offset.width + liveDX,
+                        y: (placed.worldRect.midY * scale) + offset.height + liveDY
+                    )
+                    .onTapGesture {
+                        let behavior = toolBehavior(for: activeTool)
+                        let store = canvasStore
+                        let sel = selection
+                        Task {
+                            await behavior.tappedItem(id: id, store: store, selection: sel)
+                        }
+                    }
+                    .zIndex(Double(placed.zIndex))
                 }
 
                 // Marquee selection rectangle
@@ -299,6 +361,14 @@ struct BoardCanvasView: View {
                     }
                 }
             }
+            .onChange(of: activeTool) { _, _ in
+                // Switching tools commits any in-flight text edit so the user
+                // doesn't end up with an invisible empty placeholder after
+                // tapping another toolbar button mid-type.
+                if let editing = editingTextID {
+                    commitTextEdit(id: editing)
+                }
+            }
             .onChange(of: undoTrigger) { _, newValue in
                 guard newValue != nil else { return }
                 performUndo()
@@ -344,9 +414,12 @@ struct BoardCanvasView: View {
                             let worldStart = screenToWorld(value.startLocation)
                             dragStartWorldPos = worldStart
                             let behavior = toolBehavior(for: activeTool)
-                            let items = placedImages.map {
+                            var items = placedImages.map {
                                 HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
                             }
+                            items.append(contentsOf: placedTexts.map {
+                                HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
+                            })
                             let mode = behavior.dragBegan(
                                 worldStart: worldStart,
                                 items: items,
@@ -486,6 +559,13 @@ struct BoardCanvasView: View {
 
     /// Pure query: hit-test screen point against handles on the current selection.
     private func hitTestHandle(screenPoint: CGPoint) -> HandleHitResult? {
+        // v1: text elements aren't resizable. If any text is in the current
+        // selection, hide resize handles entirely (mixed text+image selections
+        // would resize images while text stays screen-constant — confusing).
+        let textIDs = Set(placedTexts.map(\.id))
+        if !selection.selectedIDs.isDisjoint(with: textIDs) {
+            return nil
+        }
         if selection.selectedIDs.count == 1,
            let selectedID = selection.selectedIDs.first,
            let item = visibleImages.first(where: { $0.id == selectedID }) {
@@ -669,14 +749,16 @@ struct BoardCanvasView: View {
     /// if no items are selected. Unlike `groupBoundingBox()` this works for
     /// any non-empty selection (single or multi).
     private func selectionBoundingBox() -> CGRect? {
-        let rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect)
+        var rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect)
+        rects.append(contentsOf: placedTexts.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect))
         guard let first = rects.first else { return nil }
         return rects.dropFirst().reduce(first) { $0.union($1) }
     }
 
     private func groupBoundingBox() -> CGRect? {
         guard selection.selectedIDs.count > 1 else { return nil }
-        let rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map { $0.worldRect }
+        var rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect)
+        rects.append(contentsOf: placedTexts.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect))
         guard !rects.isEmpty else { return nil }
         return rects.dropFirst().reduce(rects[0]) { $0.union($1) }
     }
@@ -812,6 +894,12 @@ struct BoardCanvasView: View {
                 visibleImages[i].worldRect.origin.y += dy
             }
         }
+        for i in placedTexts.indices {
+            if elementIDs.contains(placedTexts[i].id) {
+                placedTexts[i].worldRect.origin.x += dx
+                placedTexts[i].worldRect.origin.y += dy
+            }
+        }
 
         enqueueStoreMutation { store in
             let fetched = await store.elements(for: Array(elementIDs))
@@ -828,6 +916,10 @@ struct BoardCanvasView: View {
     }
 
     private func applyResizeRect(elementID: UUID, rect: CGRect) {
+        // Text elements don't support resize in v1; their world size is
+        // re-derived from screen rendering each frame, so any rect we wrote
+        // here would be overwritten on next layout.
+        if placedTexts.contains(where: { $0.id == elementID }) { return }
         if let idx = placedImages.firstIndex(where: { $0.id == elementID }) {
             placedImages[idx].worldRect = rect
         }
@@ -855,8 +947,13 @@ struct BoardCanvasView: View {
 
     /// Batch-apply multiple resize rects in a single store mutation (used by group resize + undo/redo).
     private func applyResizeRects(_ rects: [UUID: CGRect]) {
+        // Filter out text elements — see applyResizeRect for rationale.
+        let textIDs = Set(placedTexts.map(\.id))
+        let imageRects = rects.filter { !textIDs.contains($0.key) }
+        guard !imageRects.isEmpty else { return }
+
         // Update in-memory arrays synchronously
-        for (id, rect) in rects {
+        for (id, rect) in imageRects {
             if let idx = placedImages.firstIndex(where: { $0.id == id }) {
                 placedImages[idx].worldRect = rect
             }
@@ -866,11 +963,11 @@ struct BoardCanvasView: View {
         }
 
         // Single batched store mutation
-        let ids = Array(rects.keys)
+        let ids = Array(imageRects.keys)
         enqueueStoreMutation { store in
             let fetched = await store.elements(for: ids)
             var updated: [CMCanvasElement] = []
-            for (id, rect) in rects {
+            for (id, rect) in imageRects {
                 if var element = fetched[id] {
                     element.header.bounds = CMWorldRect(
                         origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
@@ -891,7 +988,26 @@ struct BoardCanvasView: View {
 
     private func addElements(snapshots: [PlacedElementSnapshot]) {
         for snap in snapshots {
-            placedImages.append(PlacedImage(id: snap.id, url: snap.url, worldRect: snap.worldRect, zIndex: snap.zIndex))
+            switch snap.element.payload {
+            case .image:
+                if let url = snap.url {
+                    placedImages.append(PlacedImage(
+                        id: snap.id, url: url,
+                        worldRect: snap.worldRect, zIndex: snap.zIndex
+                    ))
+                }
+            case .text(let content, _, let fontSize, _):
+                placedTexts.append(PlacedText(
+                    id: snap.id,
+                    content: content,
+                    worldRect: snap.worldRect,
+                    zIndex: snap.zIndex,
+                    fontSize: CGFloat(fontSize),
+                    color: DesignSystem.Colors.primary
+                ))
+            default:
+                break
+            }
             nextZIndex = max(nextZIndex, snap.zIndex + 1)
         }
 
@@ -910,44 +1026,68 @@ struct BoardCanvasView: View {
     /// element (transform, layerId, etc.) rather than a reconstructed one.
     private func deleteSelection() {
         let targetIDs = selection.selectedIDs
-        let placedByID: [UUID: PlacedImage] = Dictionary(
+        let imagesByID: [UUID: PlacedImage] = Dictionary(
             uniqueKeysWithValues: placedImages
                 .filter { targetIDs.contains($0.id) }
                 .map { ($0.id, $0) }
         )
-        guard !placedByID.isEmpty else { return }
+        let textsByID: [UUID: PlacedText] = Dictionary(
+            uniqueKeysWithValues: placedTexts
+                .filter { targetIDs.contains($0.id) }
+                .map { ($0.id, $0) }
+        )
+        guard !imagesByID.isEmpty || !textsByID.isEmpty else { return }
 
         let store = canvasStore
+        let allIDs = Array(imagesByID.keys) + Array(textsByID.keys)
         Task { @MainActor in
-            let elementsByID = await store.elements(for: Array(placedByID.keys))
-            let snapshots: [PlacedElementSnapshot] = placedByID.map { id, placed in
+            let elementsByID = await store.elements(for: allIDs)
+            var snapshots: [PlacedElementSnapshot] = []
+
+            for (id, placed) in imagesByID {
                 let authElement = elementsByID[id]
-                let element = authElement ?? fallbackElement(for: placed)
+                let element = authElement ?? fallbackImageElement(for: placed)
                 let worldRect: CGRect
                 let zIndex: Int
-
                 if let authElement {
                     let bounds = authElement.header.bounds
                     worldRect = CGRect(
-                        x: CGFloat(bounds.origin.x),
-                        y: CGFloat(bounds.origin.y),
-                        width: CGFloat(bounds.size.x),
-                        height: CGFloat(bounds.size.y)
+                        x: CGFloat(bounds.origin.x), y: CGFloat(bounds.origin.y),
+                        width: CGFloat(bounds.size.x), height: CGFloat(bounds.size.y)
                     )
                     zIndex = authElement.header.zIndex
                 } else {
                     worldRect = placed.worldRect
                     zIndex = placed.zIndex
                 }
-
-                return PlacedElementSnapshot(
-                    id: id,
-                    url: placed.url,
-                    worldRect: worldRect,
-                    zIndex: zIndex,
-                    element: element
-                )
+                snapshots.append(PlacedElementSnapshot(
+                    id: id, url: placed.url,
+                    worldRect: worldRect, zIndex: zIndex, element: element
+                ))
             }
+
+            for (id, placed) in textsByID {
+                let authElement = elementsByID[id]
+                let element = authElement ?? fallbackTextElement(for: placed)
+                let worldRect: CGRect
+                let zIndex: Int
+                if let authElement {
+                    let bounds = authElement.header.bounds
+                    worldRect = CGRect(
+                        x: CGFloat(bounds.origin.x), y: CGFloat(bounds.origin.y),
+                        width: CGFloat(bounds.size.x), height: CGFloat(bounds.size.y)
+                    )
+                    zIndex = authElement.header.zIndex
+                } else {
+                    worldRect = placed.worldRect
+                    zIndex = placed.zIndex
+                }
+                snapshots.append(PlacedElementSnapshot(
+                    id: id, url: nil,
+                    worldRect: worldRect, zIndex: zIndex, element: element
+                ))
+            }
+
             commandHistory.push(.delete(snapshots: snapshots))
             removeElements(snapshots: snapshots)
         }
@@ -955,7 +1095,7 @@ struct BoardCanvasView: View {
 
     /// Used only if the store has no record of the element (shouldn't happen
     /// in normal flow, but keeps delete resilient to a store/view desync).
-    private func fallbackElement(for placed: PlacedImage) -> CMCanvasElement {
+    private func fallbackImageElement(for placed: PlacedImage) -> CMCanvasElement {
         let rect = placed.worldRect
         let header = CMElementHeader(
             id: placed.id,
@@ -975,11 +1115,38 @@ struct BoardCanvasView: View {
         return CMCanvasElement(header: header, payload: payload)
     }
 
+    private func fallbackTextElement(for placed: PlacedText) -> CMCanvasElement {
+        let rect = placed.worldRect
+        let header = CMElementHeader(
+            id: placed.id,
+            type: .text,
+            transform: CMAffineTransform2D(),
+            bounds: CMWorldRect(
+                origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+            ),
+            layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+            zIndex: placed.zIndex
+        )
+        let payload = CMCanvasElementPayload.text(
+            content: placed.content,
+            fontName: defaultTextFontName,
+            fontSize: Double(placed.fontSize),
+            color: defaultTextColorHex
+        )
+        return CMCanvasElement(header: header, payload: payload)
+    }
+
     private func removeElements(snapshots: [PlacedElementSnapshot]) {
         let idsToRemove = Set(snapshots.map { $0.id })
         placedImages.removeAll { idsToRemove.contains($0.id) }
         visibleImages.removeAll { idsToRemove.contains($0.id) }
+        placedTexts.removeAll { idsToRemove.contains($0.id) }
         selection.selectedIDs.subtract(idsToRemove)
+        if let editing = editingTextID, idsToRemove.contains(editing) {
+            editingTextID = nil
+        }
+        pendingTextInserts.subtract(idsToRemove)
 
         enqueueStoreMutation { store in
             await store.delete(elementIDs: Array(idsToRemove))
@@ -990,17 +1157,32 @@ struct BoardCanvasView: View {
 
     private func applyElements(_ elements: [CMCanvasElement]) {
         placedImages.removeAll()
+        placedTexts.removeAll()
+        editingTextID = nil
+        pendingTextInserts.removeAll()
         nextZIndex = 0
         for el in elements {
+            let b = el.header.bounds
+            let rect = CGRect(
+                x: CGFloat(b.origin.x), y: CGFloat(b.origin.y),
+                width: CGFloat(b.size.x), height: CGFloat(b.size.y)
+            )
+            let z = el.header.zIndex
             switch el.payload {
             case .image(let url, _):
-                let b = el.header.bounds
-                let rect = CGRect(x: CGFloat(b.origin.x), y: CGFloat(b.origin.y), width: CGFloat(b.size.x), height: CGFloat(b.size.y))
-                let z = el.header.zIndex
                 placedImages.append(PlacedImage(id: el.id, url: url, worldRect: rect, zIndex: z))
                 nextZIndex = max(nextZIndex, z + 1)
+            case .text(let content, _, let fontSize, _):
+                placedTexts.append(PlacedText(
+                    id: el.id,
+                    content: content,
+                    worldRect: rect,
+                    zIndex: z,
+                    fontSize: CGFloat(fontSize),
+                    color: DesignSystem.Colors.primary
+                ))
+                nextZIndex = max(nextZIndex, z + 1)
             default:
-                // Ignore non-image payloads in this MVP view
                 continue
             }
         }
@@ -1310,6 +1492,67 @@ struct BoardCanvasView: View {
         return nil
     }
 
+    // MARK: - Text Insertion / Edit
+
+    /// Place a new text element at the given world point and immediately
+    /// enter edit mode. The element starts with empty content; if the user
+    /// commits without typing, it's removed silently (no history entry).
+    private func insertText(at worldPoint: CGPoint) {
+        // Commit any in-flight edit on a different text first so two
+        // unfinished drafts can't coexist.
+        if let prior = editingTextID {
+            commitTextEdit(id: prior)
+        }
+
+        let id = UUID()
+        let text = PlacedText(
+            id: id,
+            content: "",
+            // Origin is provisional — real size lands once the view measures.
+            worldRect: CGRect(origin: worldPoint, size: .zero),
+            zIndex: nextZIndex,
+            fontSize: defaultTextFontSize,
+            color: DesignSystem.Colors.primary
+        )
+        placedTexts.append(text)
+        nextZIndex += 1
+        pendingTextInserts.insert(id)
+        selection.clearSelection()
+        editingTextID = id
+    }
+
+    /// Idempotent. First call with a pending id pushes the `.insert`
+    /// command + writes to the store. If the user committed an empty edit,
+    /// the placeholder is removed instead. Subsequent calls for the same id
+    /// no-op (re-entrancy guard for focus-loss races on rapid placements).
+    private func commitTextEdit(id: UUID) {
+        guard pendingTextInserts.contains(id) else {
+            if editingTextID == id { editingTextID = nil }
+            return
+        }
+        pendingTextInserts.remove(id)
+        if editingTextID == id { editingTextID = nil }
+
+        guard let idx = placedTexts.firstIndex(where: { $0.id == id }) else { return }
+        let placed = placedTexts[idx]
+        let trimmed = placed.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            placedTexts.remove(at: idx)
+            return
+        }
+
+        let element = fallbackTextElement(for: placed)
+        let snapshot = PlacedElementSnapshot(
+            id: id, url: nil,
+            worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
+        )
+        commandHistory.push(.insert(snapshots: [snapshot]))
+
+        enqueueStoreMutation { store in
+            await store.upsert(elements: [element])
+        }
+    }
+
     // MARK: - Models
 
     private struct PlacedImage: Identifiable {
@@ -1317,6 +1560,95 @@ struct BoardCanvasView: View {
         let url: URL
         var worldRect: CGRect
         var zIndex: Int
+    }
+
+    /// Free-floating text element. `worldRect` is cached: origin is the
+    /// authored anchor; size is re-derived from rendered screen size / scale
+    /// each time the view measures itself (see `TextElementView.onMeasured`).
+    /// The cached size is what hit-testing, marquee, and bounding-box math
+    /// read, so it stays consistent with what the user sees on screen.
+    private struct PlacedText: Identifiable {
+        let id: UUID
+        var content: String
+        var worldRect: CGRect
+        var zIndex: Int
+        var fontSize: CGFloat
+        var color: Color
+    }
+
+    // Lightweight free-floating text view. Renders at fixed-point font size
+    // (no `*scale`), so when the canvas zooms the text on screen stays the
+    // same visible size while its world-space footprint shrinks/grows
+    // inversely. Rendered size is reported back via `onMeasured` so the
+    // parent can keep `placed.worldRect.size` aligned with what the user
+    // actually sees — that's what hit-testing, marquee, and selection
+    // bounding-box read.
+    private struct TextElementView: View {
+        @Binding var placed: PlacedText
+        let scale: CGFloat
+        let isEditing: Bool
+        let isSelected: Bool
+        let isMultiSelected: Bool
+        let onCommitEdit: () -> Void
+
+        @FocusState private var isFocused: Bool
+
+        /// Minimum on-screen width during edit so the empty placeholder + caret
+        /// have somewhere to render (the user wouldn't otherwise see anything
+        /// until typed content gives the field intrinsic width).
+        private static let editingMinScreenWidth: CGFloat = 80
+
+        var body: some View {
+            Group {
+                if isEditing {
+                    TextField("Text", text: $placed.content)
+                        .focused($isFocused)
+                        .textInputAutocapitalization(.sentences)
+                        .onSubmit { onCommitEdit() }
+                        .frame(minWidth: Self.editingMinScreenWidth)
+                } else {
+                    Text(placed.content.isEmpty ? "Text" : placed.content)
+                        .opacity(placed.content.isEmpty ? 0.4 : 1.0)
+                }
+            }
+            // Multiplying font size by `scale` makes text scale with canvas
+            // zoom — bigger when zoomed in, smaller when zoomed out — matching
+            // image elements and Figma/Miro convention.
+            .font(.system(size: placed.fontSize * scale, weight: .regular))
+            .foregroundStyle(placed.color)
+            .fixedSize(horizontal: true, vertical: true)
+            .padding(4)
+            .background {
+                if isEditing {
+                    // Affordance for active edit state — bordered tertiary
+                    // rectangle around the input so the user can see where
+                    // their text will land before they start typing.
+                    Rectangle()
+                        .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
+                } else if isSelected && !isMultiSelected {
+                    Rectangle()
+                        .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
+                } else if isSelected && isMultiSelected {
+                    Rectangle()
+                        .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)
+                }
+            }
+            .onGeometryChange(for: CGSize.self, of: { $0.size }) { newSize in
+                let newWorld = CGSize(
+                    width: newSize.width / scale,
+                    height: newSize.height / scale
+                )
+                if placed.worldRect.size != newWorld {
+                    placed.worldRect.size = newWorld
+                }
+            }
+            .task(id: isEditing) {
+                if isEditing { isFocused = true }
+            }
+            .onChange(of: isFocused) { _, focused in
+                if !focused && isEditing { onCommitEdit() }
+            }
+        }
     }
 
     // Lightweight file image view (preview only)
