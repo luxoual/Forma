@@ -232,10 +232,10 @@ struct ContentView: View {
         do {
             _ = try BoardArchiver.export(elements: elements, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-            Logger.save.info("Autosave wrote \(elements.count) elements to \(url.lastPathComponent, privacy: .public) in \(ms)ms (provider: \(fileProviderDescription(for: url), privacy: .public))")
+            Logger.save.info("Autosave wrote \(elements.count) elements to \(url.lastPathComponent, privacy: .private) in \(ms)ms (provider: \(fileProviderDescription(for: url), privacy: .public))")
             markCleanTrigger = UUID()
         } catch {
-            Logger.save.error("Autosave failed for \(url.lastPathComponent, privacy: .public) (provider: \(fileProviderDescription(for: url), privacy: .public)): \(error.localizedDescription, privacy: .public)")
+            Logger.save.error("Autosave failed for \(url.lastPathComponent, privacy: .private) (provider: \(fileProviderDescription(for: url), privacy: .public)): \(error.localizedDescription, privacy: .private)")
         }
     }
 

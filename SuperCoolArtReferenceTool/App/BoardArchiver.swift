@@ -241,7 +241,7 @@ enum BoardArchiver {
     private static func unzipItem(at sourceURL: URL, to destinationURL: URL) throws {
         guard let archive = Archive(url: sourceURL, accessMode: .read) else {
             let probe = probeZipTail(sourceURL)
-            Logger.archiver.error("Archive open failed for \(sourceURL.lastPathComponent, privacy: .public). \(probe, privacy: .public)")
+            Logger.archiver.error("Archive open failed for \(sourceURL.lastPathComponent, privacy: .private). \(probe, privacy: .public)")
             throw ImportError.ioFailure(underlying: nil)
         }
 

@@ -16,7 +16,7 @@ struct SuperCoolArtReferenceToolApp: App {
             RootView()
                 .environment(openHandler)
                 .onOpenURL { url in
-                    Logger.app.notice("onOpenURL received: \(url.lastPathComponent, privacy: .public) (provider: \(fileProviderDescription(for: url), privacy: .public))")
+                    Logger.app.notice("onOpenURL received: \(url.lastPathComponent, privacy: .private) (provider: \(fileProviderDescription(for: url), privacy: .public))")
                     Task {
                         guard url.pathExtension.lowercased() == "refboard" else { return }
                         do {
@@ -25,7 +25,7 @@ struct SuperCoolArtReferenceToolApp: App {
                                 openHandler.importedElements = elements
                             }
                         } catch {
-                            Logger.app.error("Failed to import .refboard: \(error.localizedDescription, privacy: .public)")
+                            Logger.app.error("Failed to import .refboard: \(error.localizedDescription, privacy: .private)")
                         }
                     }
                 }

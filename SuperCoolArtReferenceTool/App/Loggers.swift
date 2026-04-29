@@ -26,9 +26,8 @@ extension OSSignposter {
     static let archiver = OSSignposter(subsystem: subsystem, category: "Archiver")
 }
 
-/// Identifies which file provider backs a given URL — iCloud Drive, on-device storage,
-/// or a third-party Files extension (Working Copy, Dropbox, etc.). Useful in diagnostic
-/// logs so we can distinguish behavior across providers without correlating raw paths.
+/// Identifies which broad storage class backs a given URL without exposing
+/// provider-specific identifiers or raw path components in logs.
 func fileProviderDescription(for url: URL) -> String {
     let path = url.path
 
@@ -36,19 +35,11 @@ func fileProviderDescription(for url: URL) -> String {
         return "iCloud Drive"
     }
 
-    if let range = path.range(of: "/CloudStorage/") {
-        let tail = path[range.upperBound...]
-        if let slash = tail.firstIndex(of: "/") {
-            return "FileProvider:\(tail[..<slash])"
-        }
+    if path.contains("/CloudStorage/") {
         return "FileProvider"
     }
 
-    if let range = path.range(of: "/Mobile Documents/iCloud~") {
-        let tail = path[range.upperBound...]
-        if let slash = tail.firstIndex(of: "/") {
-            return "iCloudContainer:\(tail[..<slash])"
-        }
+    if path.contains("/Mobile Documents/iCloud~") {
         return "iCloudContainer"
     }
 

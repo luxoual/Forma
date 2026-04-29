@@ -126,7 +126,7 @@ final class RecentBoardsManager {
             entries.sort { $0.lastOpened > $1.lastOpened }
             return entries
         } catch {
-            Logger.recents.error("Failed to load: \(error.localizedDescription, privacy: .public)")
+            Logger.recents.error("Failed to load: \(error.localizedDescription, privacy: .private)")
             return []
         }
     }
@@ -138,7 +138,7 @@ final class RecentBoardsManager {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         } catch {
-            Logger.recents.error("Failed to save: \(error.localizedDescription, privacy: .public)")
+            Logger.recents.error("Failed to save: \(error.localizedDescription, privacy: .private)")
         }
     }
 }
