@@ -13,9 +13,13 @@ import simd
 actor LocalBoardStore {
     // Index from tile -> element IDs
     private var tileIndex: [CMTileKey: Set<UUID>] = [:]
+    // Reverse index from element -> tiles so moves/resizes can update membership precisely.
+    private var elementTiles: [UUID: Set<CMTileKey>] = [:]
     // Element headers by ID
     private var elements: [UUID: CMElementHeader] = [:]
     private var fullElements: [UUID: CMCanvasElement] = [:]
+    private var minZIndex: Int?
+    private var maxZIndex: Int?
 
     private let cache = TileCache(capacity: 256)
 
@@ -48,20 +52,16 @@ actor LocalBoardStore {
     /// Does not mark the store dirty — this is the load path and the in-memory state now matches disk.
     /// In-session "clear all" should go through `delete` instead.
     func replaceAll(with newElements: [CMCanvasElement]) async {
-        // Clear existing
         tileIndex.removeAll()
+        elementTiles.removeAll()
         elements.removeAll()
         fullElements.removeAll()
         cache.removeAll()
-        // Insert provided elements and rebuild tile index
-        for el in newElements {
-            let header = el.header
-            elements[header.id] = header
-            fullElements[header.id] = el
-            for key in CMTileKey.keysIntersecting(rect: header.bounds) {
-                tileIndex[key, default: []].insert(header.id)
-            }
+
+        for element in newElements {
+            apply(element: element)
         }
+        recomputeZIndexBounds()
     }
 
     // MARK: - Public API
@@ -69,32 +69,46 @@ actor LocalBoardStore {
     /// Insert or update element headers and update tile index.
     func upsert(headers: [CMElementHeader]) async {
         guard !headers.isEmpty else { return }
-        var affected: Set<CMTileKey> = []
+        var affectedTiles: Set<CMTileKey> = []
+        var needsZIndexRecompute = false
+
         for header in headers {
-            elements[header.id] = header
-            for key in CMTileKey.keysIntersecting(rect: header.bounds) {
-                tileIndex[key, default: []].insert(header.id)
-                affected.insert(key)
+            let previousHeader = elements[header.id]
+            apply(header: header, affectedTiles: &affectedTiles)
+            if let previousHeader, previousHeader.zIndex != header.zIndex {
+                needsZIndexRecompute = true
             }
         }
-        for key in affected { cache.remove(key) }
+
+        for key in affectedTiles {
+            cache.remove(key)
+        }
+        if needsZIndexRecompute {
+            recomputeZIndexBounds()
+        }
         isDirty = true
     }
 
     /// Insert or update full elements (header + payload) and update tile index.
     func upsert(elements: [CMCanvasElement]) async {
         guard !elements.isEmpty else { return }
-        var affected: Set<CMTileKey> = []
+        var affectedTiles: Set<CMTileKey> = []
+        var needsZIndexRecompute = false
+
         for element in elements {
-            let header = element.header
-            self.elements[header.id] = header
-            self.fullElements[header.id] = element
-            for key in CMTileKey.keysIntersecting(rect: header.bounds) {
-                tileIndex[key, default: []].insert(header.id)
-                affected.insert(key)
+            let previousHeader = self.elements[element.id]
+            apply(element: element, affectedTiles: &affectedTiles)
+            if let previousHeader, previousHeader.zIndex != element.header.zIndex {
+                needsZIndexRecompute = true
             }
         }
-        for key in affected { cache.remove(key) }
+
+        for key in affectedTiles {
+            cache.remove(key)
+        }
+        if needsZIndexRecompute {
+            recomputeZIndexBounds()
+        }
         isDirty = true
     }
 
@@ -105,7 +119,7 @@ actor LocalBoardStore {
     ) async {
         let expanded = CMWorldRect(
             origin: SIMD2<Double>(viewport.origin.x - margin, viewport.origin.y - margin),
-            size: SIMD2<Double>(viewport.size.x + 2*margin, viewport.size.y + 2*margin)
+            size: SIMD2<Double>(viewport.size.x + 2 * margin, viewport.size.y + 2 * margin)
         )
         let keys = CMTileKey.keysIntersecting(rect: expanded)
         for key in keys {
@@ -125,36 +139,40 @@ actor LocalBoardStore {
         }
         continuation.finish()
     }
-    
-    /// Delete elements and clear any cached tiles (naive for demo).
+
+    /// Delete elements and clear any cached tiles.
     func delete(elementIDs: [UUID]) async {
         guard !elementIDs.isEmpty else { return }
         var removedAny = false
+        var affectedTiles: Set<CMTileKey> = []
+
         for id in elementIDs {
-            if elements.removeValue(forKey: id) != nil { removedAny = true }
+            guard elements.removeValue(forKey: id) != nil else { continue }
+            removedAny = true
             fullElements.removeValue(forKey: id)
-        }
-        guard removedAny else { return }
-        // Rebuild tile index naively
-        tileIndex.removeAll()
-        for header in elements.values {
-            for key in CMTileKey.keysIntersecting(rect: header.bounds) {
-                tileIndex[key, default: []].insert(header.id)
+            if let previousTiles = elementTiles.removeValue(forKey: id) {
+                affectedTiles.formUnion(previousTiles)
+                remove(id: id, from: previousTiles)
             }
         }
-        cache.removeAll()
+
+        guard removedAny else { return }
+        for key in affectedTiles {
+            cache.remove(key)
+        }
+        recomputeZIndexBounds()
         isDirty = true
     }
 
     /// Query element headers intersecting a region.
     func headers(in rect: CMWorldRect, limit: Int? = nil) async -> [CMElementHeader] {
-        let keys = CMTileKey.keysIntersecting(rect: rect)
-        var ids: Set<UUID> = []
-        for key in keys { if let bucket = tileIndex[key] { ids.formUnion(bucket) } }
+        let ids = idsIntersecting(rect: rect)
         var result: [CMElementHeader] = []
         result.reserveCapacity(ids.count)
         for id in ids {
-            if let h = elements[id], h.bounds.intersects(rect) { result.append(h) }
+            if let header = elements[id], header.bounds.intersects(rect) {
+                result.append(header)
+            }
             if let limit, result.count >= limit { break }
         }
         return result.sorted { ($0.zIndex, $0.id.uuidString) < ($1.zIndex, $1.id.uuidString) }
@@ -167,6 +185,23 @@ actor LocalBoardStore {
             size: SIMD2<Double>(viewport.size.x + 2 * margin, viewport.size.y + 2 * margin)
         )
         return await headers(in: expanded, limit: limit)
+    }
+
+    /// Returns image placements intersecting the viewport expanded by margin.
+    func imagePlacements(in viewport: CMWorldRect, margin: Double, limit: Int? = nil) async -> [ImagePlacement] {
+        let headers = await headers(in: viewport, margin: margin, limit: limit)
+        var placements: [ImagePlacement] = []
+        placements.reserveCapacity(headers.count)
+        for header in headers {
+            guard
+                let element = fullElements[header.id],
+                case .image(let url, _) = element.payload
+            else {
+                continue
+            }
+            placements.append(ImagePlacement(id: header.id, url: url, bounds: header.bounds, zIndex: header.zIndex))
+        }
+        return placements
     }
 
     /// Returns the topmost header containing a point.
@@ -194,10 +229,11 @@ actor LocalBoardStore {
     /// Moves the provided elements above all others by adjusting zIndex.
     func moveToTop(elementIDs: [UUID]) async {
         guard !elementIDs.isEmpty else { return }
-        let maxZ = elements.values.map { $0.zIndex }.max() ?? 0
-        var nextZ = maxZ + 1
         let ordered = elementIDs.compactMap { elements[$0] }.sorted { $0.zIndex < $1.zIndex }
         guard !ordered.isEmpty else { return }
+
+        let startingZ = (maxZIndex ?? -1) + 1
+        var nextZ = startingZ
         for header in ordered {
             var updated = header
             updated.zIndex = nextZ
@@ -208,6 +244,9 @@ actor LocalBoardStore {
                 fullElements[updated.id] = full
             }
         }
+
+        minZIndex = min(minZIndex ?? startingZ, ordered.first?.zIndex ?? startingZ)
+        maxZIndex = nextZ - 1
         cache.removeAll()
         isDirty = true
     }
@@ -215,10 +254,11 @@ actor LocalBoardStore {
     /// Moves the provided elements below all others by adjusting zIndex.
     func moveToBottom(elementIDs: [UUID]) async {
         guard !elementIDs.isEmpty else { return }
-        let minZ = elements.values.map { $0.zIndex }.min() ?? 0
-        var nextZ = minZ - elementIDs.count
         let ordered = elementIDs.compactMap { elements[$0] }.sorted { $0.zIndex < $1.zIndex }
         guard !ordered.isEmpty else { return }
+
+        let startingZ = (minZIndex ?? 0) - ordered.count
+        var nextZ = startingZ
         for header in ordered {
             var updated = header
             updated.zIndex = nextZ
@@ -229,20 +269,25 @@ actor LocalBoardStore {
                 fullElements[updated.id] = full
             }
         }
+
+        minZIndex = startingZ
+        maxZIndex = max(maxZIndex ?? (nextZ - 1), ordered.last?.zIndex ?? (nextZ - 1))
         cache.removeAll()
         isDirty = true
     }
-    
+
     /// Fetch a full element by ID (if present).
     func element(id: UUID) async -> CMCanvasElement? {
-        return fullElements[id]
+        fullElements[id]
     }
 
     /// Fetch a dictionary of full elements for the given IDs.
     func elements(for ids: [UUID]) async -> [UUID: CMCanvasElement] {
         var result: [UUID: CMCanvasElement] = [:]
         for id in ids {
-            if let el = fullElements[id] { result[id] = el }
+            if let element = fullElements[id] {
+                result[id] = element
+            }
         }
         return result
     }
@@ -253,6 +298,13 @@ actor LocalBoardStore {
         case evicted(CMTileKey)
     }
 
+    struct ImagePlacement: Identifiable {
+        let id: UUID
+        let url: URL
+        let bounds: CMWorldRect
+        let zIndex: Int
+    }
+
     /// One-shot tile stream for the viewport expanded by margin.
     func tileStream(for viewport: CMWorldRect, margin: Double) -> AsyncStream<TileEvent> {
         AsyncStream { continuation in
@@ -261,5 +313,89 @@ actor LocalBoardStore {
             }
         }
     }
-}
 
+    private func idsIntersecting(rect: CMWorldRect) -> Set<UUID> {
+        let keys = CMTileKey.keysIntersecting(rect: rect)
+        var ids: Set<UUID> = []
+        for key in keys {
+            if let bucket = tileIndex[key] {
+                ids.formUnion(bucket)
+            }
+        }
+        return ids
+    }
+
+    private func apply(element: CMCanvasElement) {
+        fullElements[element.id] = element
+        apply(header: element.header)
+    }
+
+    private func apply(element: CMCanvasElement, affectedTiles: inout Set<CMTileKey>) {
+        fullElements[element.id] = element
+        apply(header: element.header, affectedTiles: &affectedTiles)
+    }
+
+    private func apply(header: CMElementHeader) {
+        let id = header.id
+        let oldTiles = elementTiles[id] ?? []
+        let newTiles = Set(CMTileKey.keysIntersecting(rect: header.bounds))
+        remove(id: id, from: oldTiles.subtracting(newTiles))
+        add(id: id, to: newTiles.subtracting(oldTiles))
+        elementTiles[id] = newTiles
+        elements[id] = header
+        updateZIndexBounds(with: header.zIndex)
+    }
+
+    private func apply(header: CMElementHeader, affectedTiles: inout Set<CMTileKey>) {
+        let id = header.id
+        let oldTiles = elementTiles[id] ?? []
+        let newTiles = Set(CMTileKey.keysIntersecting(rect: header.bounds))
+        affectedTiles.formUnion(oldTiles)
+        affectedTiles.formUnion(newTiles)
+        remove(id: id, from: oldTiles.subtracting(newTiles))
+        add(id: id, to: newTiles.subtracting(oldTiles))
+        elementTiles[id] = newTiles
+        elements[id] = header
+        updateZIndexBounds(with: header.zIndex)
+    }
+
+    private func add(id: UUID, to keys: Set<CMTileKey>) {
+        for key in keys {
+            tileIndex[key, default: []].insert(id)
+        }
+    }
+
+    private func remove(id: UUID, from keys: Set<CMTileKey>) {
+        for key in keys {
+            guard var bucket = tileIndex[key] else { continue }
+            bucket.remove(id)
+            if bucket.isEmpty {
+                tileIndex.removeValue(forKey: key)
+            } else {
+                tileIndex[key] = bucket
+            }
+        }
+    }
+
+    private func updateZIndexBounds(with zIndex: Int) {
+        minZIndex = min(minZIndex ?? zIndex, zIndex)
+        maxZIndex = max(maxZIndex ?? zIndex, zIndex)
+    }
+
+    private func recomputeZIndexBounds() {
+        guard let first = elements.values.first else {
+            minZIndex = nil
+            maxZIndex = nil
+            return
+        }
+
+        var minValue = first.zIndex
+        var maxValue = first.zIndex
+        for header in elements.values.dropFirst() {
+            minValue = min(minValue, header.zIndex)
+            maxValue = max(maxValue, header.zIndex)
+        }
+        minZIndex = minValue
+        maxZIndex = maxValue
+    }
+}
