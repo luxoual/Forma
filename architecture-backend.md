@@ -24,6 +24,9 @@ Backend architecture has **core data models and persistence layer** implemented,
 - Batch image insertion shifts the entire grid until it finds a non-overlapping region on the canvas.
 - Board import in the UI is now filtered to `.refboard` only instead of also allowing generic folders and packages.
 - App-open delivery now passes imported `CMCanvasElement` values through the root view into the canvas on first launch/open.
+- `LocalBoardStore` now maintains reverse tile membership per element so move/resize/delete operations can update the spatial index precisely instead of leaving stale tile memberships behind.
+- Visible-image refresh now uses a direct `imagePlacements(...)` query from the store instead of doing a headers query followed by a second payload lookup pass in the canvas.
+- Canvas image loading now uses a shared multilevel thumbnail pipeline with snapped thumbnail levels, request deduplication, bounded decode concurrency, and memory-cost-aware caching to reduce pan/zoom decode churn.
 
 ---
 
@@ -111,6 +114,36 @@ Added viewport and selection helpers to support tile-based culling and hit-testi
 - `topmostElement(at:layers:)` for point hit testing.
 - `moveToTop` / `moveToBottom` for absolute z-order operations.
 
+`LocalBoardStore` now acts as the backing spatial index for canvas rendering. It stores:
+- `tileIndex`: tile key -> element IDs
+- `elementTiles`: element ID -> tile keys
+- `elements` / `fullElements`: header and payload storage
+
+That reverse index allows incremental tile maintenance when an image moves or resizes. The store also tracks `minZIndex` / `maxZIndex` so z-order promotions no longer need to scan the full board just to compute the next topmost or bottommost index.
+
+The canvas render path now uses `imagePlacements(in:margin:limit:)` as a specialized query for visible image items. That keeps viewport refresh to a single backend pass that returns only the data needed by the image renderer.
+
+---
+
+## Thumbnail Loading Pipeline
+
+Decision Status: **Implemented**
+
+**File:**
+- `SuperCoolArtReferenceTool/Features/BoardCanvas/BoardCanvasView.swift`
+
+Image presentation now uses a shared thumbnail-loading pipeline instead of per-view ad hoc thumbnail decoding.
+
+Behavior:
+- Requested screen sizes are snapped to discrete thumbnail levels (`128`, `256`, `384`, `512`, `768`, `1024`, `1536`, `2048`).
+- During interaction, requested levels are capped lower so panning and zooming favor cheaper decodes.
+- The pipeline reuses the nearest cached thumbnail level immediately when possible.
+- Duplicate requests for the same `url + level` are deduplicated through an in-flight task map.
+- Thumbnail decode concurrency is bounded by an async limiter.
+- Cached thumbnails are stored in an `NSCache` with both count and total-cost limits, and cache cost is based on decoded pixel size.
+
+This is not yet a persistent on-disk thumbnail pyramid. Levels are generated lazily in memory from source files, but the pipeline now behaves like a lightweight multilevel thumbnail system during canvas interaction.
+
 ---
 
 ## Batch Image Placement
@@ -139,3 +172,5 @@ This replaces the older one-by-one diagonal nudge behavior, which could still cr
 - `BoardCanvasView` now performs batch image placement for pasted/imported image URLs before writing the resulting `CMCanvasElement` set into `canvasStore`.
 - `CanvasService` provides viewport and selection queries (`elements(in:margin:...)`, `topmostElement(at:...)`) for tile-based culling and hit-testing.
 - `CanvasService` exposes z-order operations (`moveToTop` / `moveToBottom`) for absolute layer adjustments.
+- `LocalBoardStore` provides the specialized `imagePlacements(in:margin:limit:)` query used by the visible-canvas render path.
+- The canvas thumbnail pipeline is currently implemented inside `BoardCanvasView.swift`; it depends on backend file-URL payloads remaining stable after import/export and app-open flows.
