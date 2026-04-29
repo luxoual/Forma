@@ -307,9 +307,20 @@ enum BoardArchiver {
         }
     }
 
-    enum ImportError: Error {
+    enum ImportError: LocalizedError {
         case unsupportedFileExtension
         case corruptedFile
         case ioFailure
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedFileExtension:
+                return "Only .refboard files can be opened."
+            case .corruptedFile:
+                return "This board file is incomplete or damaged. It may have been interrupted while saving."
+            case .ioFailure:
+                return "The board file couldn't be read. Check that it's available and try again."
+            }
+        }
     }
 }

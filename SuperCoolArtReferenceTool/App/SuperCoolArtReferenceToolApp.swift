@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+import os
+
+private let appLog = Logger(subsystem: "AxI.SuperCoolArtReferenceTool1", category: "App")
 
 @main
 struct SuperCoolArtReferenceToolApp: App {
@@ -23,7 +26,7 @@ struct SuperCoolArtReferenceToolApp: App {
                                 openHandler.importedElements = elements
                             }
                         } catch {
-                            print("Failed to import .refboard: ", error)
+                            appLog.error("Failed to import .refboard: \(error.localizedDescription, privacy: .public)")
                         }
                     }
                 }

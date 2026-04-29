@@ -7,6 +7,9 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import os
+
+private let saveLog = Logger(subsystem: "AxI.SuperCoolArtReferenceTool1", category: "Save")
 
 struct ContentView: View {
     @Environment(AppOpenHandler.self) private var openHandler
@@ -230,10 +233,10 @@ struct ContentView: View {
         do {
             _ = try BoardArchiver.export(elements: elements, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-            print("[Save] Autosave wrote \(elements.count) elements to \(url.lastPathComponent) in \(ms)ms")
+            saveLog.info("Autosave wrote \(elements.count) elements to \(url.lastPathComponent, privacy: .public) in \(ms)ms")
             markCleanTrigger = UUID()
         } catch {
-            print("[Save] Autosave failed: \(error.localizedDescription)")
+            saveLog.error("Autosave failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
