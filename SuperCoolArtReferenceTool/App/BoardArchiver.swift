@@ -364,7 +364,7 @@ enum BoardArchiver {
             case .corruptedFile:
                 return "This board file is incomplete or damaged. It may have been interrupted while saving."
             case .ioFailure:
-                return "The board file couldn't be read. Check that it's available and try again."
+                return "The board file couldn't be accessed. Check that it's available and try again."
             }
         }
 
