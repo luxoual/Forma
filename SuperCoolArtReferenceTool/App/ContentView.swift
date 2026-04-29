@@ -90,22 +90,6 @@ struct ContentView: View {
                 onSettings: { showingSettings = true }
             )
         }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 8) {
-                Button("Export") {
-                    snapshotToken = UUID()
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("Import") {
-                    importerMode = .board
-                    lastImporterMode = .board
-                    Logger.importer.notice("Import Board tapped")
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(12)
-        }
         .fileExporter(
             isPresented: $showingExporter,
             document: exportDocument,
