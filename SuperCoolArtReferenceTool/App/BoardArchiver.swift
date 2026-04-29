@@ -23,12 +23,12 @@ enum BoardArchiver {
     /// - Returns: An array of `CMCanvasElement` decoded from the package's `manifest.json`. The array may be empty if the manifest contains no elements.
     static func importElements(from url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
         guard url.pathExtension.lowercased() == "refboard" else {
-            throw ImportError.unsupportedFileExtension
+            throw ArchiverError.unsupportedFileExtension
         }
 
         let signposter = OSSignposter.archiver
         let signpostID = signposter.makeSignpostID()
-        let intervalState = signposter.beginInterval("import", id: signpostID, "provider: \(fileProviderDescription(for: url))")
+        let intervalState = signposter.beginInterval("import", id: signpostID, "provider: \(fileProviderDescription(for: url), privacy: .public)")
         defer { signposter.endInterval("import", intervalState) }
 
         let accessGranted = url.startAccessingSecurityScopedResource()
@@ -37,7 +37,7 @@ enum BoardArchiver {
         // Check if it's a directory package or a single-file ZIP
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
-            throw ImportError.corruptedFile(failingEntryPath: nil)
+            throw ArchiverError.corruptedFile(failingEntryPath: nil)
         }
         if isDir.boolValue {
             return try importFromPackage(url: url, copyAssetsToAppSupport: copyAssetsToAppSupport)
@@ -62,7 +62,7 @@ enum BoardArchiver {
         } else if let firstDir = firstDirectory(in: tempDir) {
             packageURL = firstDir
         } else {
-            throw ImportError.corruptedFile(failingEntryPath: nil)
+            throw ArchiverError.corruptedFile(failingEntryPath: nil)
         }
 
         return try importFromPackage(url: packageURL, copyAssetsToAppSupport: copyAssetsToAppSupport)
@@ -72,7 +72,7 @@ enum BoardArchiver {
         // Ensure it's a directory package
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
-            throw ImportError.corruptedFile(failingEntryPath: nil)
+            throw ArchiverError.corruptedFile(failingEntryPath: nil)
         }
 
         // Load and decode the manifest
@@ -157,7 +157,7 @@ enum BoardArchiver {
     nonisolated static func export(elements: [CMCanvasElement], to destination: URL) throws -> URL {
         let signposter = OSSignposter.archiver
         let signpostID = signposter.makeSignpostID()
-        let intervalState = signposter.beginInterval("export", id: signpostID, "provider: \(fileProviderDescription(for: destination)), elements: \(elements.count)")
+        let intervalState = signposter.beginInterval("export", id: signpostID, "provider: \(fileProviderDescription(for: destination), privacy: .public), elements: \(elements.count, privacy: .public)")
         defer { signposter.endInterval("export", intervalState) }
 
         let fm = FileManager.default
@@ -174,11 +174,11 @@ enum BoardArchiver {
             // recursion. One-shot retry as `.create`; bail if that still fails.
             try fm.removeItem(at: destination)
             guard let fresh = Archive(url: destination, accessMode: .create) else {
-                throw ImportError.ioFailure(underlying: nil)
+                throw ArchiverError.ioFailure(underlying: nil)
             }
             archive = fresh
         } else {
-            throw ImportError.ioFailure(underlying: nil)
+            throw ArchiverError.ioFailure(underlying: nil)
         }
 
         // Compute the desired state: manifest elements + set of asset paths that should exist.
@@ -241,22 +241,22 @@ enum BoardArchiver {
     private static func unzipItem(at sourceURL: URL, to destinationURL: URL) throws {
         guard let archive = Archive(url: sourceURL, accessMode: .read) else {
             let probe = probeZipTail(sourceURL)
-            Logger.archiver.error("Archive open failed for \(sourceURL.lastPathComponent, privacy: .private). \(probe, privacy: .public)")
-            throw ImportError.ioFailure(underlying: nil)
+            Logger.archiver.logArchiveOpenFailed(url: sourceURL, probe: probe)
+            throw ArchiverError.ioFailure(underlying: nil)
         }
 
         let fm = FileManager.default
         let destinationRoot = destinationURL.standardizedFileURL
         for entry in archive {
             guard let destURL = sanitizedArchiveEntryURL(entry.path, destinationRoot: destinationRoot) else {
-                throw ImportError.corruptedFile(failingEntryPath: entry.path)
+                throw ArchiverError.corruptedFile(failingEntryPath: entry.path)
             }
             if entry.type == .directory {
                 try fm.createDirectory(at: destURL, withIntermediateDirectories: true)
                 continue
             }
             if entry.type != .file {
-                throw ImportError.corruptedFile(failingEntryPath: entry.path)
+                throw ArchiverError.corruptedFile(failingEntryPath: entry.path)
             }
             try fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             _ = try archive.extract(entry, to: destURL)
@@ -351,7 +351,7 @@ enum BoardArchiver {
         }
     }
 
-    enum ImportError: LocalizedError {
+    enum ArchiverError: LocalizedError {
         case unsupportedFileExtension
         case corruptedFile(failingEntryPath: String?)
         case ioFailure(underlying: Error?)
