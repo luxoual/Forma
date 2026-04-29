@@ -53,16 +53,16 @@ struct CanvasBackButton: View {
             Image(systemName: "chevron.left")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(DesignSystem.Colors.text)
-                .frame(width: 44, height: 44)
+                .padding(12)
+                .frame(width: 68)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(DesignSystem.Colors.primary)
+                        .shadow(color: .black.opacity(0.3), radius: 8, x: 2, y: 2)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
-        .padding(12)
-        .frame(width: 68)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(DesignSystem.Colors.primary)
-                .shadow(color: .black.opacity(0.3), radius: 8, x: 2, y: 2)
-        )
         .accessibilityLabel("Back to home")
     }
 }
