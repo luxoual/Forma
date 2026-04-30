@@ -38,6 +38,12 @@ struct BoardCanvasView: View {
     /// Cleared on first commitTextEdit so subsequent focus-loss callbacks
     /// for the same id can't push duplicate `.insert` commands.
     @State private var pendingTextInserts: Set<UUID> = []
+    /// One-shot guard: when `insertText` auto-swaps the active tool back to
+    /// `.pointer` (Figma convention — keep editing the just-placed text but
+    /// route subsequent canvas taps through pointer), the resulting
+    /// `onChange(of: activeTool)` would otherwise commit the brand-new draft.
+    /// Set right before the programmatic write, consumed on the next firing.
+    @State private var skipNextToolChangeCommit: Bool = false
 
     @State private var nextZIndex: Int = 0
     @State private var canvasSize: CGSize = .zero
@@ -254,6 +260,17 @@ struct BoardCanvasView: View {
                         y: (placed.worldRect.midY * scale) + offset.height + liveDY
                     )
                     .onTapGesture {
+                        // Tap-on-sole-selected text → re-enter edit mode.
+                        // Standard across pointer/group/text tools since all
+                        // three can produce a single-text selection. Clearing
+                        // selection first hides the action bar / chrome so
+                        // they don't sit on top of the focused TextField.
+                        if selection.selectedIDs.count == 1
+                            && selection.selectedIDs.contains(id) {
+                            selection.clearSelection()
+                            editingTextID = id
+                            return
+                        }
                         let behavior = toolBehavior(for: activeTool)
                         let store = canvasStore
                         let sel = selection
@@ -372,6 +389,14 @@ struct BoardCanvasView: View {
                 // Switching tools commits any in-flight text edit so the user
                 // doesn't end up with an invisible empty placeholder after
                 // tapping another toolbar button mid-type.
+                //
+                // Skip the auto-swap fired by `insertText` itself, which
+                // flips activeTool to `.pointer` while keeping focus on the
+                // just-placed draft.
+                if skipNextToolChangeCommit {
+                    skipNextToolChangeCommit = false
+                    return
+                }
                 if let editing = editingTextID {
                     commitTextEdit(id: editing)
                 }
@@ -1545,35 +1570,68 @@ struct BoardCanvasView: View {
         pendingTextInserts.insert(id)
         selection.clearSelection()
         editingTextID = id
+        // Auto-swap back to pointer so the next canvas tap doesn't try to
+        // place yet another draft on top of the one we just created. The
+        // skip flag stops the activeTool onChange from committing the new
+        // draft we're still editing.
+        skipNextToolChangeCommit = true
+        activeTool = .pointer
     }
 
-    /// Idempotent. First call with a pending id pushes the `.insert`
-    /// command + writes to the store. If the user committed an empty edit,
-    /// the placeholder is removed instead. Subsequent calls for the same id
-    /// no-op (re-entrancy guard for focus-loss races on rapid placements).
+    /// Commits the active text edit for `id`. Handles two paths:
+    ///
+    /// - **Newly placed** (id ∈ `pendingTextInserts`): empty content is
+    ///   discarded silently; non-empty content pushes an `.insert` command
+    ///   so the placement can be undone.
+    /// - **Re-edit** of an existing text (id ∉ `pendingTextInserts`):
+    ///   non-empty content syncs to the store with no history entry
+    ///   (content-only edits aren't undoable in v1); clearing all content
+    ///   pushes a `.delete` command so undo can restore the element.
+    ///
+    /// Idempotent for newly-placed ids — pendingTextInserts.remove is the
+    /// re-entrancy guard. For re-edits, called once per commit point
+    /// (focus loss / selection change / empty-canvas tap) and the store
+    /// write is naturally idempotent.
     private func commitTextEdit(id: UUID) {
-        guard pendingTextInserts.contains(id) else {
-            if editingTextID == id { editingTextID = nil }
-            return
-        }
+        let wasNewlyPlaced = pendingTextInserts.contains(id)
         pendingTextInserts.remove(id)
         if editingTextID == id { editingTextID = nil }
 
         guard let idx = placedTexts.firstIndex(where: { $0.id == id }) else { return }
         let placed = placedTexts[idx]
         let trimmed = placed.content.trimmingCharacters(in: .whitespacesAndNewlines)
+
         if trimmed.isEmpty {
             placedTexts.remove(at: idx)
+            if wasNewlyPlaced {
+                // Empty draft — discard silently, no history entry.
+                return
+            }
+            // Existing text whose content was cleared during re-edit. Push a
+            // `.delete` so undo can restore the element with its prior
+            // content (snapshot.element captures what we just removed).
+            let element = fallbackTextElement(for: placed)
+            let snapshot = PlacedElementSnapshot(
+                id: id, url: nil,
+                worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
+            )
+            commandHistory.push(.delete(snapshots: [snapshot]))
+            enqueueStoreMutation { store in
+                await store.delete(elementIDs: [id])
+            }
             return
         }
 
         let element = fallbackTextElement(for: placed)
-        let snapshot = PlacedElementSnapshot(
-            id: id, url: nil,
-            worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
-        )
-        commandHistory.push(.insert(snapshots: [snapshot]))
-
+        if wasNewlyPlaced {
+            let snapshot = PlacedElementSnapshot(
+                id: id, url: nil,
+                worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
+            )
+            commandHistory.push(.insert(snapshots: [snapshot]))
+        }
+        // Always upsert — covers both new placements and re-edit content
+        // changes. No undo entry for content-only edits in v1.
         enqueueStoreMutation { store in
             await store.upsert(elements: [element])
         }
@@ -1627,11 +1685,30 @@ struct BoardCanvasView: View {
         var body: some View {
             Group {
                 if isEditing {
-                    TextField("Text", text: $placed.content)
-                        .focused($isFocused)
-                        .textInputAutocapitalization(.sentences)
-                        .onSubmit { onCommitEdit() }
-                        .frame(minWidth: Self.editingMinScreenWidth)
+                    // `TextField(axis: .vertical)` left to its own devices
+                    // wraps content at whatever offered width the parent
+                    // gives it (or its intrinsic minWidth). We want
+                    // auto-width text — grow horizontally with content,
+                    // only break on the user's explicit newlines — so we
+                    // drive the ZStack's width with a hidden `Text` of the
+                    // same content (`fixedSize` → intrinsic, no wrap).
+                    // The TextField then fills that exact width and never
+                    // has to wrap. After the user types Enter the hidden
+                    // Text renders multi-line via the literal `\n`, the
+                    // ZStack widens to the longest line, and the TextField
+                    // grows vertically to match — same shape as the
+                    // committed state, no jump on focus loss.
+                    ZStack(alignment: .topLeading) {
+                        Text(placed.content.isEmpty ? "Text" : placed.content)
+                            .fixedSize(horizontal: true, vertical: true)
+                            .opacity(0)
+                            .accessibilityHidden(true)
+
+                        TextField("Text", text: $placed.content, axis: .vertical)
+                            .focused($isFocused)
+                            .textInputAutocapitalization(.sentences)
+                    }
+                    .frame(minWidth: Self.editingMinScreenWidth, alignment: .topLeading)
                 } else {
                     Text(placed.content.isEmpty ? "Text" : placed.content)
                         .opacity(placed.content.isEmpty ? 0.4 : 1.0)
