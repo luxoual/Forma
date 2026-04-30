@@ -11,6 +11,7 @@ struct CanvasOverlayLayout: View {
     let onRedo: () -> Void
     let onAddItem: () -> Void
     let onSettings: () -> Void
+    var canvasName: String
 
     var body: some View {
         let edge: Edge.Set = (side == .left) ? .leading : .trailing
@@ -18,7 +19,7 @@ struct CanvasOverlayLayout: View {
 
         Group {
             VStack {
-                CanvasStatusbar(onTap: onBack)
+                CanvasStatusbar(onTap: onBack, canvasName: canvasName)
                 .padding(.leading, 16)
                 .padding(.top, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -87,7 +87,8 @@ struct ContentView: View {
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
                 onAddItem: openImageImporter,
-                onSettings: { showingSettings = true }
+                onSettings: { showingSettings = true },
+                canvasName: currentBoardURL?.lastPathComponent ?? "Untitled Board"
             )
         }
         .fileExporter(
