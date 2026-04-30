@@ -30,8 +30,6 @@ struct ContentView: View {
     
     @State private var snapshotToken: UUID?
     @State private var elementsToLoad: [CMCanvasElement]?
-    @State private var showingExporter = false
-    @State private var exportDocument = BoardExportDocument(elements: [])
 
     // Undo/redo
     @State private var commandHistory = CanvasCommandHistory()
@@ -39,11 +37,7 @@ struct ContentView: View {
     @State private var redoTrigger: UUID?
     @State private var markCleanTrigger: UUID?
 
-    @State private var importerMode: ImporterMode?
     @State private var importerPresented = false
-    /// Latched copy so the result handler can read it even after the binding clears importerMode
-    @State private var lastImporterMode: ImporterMode?
-    private enum ImporterMode { case images, board }
     @State private var pendingBackNavigation = false
     @State private var pendingBackgroundSave = false
     @State private var currentBoardURL: URL?
@@ -73,9 +67,6 @@ struct ContentView: View {
                     } else if pendingBackgroundSave {
                         pendingBackgroundSave = false
                         saveInPlace(elements: elements, wasDirty: wasDirty)
-                    } else {
-                        exportDocument = BoardExportDocument(elements: elements)
-                        showingExporter = true
                     }
                 }
             )
@@ -91,63 +82,20 @@ struct ContentView: View {
                 canvasName: currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
             )
         }
-        .fileExporter(
-            isPresented: $showingExporter,
-            document: exportDocument,
-            contentType: .refboard,
-            defaultFilename: "Board"
-        ) { result in
-            switch result {
-            case .success(let url):
-                currentBoardURL = url
-                recentsManager.record(url: url)
-                markCleanTrigger = UUID()
-            case .failure(let error):
-                boardErrorMessage = "Export failed: \(error.localizedDescription)"
-                showBoardError = true
-            }
-        }
-        .onChange(of: importerMode) { _, newMode in
-            importerPresented = (newMode != nil)
-        }
-        .onChange(of: importerPresented) { _, presented in
-            if !presented { importerMode = nil }
-        }
         .fileImporter(
             isPresented: $importerPresented,
-            allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard],
-            allowsMultipleSelection: importerMode == .images
+            allowedContentTypes: [.image, .gif],
+            allowsMultipleSelection: true
         ) { result in
-            let currentMode = lastImporterMode
-            Logger.importer.info("fileImporter fired (mode: \(String(describing: currentMode), privacy: .public))")
+            Logger.importer.info("fileImporter fired")
             switch result {
             case .success(let urls):
-                if currentMode == .images {
-                    Logger.importer.info("Selected image URLs count = \(urls.count, privacy: .public)")
-                    urlsToInsert = urls
-                } else if currentMode == .board {
-                    guard let url = urls.first else { return }
-                    Task {
-                        do {
-                            let elements = try await Task.detached(priority: .userInitiated) {
-                                let accessing = url.startAccessingSecurityScopedResource()
-                                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                                return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
-                            }.value
-                            recentsManager.record(url: url)
-                            currentBoardURL = url
-                            elementsToLoad = elements
-                        } catch {
-                            boardErrorMessage = "Could not open board: \(error.localizedDescription)"
-                            showBoardError = true
-                        }
-                    }
-                }
+                Logger.importer.info("Selected image URLs count = \(urls.count, privacy: .public)")
+                urlsToInsert = urls
             case .failure(let error):
                 boardErrorMessage = error.localizedDescription
                 showBoardError = true
             }
-            importerMode = nil
         }
         .sheet(isPresented: $showingSettings) {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
@@ -195,8 +143,7 @@ struct ContentView: View {
     
     private func openImageImporter() {
         Logger.importer.notice("Add Item tapped")
-        importerMode = .images
-        lastImporterMode = .images
+        importerPresented = true
     }
 
     private func handleBack() {
