@@ -454,6 +454,12 @@ struct BoardCanvasView: View {
                                     selection.resizeHandle = handle
                                     selection.resizeStartRect = item.worldRect
                                     selection.resizeElementID = item.id
+                                case .singleTextItem(let handle, let text):
+                                    selection.resizeHandle = handle
+                                    selection.textResizeStartFontSize = text.fontSize
+                                    selection.textResizeStartWrapWidth = text.wrapWidth
+                                    selection.textResizeStartWorldRect = text.worldRect
+                                    selection.textResizeElementID = text.id
                                 case .group(let handle, let bbox):
                                     var startRects: [UUID: CGRect] = [:]
                                     for img in placedImages where selection.selectedIDs.contains(img.id) {
@@ -506,7 +512,9 @@ struct BoardCanvasView: View {
                         if currentDragMode == .moveItem {
                             commitMove()
                         } else if currentDragMode == .resizeItem {
-                            if selection.isGroupResizing {
+                            if selection.isTextResizing {
+                                commitTextResize()
+                            } else if selection.isGroupResizing {
                                 commitGroupResize()
                             } else {
                                 commitResize()
@@ -613,15 +621,35 @@ struct BoardCanvasView: View {
 
     private enum HandleHitResult {
         case singleItem(handle: HandlePosition, item: PlacedImage)
+        case singleTextItem(handle: HandlePosition, text: PlacedText)
         case group(handle: HandlePosition, bbox: CGRect)
     }
 
     /// Pure query: hit-test screen point against handles on the current selection.
     private func hitTestHandle(screenPoint: CGPoint) -> HandleHitResult? {
-        // v1: text elements aren't resizable. If any text is in the current
-        // selection, hide resize handles entirely (mixed text+image selections
-        // would resize images while text stays screen-constant — confusing).
         let textIDs = Set(placedTexts.map(\.id))
+        // Solo text selection — corners scale font (Freeform-style),
+        // left/right edges set wrap width. Top/bottom never hit since
+        // the visual overlay doesn't render those handles for text, but
+        // the gesture drag also rejects them defensively below.
+        if selection.selectedIDs.count == 1,
+           let selectedID = selection.selectedIDs.first,
+           textIDs.contains(selectedID),
+           let text = placedTexts.first(where: { $0.id == selectedID }) {
+            let textScreenRect = CGRect(
+                x: text.worldRect.origin.x * scale + offset.width,
+                y: text.worldRect.origin.y * scale + offset.height,
+                width: text.worldRect.width * scale,
+                height: text.worldRect.height * scale
+            )
+            if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: textScreenRect),
+               handle != .topCenter && handle != .bottomCenter {
+                return .singleTextItem(handle: handle, text: text)
+            }
+            return nil
+        }
+        // Mixed text+image selections still suppress handles entirely —
+        // group resize semantics for text aren't wired in until Item 4.
         if !selection.selectedIDs.isDisjoint(with: textIDs) {
             return nil
         }
@@ -690,7 +718,9 @@ struct BoardCanvasView: View {
             selection.dragOffset = CGSize(width: worldDX, height: worldDY)
             selection.isDragging = true
         case .resizeItem:
-            if selection.isGroupResizing {
+            if selection.isTextResizing {
+                applyTextResize(translation: value.translation)
+            } else if selection.isGroupResizing {
                 applyGroupResize(translation: value.translation)
             } else {
                 applyResize(translation: value.translation)
@@ -858,6 +888,126 @@ struct BoardCanvasView: View {
         selection.clearGroupResize()
     }
 
+    // MARK: - Text Resize
+    //
+    // Text uses fontSize (and optionally wrapWidth + origin) as authoritative
+    // state instead of a worldRect like images. Corners scale fontSize
+    // uniformly (Freeform-style); left/right edges set wrapWidth (Figma-
+    // style fixed-wrap text). Top/bottom edges are filtered out at hit-test
+    // time and visually hidden in the selection overlay — height is always
+    // content-derived.
+    //
+    // Direct mutation of `placedTexts[idx]` during drag is fine: the view
+    // re-renders, `onGeometryChange` measures the new screen size, and the
+    // worldRect downstream-derives via the existing measurement loop.
+
+    /// Min font size floor — below this text becomes illegible on most
+    /// canvases at typical zoom levels.
+    private let minTextFontSize: CGFloat = 8.0
+    /// Min wrap width floor — narrower than this and text wraps every word
+    /// to its own line, which feels broken.
+    private let minTextWrapWidth: CGFloat = 40.0
+
+    private func applyTextResize(translation: CGSize) {
+        guard let handle = selection.resizeHandle,
+              let startFontSize = selection.textResizeStartFontSize,
+              let startRect = selection.textResizeStartWorldRect,
+              let id = selection.textResizeElementID,
+              let idx = placedTexts.firstIndex(where: { $0.id == id }) else { return }
+
+        let startWrapWidth = selection.textResizeStartWrapWidth
+
+        if handle.isCorner {
+            // Reuse the aspect-locked corner math from image resize to get a
+            // proportional new rect; derive scale factor from width ratio.
+            // Direct-mutate fontSize (and wrapWidth proportionally if set);
+            // worldRect re-derives via onGeometryChange after re-render.
+            guard let newRect = computeResizedRect(
+                handle: handle, startRect: startRect, translation: translation
+            ) else { return }
+            let factor = newRect.width / max(startRect.width, 0.001)
+            placedTexts[idx].fontSize = max(minTextFontSize, startFontSize * factor)
+            if let startWrap = startWrapWidth {
+                placedTexts[idx].wrapWidth = max(minTextWrapWidth, startWrap * factor)
+            }
+            // Origin shifts from corner drag the same way as image resize:
+            // the *opposite* corner is the anchor, so origin tracks newRect.
+            placedTexts[idx].worldRect.origin = newRect.origin
+        } else if handle == .rightCenter {
+            // Right edge drag → set wrap width, left edge anchored.
+            // Reference width: existing wrapWidth if set, else current
+            // measured worldRect.width (auto-width text).
+            let baseWidth = startWrapWidth ?? startRect.width
+            let worldDX = translation.width / scale
+            let newWrap = max(minTextWrapWidth, baseWidth + worldDX)
+            placedTexts[idx].wrapWidth = newWrap
+            // Origin unchanged — left edge is anchor.
+        } else if handle == .leftCenter {
+            // Left edge drag → set wrap width AND shift origin so the right
+            // edge stays anchored (Figma convention).
+            let baseWidth = startWrapWidth ?? startRect.width
+            let worldDX = translation.width / scale
+            let newWrap = max(minTextWrapWidth, baseWidth - worldDX)
+            placedTexts[idx].wrapWidth = newWrap
+            // Right edge anchored at startRect.maxX; origin = right - newWrap.
+            placedTexts[idx].worldRect.origin.x = startRect.maxX - newWrap
+        }
+    }
+
+    private func commitTextResize() {
+        defer { selection.clearTextResize() }
+        guard let id = selection.textResizeElementID,
+              let startFontSize = selection.textResizeStartFontSize,
+              let startRect = selection.textResizeStartWorldRect,
+              let idx = placedTexts.firstIndex(where: { $0.id == id }) else { return }
+        let startWrapWidth = selection.textResizeStartWrapWidth
+        let placed = placedTexts[idx]
+
+        let toFontSize = placed.fontSize
+        let toWrapWidth = placed.wrapWidth
+        let toOrigin = placed.worldRect.origin
+
+        // Skip no-op commits — happens if user touches a handle but doesn't
+        // actually drag past the gesture's minimumDistance threshold.
+        if toFontSize == startFontSize
+            && toWrapWidth == startWrapWidth
+            && toOrigin == startRect.origin {
+            return
+        }
+
+        commandHistory.push(.resizeText(
+            elementID: id,
+            fromFontSize: startFontSize, toFontSize: toFontSize,
+            fromWrapWidth: startWrapWidth, toWrapWidth: toWrapWidth,
+            fromOrigin: startRect.origin, toOrigin: toOrigin
+        ))
+
+        let element = fallbackTextElement(for: placed)
+        enqueueStoreMutation { store in
+            await store.upsert(elements: [element])
+        }
+    }
+
+    /// Restore a text element's resize-affected state (used by undo/redo
+    /// of `.resizeText`). Matches the live-drag mutation surface so undo
+    /// is bit-exact reversible.
+    private func applyTextResizeState(
+        elementID: UUID,
+        fontSize: CGFloat,
+        wrapWidth: CGFloat?,
+        origin: CGPoint
+    ) {
+        guard let idx = placedTexts.firstIndex(where: { $0.id == elementID }) else { return }
+        placedTexts[idx].fontSize = fontSize
+        placedTexts[idx].wrapWidth = wrapWidth
+        placedTexts[idx].worldRect.origin = origin
+        let placed = placedTexts[idx]
+        let element = fallbackTextElement(for: placed)
+        enqueueStoreMutation { store in
+            await store.upsert(elements: [element])
+        }
+    }
+
     // MARK: - Marquee Select
 
     private func commitMarqueeSelect() {
@@ -908,6 +1058,13 @@ struct BoardCanvasView: View {
             addElements(snapshots: snapshots)
         case .editTextContent(let id, let fromContent, _):
             applyTextContent(elementID: id, content: fromContent)
+        case .resizeText(let id, let fromFontSize, _, let fromWrapWidth, _, let fromOrigin, _):
+            applyTextResizeState(
+                elementID: id,
+                fontSize: fromFontSize,
+                wrapWidth: fromWrapWidth,
+                origin: fromOrigin
+            )
         }
     }
 
@@ -926,6 +1083,13 @@ struct BoardCanvasView: View {
             removeElements(snapshots: snapshots)
         case .editTextContent(let id, _, let toContent):
             applyTextContent(elementID: id, content: toContent)
+        case .resizeText(let id, _, let toFontSize, _, let toWrapWidth, _, let toOrigin):
+            applyTextResizeState(
+                elementID: id,
+                fontSize: toFontSize,
+                wrapWidth: toWrapWidth,
+                origin: toOrigin
+            )
         }
     }
 
@@ -1074,14 +1238,15 @@ struct BoardCanvasView: View {
                         worldRect: snap.worldRect, zIndex: snap.zIndex
                     ))
                 }
-            case .text(let content, _, let fontSize, _):
+            case .text(let content, _, let fontSize, _, let wrapWidth):
                 placedTexts.append(PlacedText(
                     id: snap.id,
                     content: content,
                     worldRect: snap.worldRect,
                     zIndex: snap.zIndex,
                     fontSize: CGFloat(fontSize),
-                    color: DesignSystem.Colors.primary
+                    color: DesignSystem.Colors.primary,
+                    wrapWidth: wrapWidth.map { CGFloat($0) }
                 ))
             default:
                 break
@@ -1210,7 +1375,8 @@ struct BoardCanvasView: View {
             content: placed.content,
             fontName: defaultTextFontName,
             fontSize: Double(placed.fontSize),
-            color: defaultTextColorHex
+            color: defaultTextColorHex,
+            wrapWidth: placed.wrapWidth.map { Double($0) }
         )
         return CMCanvasElement(header: header, payload: payload)
     }
@@ -1250,14 +1416,15 @@ struct BoardCanvasView: View {
             case .image(let url, _):
                 placedImages.append(PlacedImage(id: el.id, url: url, worldRect: rect, zIndex: z))
                 nextZIndex = max(nextZIndex, z + 1)
-            case .text(let content, _, let fontSize, _):
+            case .text(let content, _, let fontSize, _, let wrapWidth):
                 placedTexts.append(PlacedText(
                     id: el.id,
                     content: content,
                     worldRect: rect,
                     zIndex: z,
                     fontSize: CGFloat(fontSize),
-                    color: DesignSystem.Colors.primary
+                    color: DesignSystem.Colors.primary,
+                    wrapWidth: wrapWidth.map { CGFloat($0) }
                 ))
                 nextZIndex = max(nextZIndex, z + 1)
             default:
@@ -1703,6 +1870,10 @@ struct BoardCanvasView: View {
         var zIndex: Int
         var fontSize: CGFloat
         var color: Color
+        /// Nil = auto-width (grow horizontally with content). Non-nil =
+        /// fixed wrap width in world units (text reflows inside this box,
+        /// height stays content-derived). Set by side-handle drag.
+        var wrapWidth: CGFloat? = nil
     }
 
     // Lightweight free-floating text view. Renders at fixed-point font size
@@ -1727,55 +1898,64 @@ struct BoardCanvasView: View {
         /// until typed content gives the field intrinsic width).
         private static let editingMinScreenWidth: CGFloat = 80
 
+        /// Solo-text selections show only the corners + left/right edges.
+        /// Top/bottom edge handles are hidden because text height is
+        /// always content-derived; there's no meaningful "stretch height
+        /// independently" gesture for text.
+        private static let textHandles: Set<HandlePosition> = [
+            .topLeft, .topRight, .bottomLeft, .bottomRight,
+            .leftCenter, .rightCenter
+        ]
+
         var body: some View {
+            // Wrap mode: explicit width caps the TextField + Text, content
+            // reflows inside that width, height stays content-derived.
+            // Auto-width mode (wrapWidth == nil): the sacrificial-Text
+            // sizer drives the ZStack to longest-line width so typing
+            // grows the field horizontally and never auto-wraps.
+            let isWrapMode = placed.wrapWidth != nil
+
             Group {
                 if isEditing {
-                    // `TextField(axis: .vertical)` left to its own devices
-                    // wraps content at whatever offered width the parent
-                    // gives it (or its intrinsic minWidth). We want
-                    // auto-width text — grow horizontally with content,
-                    // only break on the user's explicit newlines — so we
-                    // drive the ZStack's width with a hidden `Text` of the
-                    // same content (`fixedSize` → intrinsic, no wrap).
-                    // The TextField then fills that exact width and never
-                    // has to wrap. After the user types Enter the hidden
-                    // Text renders multi-line via the literal `\n`, the
-                    // ZStack widens to the longest line, and the TextField
-                    // grows vertically to match — same shape as the
-                    // committed state, no jump on focus loss.
-                    ZStack(alignment: .topLeading) {
-                        Text(placed.content.isEmpty ? "Text" : placed.content)
-                            .fixedSize(horizontal: true, vertical: true)
-                            .opacity(0)
-                            .accessibilityHidden(true)
-
+                    if isWrapMode {
                         TextField("Text", text: $placed.content, axis: .vertical)
                             .focused($isFocused)
                             .textInputAutocapitalization(.sentences)
+                    } else {
+                        ZStack(alignment: .topLeading) {
+                            Text(placed.content.isEmpty ? "Text" : placed.content)
+                                .fixedSize(horizontal: true, vertical: true)
+                                .opacity(0)
+                                .accessibilityHidden(true)
+
+                            TextField("Text", text: $placed.content, axis: .vertical)
+                                .focused($isFocused)
+                                .textInputAutocapitalization(.sentences)
+                        }
+                        .frame(minWidth: Self.editingMinScreenWidth, alignment: .topLeading)
                     }
-                    .frame(minWidth: Self.editingMinScreenWidth, alignment: .topLeading)
                 } else {
                     Text(placed.content.isEmpty ? "Text" : placed.content)
                         .opacity(placed.content.isEmpty ? 0.4 : 1.0)
                 }
             }
-            // Multiplying font size by `scale` makes text scale with canvas
-            // zoom — bigger when zoomed in, smaller when zoomed out — matching
-            // image elements and Figma/Miro convention.
+            // fontSize * scale: text scales with canvas zoom (Figma/Miro/
+            // Freeform convention). Same fontSize at 1x vs 2x = literally
+            // 2x bigger on screen.
             .font(.system(size: placed.fontSize * scale, weight: .regular))
             .foregroundStyle(placed.color)
-            .fixedSize(horizontal: true, vertical: true)
+            // nil-safe: no-op when wrapWidth is nil (auto-width path).
+            .frame(width: placed.wrapWidth.map { $0 * scale })
+            // Auto-width: fixedSize horizontally so content drives width.
+            // Wrap mode: fixedSize only vertically — frame caps horizontal.
+            .fixedSize(horizontal: !isWrapMode, vertical: true)
             .padding(4)
-            .background {
+            .overlay {
                 if isEditing {
-                    // Affordance for active edit state — bordered tertiary
-                    // rectangle around the input so the user can see where
-                    // their text will land before they start typing.
                     Rectangle()
                         .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
                 } else if isSelected && !isMultiSelected {
-                    Rectangle()
-                        .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
+                    SelectionOverlay(handles: Self.textHandles)
                 } else if isSelected && isMultiSelected {
                     Rectangle()
                         .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)

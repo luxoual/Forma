@@ -23,6 +23,21 @@ enum CanvasCommand {
     /// downstream-derived from rendered geometry, so this command doesn't
     /// need to capture it.
     case editTextContent(elementID: UUID, fromContent: String, toContent: String)
+    /// Text element was resized via a corner or side handle. Carries every
+    /// piece of state a single resize gesture can affect:
+    /// - `fontSize`: changes on corner drag (uniform scale, Freeform-style).
+    /// - `wrapWidth`: changes on left/right side drag (sets a fixed wrap
+    ///   width). Also scales proportionally on corner drag if it was
+    ///   already set, so a wrap-locked text grows/shrinks coherently.
+    /// - `origin`: shifts on left-side drag to keep the right edge
+    ///   anchored (Figma convention). Captured for both axes for
+    ///   completeness even though only x changes today.
+    case resizeText(
+        elementID: UUID,
+        fromFontSize: CGFloat, toFontSize: CGFloat,
+        fromWrapWidth: CGFloat?, toWrapWidth: CGFloat?,
+        fromOrigin: CGPoint, toOrigin: CGPoint
+    )
 }
 
 /// Tracks performed commands for undo/redo support.

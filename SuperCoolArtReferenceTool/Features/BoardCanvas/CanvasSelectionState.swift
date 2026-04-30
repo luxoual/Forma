@@ -22,6 +22,28 @@ final class CanvasSelectionState {
 
     var isResizing: Bool { resizeHandle != nil }
 
+    // MARK: - Text-specific resize state
+    //
+    // Text elements use fontSize (and optionally wrapWidth + origin) as
+    // authoritative state, not a worldRect like images. Tracked separately
+    // so the existing image-resize state stays clean and the gesture
+    // commit can branch by mode.
+
+    var textResizeStartFontSize: CGFloat?
+    var textResizeStartWrapWidth: CGFloat?
+    var textResizeStartWorldRect: CGRect?
+    var textResizeElementID: UUID?
+
+    var isTextResizing: Bool { textResizeStartFontSize != nil }
+
+    func clearTextResize() {
+        textResizeStartFontSize = nil
+        textResizeStartWrapWidth = nil
+        textResizeStartWorldRect = nil
+        textResizeElementID = nil
+        resizeHandle = nil
+    }
+
     func select(_ id: UUID, extending: Bool = false) {
         if extending {
             if selectedIDs.contains(id) {
