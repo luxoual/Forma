@@ -18,6 +18,11 @@ enum CanvasCommand {
     case groupResize(fromRects: [UUID: CGRect], toRects: [UUID: CGRect])
     case insert(snapshots: [PlacedElementSnapshot])
     case delete(snapshots: [PlacedElementSnapshot])
+    /// Text content was changed during a re-edit. Body of the text element
+    /// is the only authoritative state being touched — `worldRect` is
+    /// downstream-derived from rendered geometry, so this command doesn't
+    /// need to capture it.
+    case editTextContent(elementID: UUID, fromContent: String, toContent: String)
 }
 
 /// Tracks performed commands for undo/redo support.
