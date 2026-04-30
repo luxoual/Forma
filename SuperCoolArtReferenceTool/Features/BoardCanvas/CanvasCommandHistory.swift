@@ -11,11 +11,32 @@ struct PlacedElementSnapshot {
     let element: CMCanvasElement
 }
 
+/// Captures every piece of text-element state a resize gesture can affect.
+/// Used inside `.groupResize` so text in a multi-selection participates
+/// atomically with image rect changes (one undo press = revert everything).
+struct TextResizeSnapshot {
+    let fontSize: CGFloat
+    let wrapWidth: CGFloat?
+    let origin: CGPoint
+}
+
 /// A reversible canvas operation.
 enum CanvasCommand {
     case move(elementIDs: Set<UUID>, delta: CGSize)
     case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
-    case groupResize(fromRects: [UUID: CGRect], toRects: [UUID: CGRect])
+    /// Resize of a multi-element selection. `fromRects`/`toRects` cover
+    /// image elements (which use a worldRect as authoritative state).
+    /// `fromTextStates`/`toTextStates` cover text elements (which use
+    /// fontSize + wrapWidth + origin). Mixed selections include entries
+    /// in both dicts; pure-image groups leave the text dicts empty;
+    /// pure-text groups leave the rect dicts empty. Either way the undo
+    /// is atomic.
+    case groupResize(
+        fromRects: [UUID: CGRect],
+        toRects: [UUID: CGRect],
+        fromTextStates: [UUID: TextResizeSnapshot],
+        toTextStates: [UUID: TextResizeSnapshot]
+    )
     case insert(snapshots: [PlacedElementSnapshot])
     case delete(snapshots: [PlacedElementSnapshot])
     /// Text content was changed during a re-edit. Body of the text element

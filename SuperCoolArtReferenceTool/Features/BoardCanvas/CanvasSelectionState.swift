@@ -94,17 +94,24 @@ final class CanvasSelectionState {
 
     // MARK: - Group resize state
 
-    /// Original world rects of all selected items at resize start
+    /// Original world rects of all selected images at resize start.
     var groupResizeStartRects: [UUID: CGRect]?
+    /// Original text-element states at resize start (fontSize/wrapWidth/
+    /// origin). Parallel to `groupResizeStartRects` but for text — empty
+    /// when the selection contains no text elements.
+    var groupResizeTextStartStates: [UUID: TextResizeSnapshot]?
     /// Group bounding box at resize start
     var groupResizeBBoxStart: CGRect?
     /// Live group bounding box during resize
     var groupResizeBBoxCurrent: CGRect?
 
-    var isGroupResizing: Bool { groupResizeStartRects != nil }
+    var isGroupResizing: Bool {
+        groupResizeStartRects != nil || groupResizeTextStartStates != nil
+    }
 
     func clearGroupResize() {
         groupResizeStartRects = nil
+        groupResizeTextStartStates = nil
         groupResizeBBoxStart = nil
         groupResizeBBoxCurrent = nil
         resizeHandle = nil

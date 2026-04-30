@@ -465,7 +465,16 @@ struct BoardCanvasView: View {
                                     for img in placedImages where selection.selectedIDs.contains(img.id) {
                                         startRects[img.id] = img.worldRect
                                     }
+                                    var startTextStates: [UUID: TextResizeSnapshot] = [:]
+                                    for txt in placedTexts where selection.selectedIDs.contains(txt.id) {
+                                        startTextStates[txt.id] = TextResizeSnapshot(
+                                            fontSize: txt.fontSize,
+                                            wrapWidth: txt.wrapWidth,
+                                            origin: txt.worldRect.origin
+                                        )
+                                    }
                                     selection.groupResizeStartRects = startRects
+                                    selection.groupResizeTextStartStates = startTextStates.isEmpty ? nil : startTextStates
                                     selection.groupResizeBBoxStart = bbox
                                     selection.groupResizeBBoxCurrent = bbox
                                     selection.resizeHandle = handle
@@ -648,11 +657,9 @@ struct BoardCanvasView: View {
             }
             return nil
         }
-        // Mixed text+image selections still suppress handles entirely —
-        // group resize semantics for text aren't wired in until Item 4.
-        if !selection.selectedIDs.isDisjoint(with: textIDs) {
-            return nil
-        }
+        // (Mixed/pure-text multi-selections fall through to the group
+        // path below — text scales uniformly with the bbox, same as
+        // images. Single-text selections were already handled above.)
         if selection.selectedIDs.count == 1,
            let selectedID = selection.selectedIDs.first,
            let item = visibleImages.first(where: { $0.id == selectedID }) {
@@ -867,25 +874,86 @@ struct BoardCanvasView: View {
               let bboxStart = selection.groupResizeBBoxStart,
               let newBBox = computeResizedRect(handle: handle, startRect: bboxStart, translation: translation) else { return }
         selection.groupResizeBBoxCurrent = newBBox
+
+        // Live-mutate text state for immediate visual feedback. Images
+        // render via `scaledRect` against bboxCurrent inside the ForEach
+        // closure (no underlying mutation needed); text uses a different
+        // render path (font size + frame), so it's simpler to mutate the
+        // PlacedText fields directly each frame and let onGeometryChange
+        // re-derive worldRect.size.
+        if let startTextStates = selection.groupResizeTextStartStates {
+            let factor = bboxStart.width > 0.001 ? newBBox.width / bboxStart.width : 1
+            for (id, snapshot) in startTextStates {
+                guard let idx = placedTexts.firstIndex(where: { $0.id == id }) else { continue }
+                placedTexts[idx].fontSize = max(minTextFontSize, snapshot.fontSize * factor)
+                if let startWrap = snapshot.wrapWidth {
+                    placedTexts[idx].wrapWidth = max(minTextWrapWidth, startWrap * factor)
+                }
+                // Origin scales relative to the bbox the same way images
+                // do via scaledRect (so positions track the bbox change).
+                let originalRect = CGRect(origin: snapshot.origin, size: .zero)
+                let newOrigin = scaledRect(
+                    original: originalRect, bboxStart: bboxStart, bboxCurrent: newBBox
+                ).origin
+                placedTexts[idx].worldRect.origin = newOrigin
+            }
+        }
     }
 
     private func commitGroupResize() {
-        guard let startRects = selection.groupResizeStartRects,
-              let bboxStart = selection.groupResizeBBoxStart,
+        guard let bboxStart = selection.groupResizeBBoxStart,
               let bboxCurrent = selection.groupResizeBBoxCurrent,
               bboxStart != bboxCurrent else {
             selection.clearGroupResize()
             return
         }
+        let startRects = selection.groupResizeStartRects ?? [:]
+        let startTextStates = selection.groupResizeTextStartStates ?? [:]
 
         var toRects: [UUID: CGRect] = [:]
         for (id, originalRect) in startRects {
             toRects[id] = scaledRect(original: originalRect, bboxStart: bboxStart, bboxCurrent: bboxCurrent)
         }
 
-        commandHistory.push(.groupResize(fromRects: startRects, toRects: toRects))
-        applyResizeRects(toRects)
+        // Build text "to" snapshots from the live-mutated PlacedText —
+        // applyGroupResize has already brought them to their final state.
+        var toTextStates: [UUID: TextResizeSnapshot] = [:]
+        for (id, _) in startTextStates {
+            guard let placed = placedTexts.first(where: { $0.id == id }) else { continue }
+            toTextStates[id] = TextResizeSnapshot(
+                fontSize: placed.fontSize,
+                wrapWidth: placed.wrapWidth,
+                origin: placed.worldRect.origin
+            )
+        }
+
+        commandHistory.push(.groupResize(
+            fromRects: startRects, toRects: toRects,
+            fromTextStates: startTextStates, toTextStates: toTextStates
+        ))
+        applyGroupResizeApply(rects: toRects, textStates: toTextStates)
         selection.clearGroupResize()
+    }
+
+    /// Shared restore for `.groupResize` undo / redo / commit. Applies the
+    /// image rect dict via `applyResizeRects` (unchanged) and the text
+    /// state dict via `applyTextResizeState` per element. The text path
+    /// is split out so undo / redo can pass each direction's snapshot in.
+    private func applyGroupResizeApply(
+        rects: [UUID: CGRect],
+        textStates: [UUID: TextResizeSnapshot]
+    ) {
+        if !rects.isEmpty {
+            applyResizeRects(rects)
+        }
+        for (id, state) in textStates {
+            applyTextResizeState(
+                elementID: id,
+                fontSize: state.fontSize,
+                wrapWidth: state.wrapWidth,
+                origin: state.origin
+            )
+        }
     }
 
     // MARK: - Text Resize
@@ -1050,8 +1118,8 @@ struct BoardCanvasView: View {
             applyMoveDelta(elementIDs: ids, dx: -delta.width, dy: -delta.height)
         case .resize(let id, let fromRect, _):
             applyResizeRect(elementID: id, rect: fromRect)
-        case .groupResize(let fromRects, _):
-            applyResizeRects(fromRects)
+        case .groupResize(let fromRects, _, let fromTextStates, _):
+            applyGroupResizeApply(rects: fromRects, textStates: fromTextStates)
         case .insert(let snapshots):
             removeElements(snapshots: snapshots)
         case .delete(let snapshots):
@@ -1075,8 +1143,8 @@ struct BoardCanvasView: View {
             applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
         case .resize(let id, _, let toRect):
             applyResizeRect(elementID: id, rect: toRect)
-        case .groupResize(_, let toRects):
-            applyResizeRects(toRects)
+        case .groupResize(_, let toRects, _, let toTextStates):
+            applyGroupResizeApply(rects: toRects, textStates: toTextStates)
         case .insert(let snapshots):
             addElements(snapshots: snapshots)
         case .delete(let snapshots):
