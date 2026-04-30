@@ -9,10 +9,11 @@ import SwiftUI
 
 struct CanvasStatusbar: View {
     var onTap: () -> Void
+    var canvasName: String
     var body: some View {
         HStack{
             CanvasBackButton(onTap: onTap)
-            CanvasBoardName(canvasName: "super very long name")
+            CanvasBoardName(canvasName: canvasName)
         }
     }
 }
@@ -45,7 +46,6 @@ struct CanvasBoardName: View {
     var body: some View {
         Text(canvasName)
             .font(.headline)
-            .fontWeight(.bold)
             .foregroundStyle(DesignSystem.Colors.tertiary)
             .padding(12)
             .background(
@@ -53,5 +53,8 @@ struct CanvasBoardName: View {
                     .fill(DesignSystem.Colors.primary)
                     .shadow(color: .black.opacity(0.3), radius: 8, x: 2, y: 2)
             )
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 250, alignment: .leading)
     }
 }
