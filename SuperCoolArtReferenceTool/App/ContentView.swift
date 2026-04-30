@@ -123,7 +123,7 @@ struct ContentView: View {
             switch result {
             case .success(let urls):
                 if currentMode == .images {
-                    Logger.importer.info("Selected image URLs count = \(urls.count)")
+                    Logger.importer.info("Selected image URLs count = \(urls.count, privacy: .public)")
                     urlsToInsert = urls
                 } else if currentMode == .board {
                     guard let url = urls.first else { return }
@@ -217,10 +217,10 @@ struct ContentView: View {
         do {
             _ = try BoardArchiver.export(elements: elements, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-            Logger.save.info("Autosave wrote \(elements.count) elements to \(url.lastPathComponent, privacy: .public) in \(ms)ms (provider: \(fileProviderDescription(for: url), privacy: .public))")
+            Logger.save.logSaveSuccess(elements: elements.count, url: url, durationMs: ms)
             markCleanTrigger = UUID()
         } catch {
-            Logger.save.error("Autosave failed for \(url.lastPathComponent, privacy: .public) (provider: \(fileProviderDescription(for: url), privacy: .public)): \(error.localizedDescription, privacy: .public)")
+            Logger.save.logSaveFailure(url: url, error: error)
         }
     }
 
