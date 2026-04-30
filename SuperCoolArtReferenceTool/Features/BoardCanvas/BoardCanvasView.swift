@@ -44,6 +44,11 @@ struct BoardCanvasView: View {
     /// `onChange(of: activeTool)` would otherwise commit the brand-new draft.
     /// Set right before the programmatic write, consumed on the next firing.
     @State private var skipNextToolChangeCommit: Bool = false
+    /// Snapshot of the text content captured at the moment a re-edit begins.
+    /// Used to push an `.editTextContent` command on commit if the content
+    /// actually changed. Nil for newly-placed texts (those use the
+    /// `.insert` command path instead) and when no re-edit is active.
+    @State private var editingTextOriginalContent: String? = nil
 
     @State private var nextZIndex: Int = 0
     @State private var canvasSize: CGSize = .zero
@@ -268,6 +273,9 @@ struct BoardCanvasView: View {
                         if selection.selectedIDs.count == 1
                             && selection.selectedIDs.contains(id) {
                             selection.clearSelection()
+                            // Snapshot the current content so we can detect a
+                            // real change at commit-time and push undo.
+                            editingTextOriginalContent = placed.content
                             editingTextID = id
                             return
                         }
@@ -898,6 +906,8 @@ struct BoardCanvasView: View {
             removeElements(snapshots: snapshots)
         case .delete(let snapshots):
             addElements(snapshots: snapshots)
+        case .editTextContent(let id, let fromContent, _):
+            applyTextContent(elementID: id, content: fromContent)
         }
     }
 
@@ -914,6 +924,8 @@ struct BoardCanvasView: View {
             addElements(snapshots: snapshots)
         case .delete(let snapshots):
             removeElements(snapshots: snapshots)
+        case .editTextContent(let id, _, let toContent):
+            applyTextContent(elementID: id, content: toContent)
         }
     }
 
@@ -1034,6 +1046,21 @@ struct BoardCanvasView: View {
                 }
             }
             await store.upsert(elements: updated)
+        }
+    }
+
+    /// Restore a text element's content (used by undo/redo of
+    /// `.editTextContent`). Updates the in-memory PlacedText and syncs the
+    /// store. The view's `onGeometryChange` will re-derive worldRect.size
+    /// after the content change re-renders, so we don't need to mutate it
+    /// here.
+    private func applyTextContent(elementID: UUID, content: String) {
+        guard let idx = placedTexts.firstIndex(where: { $0.id == elementID }) else { return }
+        placedTexts[idx].content = content
+        let placed = placedTexts[idx]
+        let element = fallbackTextElement(for: placed)
+        enqueueStoreMutation { store in
+            await store.upsert(elements: [element])
         }
     }
 
@@ -1584,18 +1611,23 @@ struct BoardCanvasView: View {
     ///   discarded silently; non-empty content pushes an `.insert` command
     ///   so the placement can be undone.
     /// - **Re-edit** of an existing text (id ∉ `pendingTextInserts`):
-    ///   non-empty content syncs to the store with no history entry
-    ///   (content-only edits aren't undoable in v1); clearing all content
-    ///   pushes a `.delete` command so undo can restore the element.
+    ///   non-empty content syncs to the store and pushes an
+    ///   `.editTextContent` command if the content actually changed;
+    ///   clearing all content pushes a `.delete` command so undo can
+    ///   restore the element.
     ///
     /// Idempotent for newly-placed ids — pendingTextInserts.remove is the
-    /// re-entrancy guard. For re-edits, called once per commit point
-    /// (focus loss / selection change / empty-canvas tap) and the store
-    /// write is naturally idempotent.
+    /// re-entrancy guard. For re-edits, the original-content snapshot is
+    /// scoped to `editingTextID == id` so a re-fire after the first
+    /// commit (e.g. focus loss after a selection-change commit) sees a
+    /// nil original and skips the duplicate push.
     private func commitTextEdit(id: UUID) {
         let wasNewlyPlaced = pendingTextInserts.contains(id)
         pendingTextInserts.remove(id)
-        if editingTextID == id { editingTextID = nil }
+        let wasCurrentEdit = (editingTextID == id)
+        if wasCurrentEdit { editingTextID = nil }
+        let originalContent = wasCurrentEdit ? editingTextOriginalContent : nil
+        if wasCurrentEdit { editingTextOriginalContent = nil }
 
         guard let idx = placedTexts.firstIndex(where: { $0.id == id }) else { return }
         let placed = placedTexts[idx]
@@ -1609,11 +1641,17 @@ struct BoardCanvasView: View {
             }
             // Existing text whose content was cleared during re-edit. Push a
             // `.delete` so undo can restore the element with its prior
-            // content (snapshot.element captures what we just removed).
-            let element = fallbackTextElement(for: placed)
+            // content. We rebuild the snapshot's element from the original
+            // content (not the cleared current) so the restored text isn't
+            // empty when the user undoes.
+            var restored = placed
+            if let originalContent {
+                restored.content = originalContent
+            }
+            let element = fallbackTextElement(for: restored)
             let snapshot = PlacedElementSnapshot(
                 id: id, url: nil,
-                worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
+                worldRect: restored.worldRect, zIndex: restored.zIndex, element: element
             )
             commandHistory.push(.delete(snapshots: [snapshot]))
             enqueueStoreMutation { store in
@@ -1629,9 +1667,16 @@ struct BoardCanvasView: View {
                 worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
             )
             commandHistory.push(.insert(snapshots: [snapshot]))
+        } else if let originalContent, originalContent != placed.content {
+            // Re-edit produced a real content change — record it for undo.
+            commandHistory.push(.editTextContent(
+                elementID: id,
+                fromContent: originalContent,
+                toContent: placed.content
+            ))
         }
         // Always upsert — covers both new placements and re-edit content
-        // changes. No undo entry for content-only edits in v1.
+        // changes (history-tracked or not).
         enqueueStoreMutation { store in
             await store.upsert(elements: [element])
         }
