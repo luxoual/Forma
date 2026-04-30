@@ -241,6 +241,24 @@ struct BoardCanvasView: View {
                     }
                 }
             }
+            .overlay {
+                if placedImages.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 80))
+                            .foregroundStyle(DesignSystem.Colors.secondary)
+                            .compositingGroup()
+                            .blendMode(.difference)
+                            .accessibilityHidden(true)
+
+                        Text("Drag and drop an image here")
+                            .font(.title3)
+                            .foregroundStyle(DesignSystem.Colors.secondary)
+                            .compositingGroup()
+                            .blendMode(.difference)
+                    }
+                }
+            }
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
                 insertImages(atScreenPoint: point, urls: urls)
             })
