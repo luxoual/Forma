@@ -11,6 +11,7 @@ struct CanvasOverlayLayout: View {
     let onRedo: () -> Void
     let onAddItem: () -> Void
     let onSettings: () -> Void
+    var canvasName: String
 
     var body: some View {
         let edge: Edge.Set = (side == .left) ? .leading : .trailing
@@ -18,10 +19,10 @@ struct CanvasOverlayLayout: View {
 
         Group {
             VStack {
-                CanvasBackButton(onTap: onBack)
-                    .padding(edge, 16)
-                    .padding(.top, 16)
-                    .frame(maxWidth: .infinity, alignment: frameAlignment)
+                CanvasStatusBar(onTap: onBack, canvasName: canvasName)
+                .padding(.leading, 16)
+                .padding(.top, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer()
             }
 
@@ -37,32 +38,10 @@ struct CanvasOverlayLayout: View {
             VStack {
                 Spacer()
                 CanvasSettingsButton(onTap: onSettings)
-                    .padding(edge, 16)
+                    .padding(.leading, 16)
                     .padding(.bottom, 16)
-                    .frame(maxWidth: .infinity, alignment: frameAlignment)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-    }
-}
-
-struct CanvasBackButton: View {
-    var onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(DesignSystem.Colors.text)
-                .frame(width: 44, height: 44)
-        }
-        .buttonStyle(.plain)
-        .padding(12)
-        .frame(width: 68)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(DesignSystem.Colors.primary)
-                .shadow(color: .black.opacity(0.3), radius: 8, x: 2, y: 2)
-        )
-        .accessibilityLabel("Back to home")
     }
 }
