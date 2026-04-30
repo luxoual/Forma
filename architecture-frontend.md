@@ -206,17 +206,16 @@ Lightweight root view that routes between the landing screen and the canvas.
 
 **ContentView:**
 - Hosts `BoardCanvasView` in a `ZStack`
-- Overlays `CanvasOverlayLayout` which places `CanvasToolbar` (centered) and `CanvasSettingsButton` (bottom corner) on the configured side
+- Overlays `CanvasOverlayLayout` which places `CanvasStatusBar` (top-left, fixed), `CanvasToolbar` (vertically centered, switches sides), and `CanvasSettingsButton` (bottom-left, fixed) on the canvas
 - Manages `@State private var urlsToInsert: [URL]?` binding for file picker integration
 - On `.onAppear`, forwards `initialURLs` to `urlsToInsert` for the canvas to consume
 - Presents `.fileImporter` when toolbar "Add Item" is tapped
 - Presents `.sheet` with `CanvasSettingsView` when settings button is tapped
 
 **File Picker Integration:**
-- Toolbar's `onAddItem` callback sets `importerMode = .images` (board import sets `.board`)
-- `.fileImporter` presentation is driven by `@State private var importerPresented: Bool`; changes to `importerMode` toggle `importerPresented` via `.onChange(of:)`, and clearing `importerPresented` resets `importerMode` — avoids inline `Binding(get:set:)` closures
-- A latched `lastImporterMode` lets the result handler know which mode was active even after the mode binding clears
-- `.fileImporter` allows multiple selection of `.image` and `.gif` types (images mode) or a single `.refboard` (board mode)
+- Toolbar's `onAddItem` callback sets `importerPresented = true`
+- `.fileImporter` presentation is driven by `@State private var importerPresented: Bool`
+- `.fileImporter` allows multiple selection of `.image` and `.gif` types
 - Selected URLs are passed to `BoardCanvasView` via `externalInsertURLs` binding
 - `BoardCanvasView` watches binding with `.onChange`, calls `insertImagesAtCenter()`
 - Binding is cleared after processing to reset state
@@ -555,7 +554,7 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 
 **Visual Design:**
 
-- **Position**: Bottom corner with 16pt padding from edges - dynamically switches sides based on `toolbarSide` setting
+- **Position**: Bottom-left corner with 16pt padding from edges — always fixed to the left, independent of `toolbarSide` setting
 - **Fixed width**: 68pt (matches toolbar width)
 - **Styling**:
   - Background: `DesignSystem.Colors.primary` (#191919)
@@ -568,8 +567,8 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 
 **Integration:**
 
-- Positioned dynamically with `CanvasToolbar` in `ContentView`
-- Position controlled by `toolbarSide` setting (`.left` or `.right`)
+- Positioned in `CanvasOverlayLayout`, always bottom-left
+- Position is fixed and does not change with `toolbarSide`
 - Opens `.sheet` with `CanvasSettingsView` when tapped
 - `@State private var showingSettings` controls sheet presentation
 - Callback: `onTap: () -> Void`
@@ -581,7 +580,7 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 - **Functional Settings:**
   - **Canvas Color Picker** - Changes the canvas background color via a custom pill-shaped color swatch that opens the system color picker
   - **Show Grid Toggle** - Controls canvas grid visibility via binding to `BoardCanvasView`
-  - **Toolbar Position Picker** - Switches toolbar and settings button between left/right side
+  - **Toolbar Position Picker** - Switches `CanvasToolbar` between left/right side (status bar and settings button remain fixed)
 - "Done" button styled with tertiary color to dismiss
 - **About Section** - Version info display
 
@@ -603,8 +602,8 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 
 3. **Toolbar Position:**
    - Enum: `ToolbarSide` (`.left` or `.right`)
-   - Controls position of both `CanvasToolbar` and `CanvasSettingsButton`
-   - `ContentView` uses conditional layout (`leftSideLayout` or `rightSideLayout`)
+   - Controls position of `CanvasToolbar` only; `CanvasStatusBar` (top-left) and `CanvasSettingsButton` (bottom-left) are always fixed to the left
+   - `ContentView` passes `toolbarSide` to `CanvasOverlayLayout`, which derives `edge`/`frameAlignment` and applies them only to the toolbar
    - Default: `.left`
    - Changes apply immediately, persists during session
 
@@ -612,10 +611,12 @@ A standalone settings button positioned dynamically at the bottom corner of the 
 
 **File:** `CanvasOverlayLayout.swift`
 
-A single reusable view that positions both the `CanvasToolbar` (vertically centered) and the `CanvasSettingsButton` (bottom corner) on the configured side:
-- Takes `side: ToolbarSide` and derives `edge: Edge.Set` and `frameAlignment: Alignment`
-- `ContentView` instantiates `CanvasOverlayLayout(side: toolbarSide, ...)` once instead of branching between `leftSideLayout`/`rightSideLayout` computed properties
-- Both elements maintain 16pt padding from edges
+A single reusable view that composes all canvas overlay UI elements with fixed or side-aware positioning:
+- Takes `side: ToolbarSide` and derives `edge: Edge.Set` and `frameAlignment: Alignment` — applied **only** to `CanvasToolbar`
+- `CanvasStatusBar` (back button + board name pill) is always anchored **top-left**, 16pt from edges
+- `CanvasToolbar` (vertically centered) switches left/right based on `side`
+- `CanvasSettingsButton` is always anchored **bottom-left**, 16pt from edges
+- All elements maintain 16pt padding from edges
 
 **Visual Styling:**
 
@@ -780,11 +781,11 @@ FilePickerView(
 
 **File:** `CanvasOverlayLayout.swift`
 
-A back button positioned in the top corner of the canvas (same side as toolbar, flips with `toolbarSide` setting). Styled to match the toolbar/settings button: 68pt wide, primary background, 12pt corner radius, matching shadow.
+A status bar (`CanvasStatusBar`) permanently anchored to the **top-left** of the canvas, composed of a back button (`CanvasBackButton`) and a board name pill (`CanvasBoardName`). Does not follow `toolbarSide` — position is fixed regardless of toolbar placement. Styled to match the toolbar/settings button: 68pt wide back button, primary background, 12pt corner radius, matching shadow.
 
 **Save-on-back flow:**
 1. Back button tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
-2. `onSnapshot` callback checks the flag — if pending back, calls `saveAndGoBack(elements:wasDirty:)` instead of presenting the file exporter
+2. `onSnapshot` callback checks the flag — if pending back, calls `saveAndGoBack(elements:wasDirty:)`
 3. `saveAndGoBack` writes to `currentBoardURL` via `BoardArchiver.export` on a detached task, flips `markCleanTrigger`, then calls `onBack()` which sets `showCanvas = false` in `RootView`
 4. If the export throws, an alert offers "Discard & Leave" or "Stay"; otherwise navigation proceeds
 
