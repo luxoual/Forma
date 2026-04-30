@@ -1,5 +1,5 @@
 //
-//  CanvasStatusbar.swift
+//  CanvasStatusBar.swift
 //  SuperCoolArtReferenceTool
 //
 //  Created by andy lin on 4/28/26.
@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-struct CanvasStatusbar: View {
+struct CanvasStatusBar: View {
     var onTap: () -> Void
     var canvasName: String
     var body: some View {
