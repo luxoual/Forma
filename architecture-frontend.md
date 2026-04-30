@@ -62,6 +62,11 @@ func screenToWorld(_ p: CGPoint) -> CGPoint {
 - Grid can be toggled via `showGrid` state
 - Red origin crosshair removed (was causing render timing issues)
 
+**Empty Canvas State:**
+- When `placedImages` is empty, a centered overlay shows a `photo.on.rectangle.angled` SF Symbol (80pt) and the text "Drag and drop an image here"
+- Both elements are styled with `DesignSystem.Colors.secondary`, `compositingGroup()`, and `.blendMode(.difference)` so they remain visible regardless of canvas background color
+- The overlay is hidden automatically as soon as the first image is placed
+
 ---
 
 ### Gesture System
