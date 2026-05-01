@@ -22,7 +22,7 @@ xcodebuild -project SuperCoolArtReferenceTool.xcodeproj \
 open SuperCoolArtReferenceTool.xcodeproj
 ```
 
-No package managers (no SPM, CocoaPods, or Carthage). No test targets currently exist.
+SwiftPM is used for one dependency (`ZIPFoundation`, added via Xcode's Package Dependencies). No CocoaPods or Carthage. No test targets currently exist.
 
 ## Architecture
 
@@ -83,6 +83,5 @@ Document only finalized implementations, not speculative architecture.
 
 ## Known Issues
 
-- `.refboard` UTType declared in code but not in Info.plist — produces runtime warning. See `App/InfoPlist_Refboard_Additions.md`.
 - File loading logic duplicated between `BoardCanvasView.swift` and `InsertFileControl.swift`.
 - Pointer and group tools in toolbar are not yet connected to canvas behavior.

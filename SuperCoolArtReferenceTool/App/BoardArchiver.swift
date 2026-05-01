@@ -8,6 +8,7 @@
 import Foundation
 import ZIPFoundation
 import simd
+import os
 
 /// Handles importing and exporting reference board data as single-file `.refboard` ZIPs
 /// that contain a package layout (manifest + assets).
@@ -22,8 +23,13 @@ enum BoardArchiver {
     /// - Returns: An array of `CMCanvasElement` decoded from the package's `manifest.json`. The array may be empty if the manifest contains no elements.
     static func importElements(from url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
         guard url.pathExtension.lowercased() == "refboard" else {
-            throw ImportError.unsupportedFileExtension
+            throw ArchiverError.unsupportedFileExtension
         }
+
+        let signposter = OSSignposter.archiver
+        let signpostID = signposter.makeSignpostID()
+        let intervalState = signposter.beginInterval("import", id: signpostID, "provider: \(fileProviderDescription(for: url), privacy: .public)")
+        defer { signposter.endInterval("import", intervalState) }
 
         let accessGranted = url.startAccessingSecurityScopedResource()
         defer { if accessGranted { url.stopAccessingSecurityScopedResource() } }
@@ -31,7 +37,7 @@ enum BoardArchiver {
         // Check if it's a directory package or a single-file ZIP
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
-            throw ImportError.corruptedFile
+            throw ArchiverError.corruptedFile(failingEntryPath: nil)
         }
         if isDir.boolValue {
             return try importFromPackage(url: url, copyAssetsToAppSupport: copyAssetsToAppSupport)
@@ -56,7 +62,7 @@ enum BoardArchiver {
         } else if let firstDir = firstDirectory(in: tempDir) {
             packageURL = firstDir
         } else {
-            throw ImportError.corruptedFile
+            throw ArchiverError.corruptedFile(failingEntryPath: nil)
         }
 
         return try importFromPackage(url: packageURL, copyAssetsToAppSupport: copyAssetsToAppSupport)
@@ -66,7 +72,7 @@ enum BoardArchiver {
         // Ensure it's a directory package
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
-            throw ImportError.corruptedFile
+            throw ArchiverError.corruptedFile(failingEntryPath: nil)
         }
 
         // Load and decode the manifest
@@ -160,6 +166,11 @@ enum BoardArchiver {
     /// `nonisolated` so autosave can run this on a utility-priority detached task without
     /// hopping to the main actor.
     nonisolated static func export(elements: [CMCanvasElement], to destination: URL) throws -> URL {
+        let signposter = OSSignposter.archiver
+        let signpostID = signposter.makeSignpostID()
+        let intervalState = signposter.beginInterval("export", id: signpostID, "provider: \(fileProviderDescription(for: destination), privacy: .public), elements: \(elements.count, privacy: .public)")
+        defer { signposter.endInterval("export", intervalState) }
+
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
 
@@ -174,11 +185,11 @@ enum BoardArchiver {
             // recursion. One-shot retry as `.create`; bail if that still fails.
             try fm.removeItem(at: destination)
             guard let fresh = Archive(url: destination, accessMode: .create) else {
-                throw ImportError.ioFailure
+                throw ArchiverError.ioFailure(underlying: nil)
             }
             archive = fresh
         } else {
-            throw ImportError.ioFailure
+            throw ArchiverError.ioFailure(underlying: nil)
         }
 
         // Compute the desired state: manifest elements + set of asset paths that should exist.
@@ -252,25 +263,58 @@ enum BoardArchiver {
 
     private static func unzipItem(at sourceURL: URL, to destinationURL: URL) throws {
         guard let archive = Archive(url: sourceURL, accessMode: .read) else {
-            throw ImportError.ioFailure
+            let probe = probeZipTail(sourceURL)
+            Logger.archiver.logArchiveOpenFailed(url: sourceURL, probe: probe)
+            throw ArchiverError.ioFailure(underlying: nil)
         }
 
         let fm = FileManager.default
         let destinationRoot = destinationURL.standardizedFileURL
         for entry in archive {
             guard let destURL = sanitizedArchiveEntryURL(entry.path, destinationRoot: destinationRoot) else {
-                throw ImportError.corruptedFile
+                throw ArchiverError.corruptedFile(failingEntryPath: entry.path)
             }
             if entry.type == .directory {
                 try fm.createDirectory(at: destURL, withIntermediateDirectories: true)
                 continue
             }
             if entry.type != .file {
-                throw ImportError.corruptedFile
+                throw ArchiverError.corruptedFile(failingEntryPath: entry.path)
             }
             try fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             _ = try archive.extract(entry, to: destURL)
         }
+    }
+
+    /// Distinguishes "killed mid-write" (no End-of-Central-Directory signature in the
+    /// trailing bytes) from "structurally valid but unreadable" so log lines can point
+    /// at the right cause.
+    private static func probeZipTail(_ url: URL) -> String {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? UInt64 else {
+            return "ZIP probe: cannot stat file"
+        }
+        guard size > 0 else { return "ZIP probe: empty file" }
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return "ZIP probe: cannot open (size=\(size))"
+        }
+        defer { try? handle.close() }
+        let probeSize: UInt64 = min(64 * 1024, size)
+        do {
+            try handle.seek(toOffset: size - probeSize)
+        } catch {
+            return "ZIP probe: cannot seek (size=\(size))"
+        }
+        guard let tail = try? handle.read(upToCount: Int(probeSize)) else {
+            return "ZIP probe: cannot read (size=\(size))"
+        }
+        // EOCD signature: 0x06054b50 little-endian == PK\x05\x06
+        let eocdSignature = Data([0x50, 0x4b, 0x05, 0x06])
+        if tail.range(of: eocdSignature) != nil {
+            return "ZIP probe: EOCD found (size=\(size)) — file structurally valid but couldn't open"
+        }
+        return "ZIP probe: NO EOCD found (size=\(size)) — file likely truncated mid-write"
     }
 
     private static func sanitizedArchiveEntryURL(_ entryPath: String, destinationRoot: URL) -> URL? {
@@ -357,9 +401,33 @@ enum BoardArchiver {
         }
     }
 
-    enum ImportError: Error {
+    enum ArchiverError: LocalizedError {
         case unsupportedFileExtension
-        case corruptedFile
-        case ioFailure
+        case corruptedFile(failingEntryPath: String?)
+        case ioFailure(underlying: Error?)
+
+        /// Plain-language; surfaces in user-facing alerts.
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedFileExtension:
+                return "Only .refboard files can be opened."
+            case .corruptedFile:
+                return "This board file is incomplete or damaged. It may have been interrupted while saving."
+            case .ioFailure:
+                return "The board file couldn't be accessed. Check that it's available and try again."
+            }
+        }
+
+        /// Developer detail for logs — not shown in the alert text.
+        var failureReason: String? {
+            switch self {
+            case .unsupportedFileExtension:
+                return nil
+            case .corruptedFile(let path):
+                return path.map { "Bad ZIP entry path: \($0)" }
+            case .ioFailure(let underlying):
+                return underlying.map { "Underlying error: \($0.localizedDescription)" }
+            }
+        }
     }
 }
