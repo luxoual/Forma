@@ -510,7 +510,33 @@ struct BoardCanvasView: View {
                     .onChanged { value in
                         startInteraction()
                         if currentDragMode == nil {
-                            // First event — check for handle hit before tool behavior
+                            // If a text is currently being edited and the
+                            // drag started inside that text, swallow the
+                            // gesture entirely — match Apple Notes / Pages
+                            // / Figma / Miro convention where you cannot
+                            // drag-to-move while editing. The user must
+                            // tap outside (which commits the edit via the
+                            // existing selection-change / empty-canvas-tap
+                            // paths) and then drag in selection mode.
+                            //
+                            // This avoids fighting with UITextView's
+                            // built-in text-selection gestures (which
+                            // would otherwise produce a "first frame /
+                            // last frame teleport" because UIKit's
+                            // recognizers eat the live touches), and
+                            // preserves drag-to-select-text inside the
+                            // editing field as the natural fallback.
+                            //
+                            // We mark mode as `.none` so subsequent
+                            // onChanged events in the same drag also
+                            // no-op, and onEnded skips its commit
+                            // dispatcher.
+                            if let editingID = editingTextID,
+                               let placed = placedTexts.first(where: { $0.id == editingID }),
+                               placed.worldRect.contains(screenToWorld(value.startLocation)) {
+                                currentDragMode = .none
+                                return
+                            }
                             dragStartOffset = offset
 
                             if let hitResult = hitTestHandle(screenPoint: value.startLocation) {
