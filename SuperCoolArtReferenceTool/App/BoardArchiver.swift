@@ -12,8 +12,12 @@ import os
 
 /// Handles importing and exporting reference board data as single-file `.refboard` ZIPs
 /// that contain a package layout (manifest + assets).
-/// Currently supports a JSON manifest (`manifest.json`) and image-based elements, with optional
-/// copying of referenced assets into the app's Application Support directory.
+/// Manifest format (`manifest.json`) carries both image-based elements (with copied
+/// asset bytes in `assets/`) and text-based elements (whose payload — content,
+/// fontName, fontSize, color, optional wrapWidth — lives entirely in the manifest
+/// with no asset file). When `copyAssetsToAppSupport` is true, image asset bytes are
+/// copied into the app's Application Support directory so the canvas can keep stable
+/// file URLs after temporary unzip directories are removed.
 enum BoardArchiver {
     /// Import elements from a `.refboard` URL. Supports both legacy package folders and
     /// the new single-file ZIP container.

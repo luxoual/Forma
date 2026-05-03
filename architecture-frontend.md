@@ -707,7 +707,9 @@ Solo-text selection shows handles at the four corners + left/right edge centers 
 `hitTestHandle` returns a new `.singleTextItem(handle, text)` case for solo-text hits and rejects top/bottom edges. Multi-element selections fall through to the existing `.group` path (now augmented to handle text).
 
 `applyTextResize(translation:)` handles three handle classes:
-- **Corner drag (any of 4)** → uniform Freeform-style font scale. Reuses the existing aspect-locked `computeResizedRect` to derive a width ratio, multiplies the start fontSize by that ratio. If wrapWidth was set, scales it proportionally. Origin tracks the new rect (opposite corner anchored). Min font 8pt floor.
+- **Corner drag (any of 4)** → uniform Freeform-style font scale. Reuses the aspect-locked `computeResizedRect` to derive a width ratio, multiplies the start fontSize by that ratio. If wrapWidth was set, scales it proportionally. Origin tracks the new rect (opposite corner anchored). Min font 8pt floor.
+
+  `computeResizedRect` accepts an optional `minDimension` parameter (default = `minImageDimensionWorld`, 64pt). The text path overrides this to `startRect.width * (minTextFontSize / startFontSize)` so the rect floor matches the text's own font-size minimum. Without the override, the rect would clamp at 64pt before fontSize hit its 8pt floor — visible "snap" when the user shrinks small text.
 - **Right-edge drag** → sets `wrapWidth`, left edge anchored. Reference width = existing wrapWidth or current `worldRect.width` (auto-width text). Min wrap width 40pt floor.
 - **Left-edge drag** → sets `wrapWidth` AND shifts `origin.x = startRect.maxX - newWrap` so the right edge stays anchored (Figma convention).
 
@@ -728,11 +730,15 @@ Captures every piece a single resize gesture can affect, including origin shifts
 
 **Group resize includes text:**
 
-Multi-selection containing text now exposes group-resize handles (previously suppressed). Text in the selection scales uniformly with the bbox change: fontSize and wrapWidth both multiply by the bbox width-ratio, and origin tracks the bbox via the same `scaledRect` helper that drives image positioning. Matches Freeform's "everything in the group scales together" feel.
+Multi-selection containing text now exposes group-resize handles (previously suppressed). Text in the selection scales uniformly with the bbox change: fontSize and wrapWidth both multiply by the **geometric mean** of the bbox width and height ratios (`sqrt(widthRatio * heightRatio)`), and origin tracks the bbox via the same `scaledRect` helper that drives image positioning. Matches Freeform's "everything in the group scales together" feel.
+
+The geometric mean is what makes text scale on top/bottom-edge group drags. A naive width-only ratio (`newBBox.width / bboxStart.width`) would be 1.0 for vertical-only resizes, leaving text size unchanged while images stretched. Geometric mean folds both axes in: corner drags (aspect-locked, widthRatio == heightRatio) collapse to either ratio, and side drags pick up the changed axis through the unchanged one's `1.0` factor.
 
 `.groupResize` command is augmented with `fromTextStates` and `toTextStates` dicts of `TextResizeSnapshot` (fontSize/wrapWidth/origin) parallel to the existing `fromRects`/`toRects` for images. Pure-image groups have empty text dicts; pure-text groups have empty rect dicts. One undo press atomically reverts everything.
 
 Unlike images (which use `scaledRect` during render), text mutates `placedTexts[idx]` directly each frame in `applyGroupResize` because the text render path is font-size + frame, not a worldRect-driven frame. Live mutation is cheap for text; for images it's avoided to skip unnecessary re-renders of large data.
+
+**`applyGroupResizeApply` batches all store writes into one mutation.** Naive separate calls to `applyResizeRects` and `applyTextResizeState` per element would each fire their own `enqueueStoreMutation`, and that helper *cancels* any in-flight mutation — so only the last enqueued upsert in the loop would actually reach the store, silently losing image-rect updates and earlier text updates. The shared restore helper does in-memory mutations synchronously, pre-builds the text `CMCanvasElement`s, then issues a single `enqueueStoreMutation` that fetches every image element + appends every text element + upserts the combined batch. Cancellation only kills work that hasn't been fully prepared yet, so undo/redo of a group resize commits all affected elements atomically.
 
 **External selection chrome — handles + editing border render at canvas level:**
 

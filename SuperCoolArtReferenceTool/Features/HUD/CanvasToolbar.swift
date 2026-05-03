@@ -44,7 +44,8 @@ struct CanvasToolbar: View {
                 icon: "textformat",
                 isActive: activeTool == .text,
                 namespace: toolNamespace,
-                id: CanvasTool.text
+                id: CanvasTool.text,
+                accessibilityLabel: "Text"
             ) {
                 activeTool = .text
             }
@@ -105,8 +106,30 @@ private struct ToolbarButton: View {
     let isActive: Bool
     let namespace: Namespace.ID?
     let id: CanvasTool?
+    /// VoiceOver-spoken label. Optional for backwards-compat with the
+    /// pre-existing buttons (history actions, add-item) — those still
+    /// fall back to the SF Symbol name and should be threaded with
+    /// explicit labels in a future accessibility sweep across the
+    /// toolbar (see Known Refactor Opportunities).
+    let accessibilityLabel: String?
     let action: () -> Void
-    
+
+    init(
+        icon: String,
+        isActive: Bool,
+        namespace: Namespace.ID?,
+        id: CanvasTool?,
+        accessibilityLabel: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.icon = icon
+        self.isActive = isActive
+        self.namespace = namespace
+        self.id = id
+        self.accessibilityLabel = accessibilityLabel
+        self.action = action
+    }
+
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
@@ -123,6 +146,7 @@ private struct ToolbarButton: View {
         }
         .buttonStyle(.plain)
         .animation(.smooth(duration: 0.3), value: isActive)
+        .accessibilityLabel(accessibilityLabel ?? icon)
     }
 }
 

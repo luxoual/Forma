@@ -65,8 +65,12 @@ struct BoardCanvasView: View {
     private let maxImageDimensionWorld: CGFloat = 512
     private let minImageDimensionWorld: CGFloat = 64
 
-    // Text element defaults. Font size is in screen points and stays fixed
-    // across zoom — text renders at constant visible size regardless of scale.
+    // Text element defaults. Font size is in BASE/world units. The text
+    // is rendered at base size and then visually resized by `.scaleEffect(scale)`,
+    // so the on-screen size is `defaultTextFontSize * scale` — it grows
+    // and shrinks with canvas zoom (Figma/Miro convention). The base
+    // unit choice is deliberate: layout (especially wrap-locked text)
+    // happens once and stays invariant under zoom.
     // Color hex is round-tripped through CMCanvasElementPayload.text but in v1
     // the read path always falls back to DesignSystem.Colors.primary.
     private let defaultTextFontSize: CGFloat = 24
@@ -239,11 +243,13 @@ struct BoardCanvasView: View {
                 }
 
                 // Render placed text elements. Position is computed in screen
-                // space; font size stays fixed in screen points so visual size
-                // is constant regardless of zoom. The element's world rect is
-                // recomputed from rendered screen size / scale via
-                // `.onGeometryChange` so hit-testing/selection still operate
-                // in world space.
+                // space (worldRect.midX × scale + offset). Font size and
+                // wrap width are in BASE/world units; `TextElementView`
+                // applies `.scaleEffect(scale)` so the visible size grows
+                // and shrinks with canvas zoom. The element's world rect
+                // size is updated by `.onGeometryChange` inside the text
+                // view, so hit-testing / selection still operate in world
+                // space against the latest measured layout.
                 ForEach($placedTexts) { $placed in
                     let isSelected = selection.selectedIDs.contains(placed.id)
                     let isMultiSelected = selection.selectedIDs.count > 1
@@ -534,7 +540,7 @@ struct BoardCanvasView: View {
                             if let editingID = editingTextID,
                                let placed = placedTexts.first(where: { $0.id == editingID }),
                                placed.worldRect.contains(screenToWorld(value.startLocation)) {
-                                currentDragMode = .none
+                                currentDragMode = DragMode.none
                                 return
                             }
                             dragStartOffset = offset
@@ -837,13 +843,20 @@ struct BoardCanvasView: View {
     // MARK: - Resize Logic
 
     /// Pure function: compute a new rect from a handle drag on a reference rect.
+    /// Pure resize-rect math. `minDimension` lets text resize use its
+    /// own (smaller) floor — for images the default `minImageDimensionWorld`
+    /// (64) prevents ugly tiny photos; for text we want the rect to be
+    /// allowed to shrink down to whatever world width corresponds to the
+    /// text's own minimum font size.
     private func computeResizedRect(
         handle: HandlePosition,
         startRect: CGRect,
-        translation: CGSize
+        translation: CGSize,
+        minDimension: CGFloat? = nil
     ) -> CGRect? {
         let worldDX = translation.width / scale
         let worldDY = translation.height / scale
+        let minDim = minDimension ?? minImageDimensionWorld
 
         let anchorPos = handle.anchorPosition
         let anchorPt = anchorPos.point(in: startRect.size)
@@ -869,8 +882,8 @@ struct BoardCanvasView: View {
                 rawW = rawH * aspect
             }
 
-            rawW = max(rawW, minImageDimensionWorld)
-            rawH = max(rawH, minImageDimensionWorld / max(aspect, 0.001))
+            rawW = max(rawW, minDim)
+            rawH = max(rawH, minDim / max(aspect, 0.001))
 
             let originX = handle.isLeftSide ? anchorWorld.x - rawW : anchorWorld.x
             let originY = handle.isTopSide ? anchorWorld.y - rawH : anchorWorld.y
@@ -881,19 +894,19 @@ struct BoardCanvasView: View {
 
             switch handle {
             case .topCenter:
-                let newTop = min(draggedWorld.y, anchorWorld.y - minImageDimensionWorld)
+                let newTop = min(draggedWorld.y, anchorWorld.y - minDim)
                 newSize.height = anchorWorld.y - newTop
                 newOrigin.y = newTop
             case .bottomCenter:
-                let newBottom = max(draggedWorld.y, anchorWorld.y + minImageDimensionWorld)
+                let newBottom = max(draggedWorld.y, anchorWorld.y + minDim)
                 newSize.height = newBottom - anchorWorld.y
                 newOrigin.y = anchorWorld.y
             case .leftCenter:
-                let newLeft = min(draggedWorld.x, anchorWorld.x - minImageDimensionWorld)
+                let newLeft = min(draggedWorld.x, anchorWorld.x - minDim)
                 newSize.width = anchorWorld.x - newLeft
                 newOrigin.x = newLeft
             case .rightCenter:
-                let newRight = max(draggedWorld.x, anchorWorld.x + minImageDimensionWorld)
+                let newRight = max(draggedWorld.x, anchorWorld.x + minDim)
                 newSize.width = newRight - anchorWorld.x
                 newOrigin.x = anchorWorld.x
             default:
@@ -973,7 +986,15 @@ struct BoardCanvasView: View {
         // PlacedText fields directly each frame and let onGeometryChange
         // re-derive worldRect.size.
         if let startTextStates = selection.groupResizeTextStartStates {
-            let factor = bboxStart.width > 0.001 ? newBBox.width / bboxStart.width : 1
+            // Geometric mean of width and height ratios so text scales
+            // for any axis change, not just width. Corner drags are
+            // aspect-ratio-locked (widthRatio == heightRatio → factor
+            // equals either ratio); top/bottom-edge drags only change
+            // height, so a width-only factor would leave text unchanged
+            // even though the bbox visibly grew or shrank.
+            let widthRatio = bboxStart.width > 0.001 ? newBBox.width / bboxStart.width : 1
+            let heightRatio = bboxStart.height > 0.001 ? newBBox.height / bboxStart.height : 1
+            let factor = sqrt(max(widthRatio * heightRatio, 0))
             for (id, snapshot) in startTextStates {
                 guard let idx = placedTexts.firstIndex(where: { $0.id == id }) else { continue }
                 placedTexts[idx].fontSize = max(minTextFontSize, snapshot.fontSize * factor)
@@ -1026,24 +1047,85 @@ struct BoardCanvasView: View {
         selection.clearGroupResize()
     }
 
-    /// Shared restore for `.groupResize` undo / redo / commit. Applies the
-    /// image rect dict via `applyResizeRects` (unchanged) and the text
-    /// state dict via `applyTextResizeState` per element. The text path
-    /// is split out so undo / redo can pass each direction's snapshot in.
+    /// Shared restore for `.groupResize` undo / redo / commit.
+    ///
+    /// Group resize can affect multiple images and multiple text elements
+    /// in one gesture. Each call to `applyResizeRects` / `applyTextResizeState`
+    /// fires its own `enqueueStoreMutation`, and `enqueueStoreMutation`
+    /// CANCELS any in-flight mutation. So a naive loop would have only
+    /// the last enqueued upsert reach the store — every prior one (image
+    /// rects + earlier texts) gets cancelled mid-flight. We do the
+    /// in-memory mutations synchronously and batch every store write into
+    /// one `enqueueStoreMutation`, so cancellation only kills work that
+    /// hasn't been fully prepared yet.
     private func applyGroupResizeApply(
         rects: [UUID: CGRect],
         textStates: [UUID: TextResizeSnapshot]
     ) {
-        if !rects.isEmpty {
-            applyResizeRects(rects)
+        guard !rects.isEmpty || !textStates.isEmpty else { return }
+
+        // ── In-memory mutations (sync) ─────────────────────────────
+        // Image rects: filter out any text ids defensively (text can't
+        // be in `rects` legally, but applyResizeRects had this guard
+        // historically and we preserve it).
+        let textIDs = Set(placedTexts.map(\.id))
+        let imageRects = rects.filter { !textIDs.contains($0.key) }
+
+        for (id, rect) in imageRects {
+            if let idx = placedImages.firstIndex(where: { $0.id == id }) {
+                placedImages[idx].worldRect = rect
+            }
+            if let idx = visibleImages.firstIndex(where: { $0.id == id }) {
+                visibleImages[idx].worldRect = rect
+            }
         }
+
+        // Text states: mutate in-memory and pre-build the elements we'll
+        // upsert. Building the elements before the Task closure means
+        // the closure captures concrete values, not bindings into our
+        // mutating arrays.
+        var textElements: [CMCanvasElement] = []
         for (id, state) in textStates {
-            applyTextResizeState(
-                elementID: id,
-                fontSize: state.fontSize,
-                wrapWidth: state.wrapWidth,
-                origin: state.origin
-            )
+            guard let idx = placedTexts.firstIndex(where: { $0.id == id }) else { continue }
+            placedTexts[idx].fontSize = state.fontSize
+            placedTexts[idx].wrapWidth = state.wrapWidth
+            placedTexts[idx].worldRect.origin = state.origin
+            textElements.append(fallbackTextElement(for: placedTexts[idx]))
+        }
+
+        // ── Single batched store mutation ──────────────────────────
+        let imageIDs = Array(imageRects.keys)
+        enqueueStoreMutation { store in
+            var updated: [CMCanvasElement] = []
+            updated.reserveCapacity(imageIDs.count + textElements.count)
+
+            // Images: fetch authoritative elements, mutate bounds + size.
+            if !imageIDs.isEmpty {
+                let fetched = await store.elements(for: imageIDs)
+                for (id, rect) in imageRects {
+                    if var element = fetched[id] {
+                        element.header.bounds = CMWorldRect(
+                            origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                            size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                        )
+                        if case .image(let url, _) = element.payload {
+                            element.payload = .image(
+                                url: url,
+                                size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                            )
+                        }
+                        updated.append(element)
+                    }
+                }
+            }
+
+            // Text: elements were pre-built above (already authoritative
+            // for content + style + bounds, so no fetch needed).
+            updated.append(contentsOf: textElements)
+
+            if !updated.isEmpty {
+                await store.upsert(elements: updated)
+            }
         }
     }
 
@@ -1081,8 +1163,16 @@ struct BoardCanvasView: View {
             // proportional new rect; derive scale factor from width ratio.
             // Direct-mutate fontSize (and wrapWidth proportionally if set);
             // worldRect re-derives via onGeometryChange after re-render.
+            //
+            // Override `minDimension` so the rect floor matches the text's
+            // own font-size minimum rather than the image-element minimum
+            // (64). Without this the rect clamps before fontSize hits its
+            // own floor, producing a visible "snap" when the user tries
+            // to shrink small text past ~64 world units.
+            let minDimForText = startRect.width * (minTextFontSize / max(startFontSize, 0.001))
             guard let newRect = computeResizedRect(
-                handle: handle, startRect: startRect, translation: translation
+                handle: handle, startRect: startRect, translation: translation,
+                minDimension: minDimForText
             ) else { return }
             let factor = newRect.width / max(startRect.width, 0.001)
             placedTexts[idx].fontSize = max(minTextFontSize, startFontSize * factor)
@@ -2050,9 +2140,11 @@ struct BoardCanvasView: View {
         let isMultiSelected: Bool
         let onCommitEdit: () -> Void
 
-        /// Minimum on-screen width during edit so the empty placeholder + caret
-        /// have somewhere to render (the user wouldn't otherwise see anything
-        /// until typed content gives the field intrinsic width).
+        /// Minimum width applied to the editing ZStack in BASE/world units
+        /// so the empty placeholder + caret have somewhere to render before
+        /// typed content gives the field its own intrinsic width. Scales
+        /// with zoom via `.scaleEffect(scale)` like everything else in the
+        /// element — visible width is `editingMinWorldWidth * scale`.
         private static let editingMinScreenWidth: CGFloat = 80
 
         /// Solo-text selections show only the corners + left/right edges.
