@@ -254,7 +254,7 @@ The Canvas Toolbar provides tool selection and canvas actions through a persiste
 
 - `CanvasToolbar`: Main toolbar view component
 - `ToolbarButton`: Private reusable button component with active state support
-- `CanvasTool`: Enum defining available tools (`.pointer`, `.group`) — lives in its own file `CanvasTool.swift`
+- `CanvasTool`: Enum defining available tools (`.pointer`, `.group`, `.text`) — lives in its own file `CanvasTool.swift`
 
 **Visual Design:**
 
@@ -274,6 +274,7 @@ The Canvas Toolbar provides tool selection and canvas actions through a persiste
 1. **Selection Tools** (mutually exclusive, with active state):
    - Pointer tool (`arrow.up.left`) - default
    - Group tool (`rectangle.dashed`)
+   - Text tool (`textformat`) — places a new text element at the tap point
 
 2. **History Actions** (single-action buttons, no active state):
    - Undo (`arrow.uturn.backward`)
@@ -320,7 +321,8 @@ CanvasTool (enum)              -- toolbar identity, UI selection
     v
 CanvasToolBehavior (protocol)  -- gesture interpretation per tool
     ├── PointerToolBehavior    -- tap=select, drag-on-item=move, drag-on-empty=pan
-    └── GroupToolBehavior      -- tap=toggle selection, drag-on-item=group move, drag-on-empty=marquee select
+    ├── GroupToolBehavior      -- tap=toggle selection, drag-on-item=group move, drag-on-empty=marquee select
+    └── TextToolBehavior       -- tap-empty=place text (canvas owns this), tap-item=select, drag-on-item=move, drag-on-empty=pan
 ```
 
 **Protocol:**
@@ -365,6 +367,12 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 - Drag on empty canvas → `.marqueeSelect` mode (draws selection rectangle)
 - Tap on item → toggle selection membership (`extending: true`)
 - Tap on empty → clear selection
+
+**Text Tool Behavior:**
+- Drag on item → select it, enter `.moveItem` mode (same as pointer)
+- Drag on empty canvas → `.pan` mode
+- Tap on item → select it (delegates to pointer-style selection)
+- Tap on empty → handled by `BoardCanvasView`'s tap handler, NOT by `tappedEmpty`. The behavior's `tappedEmpty` only clears the selection (so the new placement becomes the active focus); the actual `insertText(at:)` placement happens at the canvas level because the world point lives in the view's coordinate space, not in the protocol's interface. After placement, `insertText` programmatically auto-swaps `activeTool = .pointer` (Figma convention) so subsequent canvas taps don't keep dropping new drafts.
 
 **Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior` maps enum to concrete behavior.
 
@@ -541,7 +549,240 @@ Floating action bar that appears next to the current canvas selection, hosting s
 **Delete Flow:**
 - `deleteSelection()` fetches authoritative `CMCanvasElement`s from `LocalBoardStore` via `elements(for:)` before snapshotting — avoids fabricating elements from the view's `placedImages` cache, which could be stale
 - Snapshots feed a `.delete(snapshots:)` command pushed onto `CanvasCommandHistory`, then `removeElements()` applies the change
-- Fallback path: `fallbackElement(for:)` handles rare view/store desync
+- Fallback paths: `fallbackImageElement(for:)` and `fallbackTextElement(for:)` handle rare view/store desync (image and text branches)
+
+---
+
+### Text Elements
+
+**Status: Implemented**
+
+**Files:**
+- `BoardCanvasView.swift` (`PlacedText` struct, `TextElementView` nested struct, `insertText`/`commitTextEdit`, resize state, render path)
+- `Features/BoardCanvas/CanvasTextField.swift` (UIKit-backed editing input)
+- `Features/BoardCanvas/CanvasToolBehavior.swift` (`TextToolBehavior`)
+- `Features/BoardCanvas/CanvasCommandHistory.swift` (`.editTextContent`, `.resizeText`, augmented `.groupResize`)
+- `Persistence/CanvasModels.swift` (`CMCanvasElementPayload.text` + `wrapWidth`)
+
+Text lives alongside images as a parallel `placedTexts: [PlacedText]` array on `BoardCanvasView`, not unified into a single `PlacedItem` enum yet. Unification was deferred until a third element type appears — until then, two arrays + branched paths are simpler than a protocol abstraction.
+
+**Data model — `PlacedText`:**
+
+```swift
+private struct PlacedText: Identifiable {
+    let id: UUID
+    var content: String           // edited live; persisted to store on commit
+    var worldRect: CGRect         // origin = anchor; size derives from rendered geometry
+    var zIndex: Int
+    var fontSize: CGFloat         // base/world units, NOT pre-scaled by canvas zoom
+    var color: Color
+    var wrapWidth: CGFloat?       // nil = auto-width; set = fixed wrap width (Figma convention)
+}
+```
+
+`fontSize` is the single authoritative typographic state — corner-drag resize, the future font-size picker, and group resize all mutate this same field. `worldRect.size` is downstream-derived from the rendered geometry (see "scaleEffect rendering" below) — never written to directly except for `worldRect.origin`.
+
+**scaleEffect rendering — why text uses a different visual-scale strategy than images:**
+
+Images render at `worldRect.size * scale` (frame and position both pre-scaled by canvas zoom). Trying the same approach for text caused a sub-pixel layout drift bug: a wrap-locked string that fit on one line at zoom 1 wrapped to two lines at zoom 0.2 because CoreText's hinting at small fonts makes glyphs slightly wider than a linear scale predicts. Layout decisions weren't invariant under zoom.
+
+Fix: text renders at **base/world units** (no `* scale` on font, frame, or wrap width) and then has `.scaleEffect(scale, anchor: .center)` applied at the end. Layout happens once at base scale; scaleEffect only visually scales the result. Wrapping decisions become invariant — the same string fits the same way at every zoom level.
+
+```swift
+sizedContent           // base-scale layout: font, frame, wrap all in world units
+    .padding(4)
+    .overlay { ... }   // multi-select dim border (cosmetic, scales with text)
+    .scaleEffect(scale, anchor: .center)
+    .onGeometryChange(...) { newSize in
+        // newSize is BASE/world-unit size (scaleEffect doesn't change layout).
+        if placed.worldRect.size != newSize { placed.worldRect.size = newSize }
+    }
+```
+
+`onGeometryChange` is the loop that keeps `worldRect.size` in sync with the actual rendered text — used by hit-testing, marquee, group bbox math.
+
+**Auto-width vs wrap-mode rendering:**
+
+`PlacedText.wrapWidth` toggles between two distinct render paths:
+
+- **Auto-width (`wrapWidth == nil`):** Text grows horizontally with content; only manual newlines (Enter) create line breaks. The editing TextField uses a `ZStack(alignment: .topLeading)` with a hidden sacrificial `Text(content).fixedSize(horizontal: true, vertical: true).opacity(0)` underneath that drives the ZStack's intrinsic width to the longest line. The TextField then fills that exact width and never has to auto-wrap. Without the sacrificial Text, an `axis: .vertical` TextField would wrap content into its `minWidth` while typing and then unwrap on commit when the static Text replaces it — visible jump.
+- **Wrap mode (`wrapWidth != nil`):** Explicit `.frame(width: wrapWidth, alignment: .leading)` plus `.fixedSize(horizontal: false, vertical: true)`. Text reflows inside the fixed width; height stays content-derived.
+
+The body splits into `body` → `sizedContent` → `textOrField` so the auto-width path doesn't carry an unconditional `.frame(width:)` modifier. Earlier versions had `.frame(width: placed.wrapWidth.map { $0 * scale })` always in the chain; even when nil it interacted with the trailing `.fixedSize` to produce wrapping at small fonts.
+
+**`CanvasTextField` — UITextView wrapper for editing:**
+
+`File:` `CanvasTextField.swift`
+
+SwiftUI's `TextField` has no API to control caret thickness. The native UIKit caret is a fixed ~2pt regardless of font size, and the surrounding `.scaleEffect` shrinks it to sub-pixel at low zoom. `CanvasTextField` is a `UIViewRepresentable` wrapping `CanvasUITextView` (a `UITextView` subclass) that overrides `caretRect(for:)`:
+
+```swift
+override func caretRect(for position: UITextPosition) -> CGRect {
+    let original = super.caretRect(for: position)
+    let targetVisible: CGFloat = 2.5
+    let thickness = targetVisible / max(canvasScale, 0.0001)
+    return CGRect(x: original.origin.x, y: original.origin.y,
+                  width: thickness, height: original.height)
+}
+```
+
+Base thickness is `2.5 / canvasScale` so that after `scaleEffect(scale)` brings it down by `scale`, visible thickness lands at exactly 2.5pt at every zoom × font combination. Caret height continues to follow text height — only thickness is held constant.
+
+Other `CanvasTextField` notes:
+- `textContainerInset.right = caretThickness` reserves trailing space inside the view bounds so the caret doesn't clip at end-of-text. SwiftUI `TextField` has analogous built-in slack; `UITextView` doesn't unless asked.
+- Focus is driven from the `isEditing` flag in `updateUIView` via `becomeFirstResponder()` / `resignFirstResponder()` (guarded by `isFirstResponder` to avoid redundant calls). `@FocusState` isn't needed — the wrapper owns its first-responder lifecycle.
+- `Coordinator` implements `UITextViewDelegate.textViewDidChange` to push content into the binding, and `textViewDidEndEditing` to fire `onCommit` (which calls `commitTextEdit(id:)` in the parent).
+- `tintColor = DesignSystem.Colors.primary` so caret + selection highlight are dark, contrasting the tertiary-blue editing border (blue-on-blue would blend).
+- `textContainerInset = .zero` and `lineFragmentPadding = 0` so editing layout matches the static `Text` used post-commit (no jump).
+
+**Edit lifecycle:**
+
+`@State private var editingTextID: UUID? = nil` on `BoardCanvasView` — the id of the text currently being edited, or nil. `@State private var pendingTextInserts: Set<UUID>` tracks newly-placed drafts. `@State private var editingTextOriginalContent: String?` snapshots content at re-edit start so undo can revert.
+
+Placement (text tool active + tap empty canvas):
+
+```swift
+private func insertText(at worldPoint: CGPoint) {
+    if let prior = editingTextID { commitTextEdit(id: prior) }
+    let id = UUID()
+    placedTexts.append(PlacedText(id: id, content: "", worldRect: ..., ...))
+    nextZIndex += 1
+    pendingTextInserts.insert(id)
+    selection.clearSelection()
+    editingTextID = id
+    skipNextToolChangeCommit = true
+    activeTool = .pointer    // Figma auto-swap; the skip flag stops the
+                             // resulting onChange(of: activeTool) from
+                             // committing the just-placed draft
+}
+```
+
+Re-edit (tap-once-selects, tap-twice-edits):
+
+```swift
+.onTapGesture {
+    if selection.selectedIDs.count == 1 && selection.selectedIDs.contains(id) {
+        selection.clearSelection()
+        editingTextOriginalContent = placed.content   // snapshot for undo
+        editingTextID = id
+        return
+    }
+    // ... else delegate to active tool's tappedItem
+}
+```
+
+Standard across pointer/group/text tools because all three can produce a single-text selection.
+
+`commitTextEdit(id:)` is the shared commit point. Idempotent for newly-placed ids via `pendingTextInserts.remove(id)`. For re-edits, scoped to `editingTextID == id` so a re-fire (selection-change commit followed by focus-loss) sees a nil original on the second pass and skips a duplicate command push.
+
+Commit branches:
+- **Newly placed, empty content** → discard silently, no history.
+- **Newly placed, non-empty** → push `.insert` command, upsert to store.
+- **Re-edit, empty content** → push `.delete` whose snapshot rebuilds the element from the *original* content (so undo restores the pre-clear text), delete from store.
+- **Re-edit, content changed** → push `.editTextContent(from, to)`, upsert. Same content as start = no command push.
+- **Re-edit, content unchanged** → upsert anyway (idempotent), no command.
+
+**Drag while editing — disabled by design:**
+
+Drag-to-move is disabled when a text element is being edited. The drag handler's first `onChanged` event checks `editingTextID` and the world-rect of the editing text; if the drag started inside it, `currentDragMode` is set to `.none` and the gesture no-ops for the rest of its lifetime (subsequent onChanged events early-return; onEnded skips its commit dispatcher).
+
+This matches the convention used by Apple Notes / Pages / Keynote and by Figma / Miro: editing and moving are mutually exclusive modes. To move an editing text the user must first tap outside (which commits the edit via the existing selection-change / empty-canvas-tap paths), then drag in selection mode.
+
+The convention also sidesteps a fight between SwiftUI's `DragGesture` and UITextView's internal text-selection gestures. UITextView's recognizers grab the live touches; SwiftUI's drag only sees the start and end translations, producing a "first frame / last frame teleport" if we tried to live-track the move. Disabling the move drag while editing leaves UITextView's native text-selection behavior intact as the natural fallback for in-field drags.
+
+**Commit triggers:**
+
+The wrapper's `textViewDidEndEditing` fires `onCommit` when the UITextView resigns first-responder, but UITextView doesn't auto-resign when the user taps another SwiftUI view — only when explicitly told to. Three explicit commit paths cover the gaps:
+
+1. `onChange(of: selection.selectedIDs)` — tapping any other element (image or text) changes selection; the watcher calls `commitTextEdit(editing)` if `selectedIDs` now contains anything other than the editing text. Guarded with `!newIDs.isEmpty` so a `clearSelection()` (e.g. inside `insertText`) doesn't commit-and-remove the brand-new draft in the same render frame (which crashed before the guard was added).
+2. `onChange(of: activeTool)` — tapping a different toolbar button commits before swapping. The `skipNextToolChangeCommit` one-shot flag bypasses this for the auto-swap fired by `insertText` itself.
+3. Empty-canvas tap handler (`onTapGesture(coordinateSpace: .local)` on the grid Canvas) — calls `commitTextEdit` at the top before deciding whether to place a new text or run the tool's `tappedEmpty`.
+
+The selection-change watcher is the most common path; the other two cover edge cases (tool switch, empty-tap commit).
+
+**Resize semantics — corners scale font, side handles set wrap width:**
+
+Solo-text selection shows handles at the four corners + left/right edge centers (top/bottom hidden — text height is content-derived, no meaningful axis to drag). `SelectionOverlay` accepts a `Set<HandlePosition>` parameter so text passes a restricted set; `TextElementView.textHandles` is `fileprivate` so the canvas-level external chrome can use the same set.
+
+`hitTestHandle` returns a new `.singleTextItem(handle, text)` case for solo-text hits and rejects top/bottom edges. Multi-element selections fall through to the existing `.group` path (now augmented to handle text).
+
+`applyTextResize(translation:)` handles three handle classes:
+- **Corner drag (any of 4)** → uniform Freeform-style font scale. Reuses the existing aspect-locked `computeResizedRect` to derive a width ratio, multiplies the start fontSize by that ratio. If wrapWidth was set, scales it proportionally. Origin tracks the new rect (opposite corner anchored). Min font 8pt floor.
+- **Right-edge drag** → sets `wrapWidth`, left edge anchored. Reference width = existing wrapWidth or current `worldRect.width` (auto-width text). Min wrap width 40pt floor.
+- **Left-edge drag** → sets `wrapWidth` AND shifts `origin.x = startRect.maxX - newWrap` so the right edge stays anchored (Figma convention).
+
+Direct mutation of `placed.fontSize` / `wrapWidth` / `origin` during drag is fine: the view re-renders, `onGeometryChange` re-derives `worldRect.size`, and undo captures the start state for reversal.
+
+**`.resizeText` command:**
+
+```swift
+case resizeText(
+    elementID: UUID,
+    fromFontSize: CGFloat, toFontSize: CGFloat,
+    fromWrapWidth: CGFloat?, toWrapWidth: CGFloat?,
+    fromOrigin: CGPoint, toOrigin: CGPoint
+)
+```
+
+Captures every piece a single resize gesture can affect, including origin shifts from left-edge drags. `applyTextResizeState(elementID:fontSize:wrapWidth:origin:)` is the shared restore helper used by both commit and undo/redo.
+
+**Group resize includes text:**
+
+Multi-selection containing text now exposes group-resize handles (previously suppressed). Text in the selection scales uniformly with the bbox change: fontSize and wrapWidth both multiply by the bbox width-ratio, and origin tracks the bbox via the same `scaledRect` helper that drives image positioning. Matches Freeform's "everything in the group scales together" feel.
+
+`.groupResize` command is augmented with `fromTextStates` and `toTextStates` dicts of `TextResizeSnapshot` (fontSize/wrapWidth/origin) parallel to the existing `fromRects`/`toRects` for images. Pure-image groups have empty text dicts; pure-text groups have empty rect dicts. One undo press atomically reverts everything.
+
+Unlike images (which use `scaledRect` during render), text mutates `placedTexts[idx]` directly each frame in `applyGroupResize` because the text render path is font-size + frame, not a worldRect-driven frame. Live mutation is cheap for text; for images it's avoided to skip unnecessary re-renders of large data.
+
+**External selection chrome — handles + editing border render at canvas level:**
+
+`scaleEffect` shrinks any `.overlay { ... }` inside the text element along with the text. A 10pt selection handle becomes 2pt at zoom 0.2 — invisible and untappable. To keep handles + editing border at touch-friendly screen sizes regardless of zoom, both render externally in `BoardCanvasView`'s body using world-space coordinates × scale (same pattern as image group selection):
+
+```swift
+// Solo-text selection handles
+if selection.selectedIDs.count == 1, let placed = ..., editingTextID != selectedID, ... {
+    let screenRect = CGRect(x: placed.worldRect.origin.x * scale + offset.width, ...)
+    SelectionOverlay(handles: TextElementView.textHandles)
+        .frame(width: screenRect.width, height: screenRect.height)
+        .position(x: screenRect.midX, y: screenRect.midY)
+        .allowsHitTesting(false)
+}
+
+// Editing border (separate, fires for editingTextID instead of selection)
+if let editingID = editingTextID, let placed = ... {
+    Rectangle().strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
+        .frame(...).position(...)
+}
+```
+
+The multi-select dim border for text-in-group stays inside the scaleEffect — it's a low-priority cosmetic indicator and the group bbox handles already provide the primary affordance, so the visual shrink at low zoom is acceptable.
+
+**Save-on-back race fix:**
+
+`commitTextEdit`'s store upsert runs through `enqueueStoreMutation` (async Task). Pressing the back button while editing fires the snapshot trigger, which previously read `canvasStore.allElements()` before the in-flight commit landed — manifest got written without the typed text.
+
+The `snapshotTrigger` handler now:
+1. Calls `commitTextEdit(editing)` synchronously to fire the store upsert.
+2. Captures `storeMutationTask` outside the Task so the closure has a stable reference.
+3. Awaits `pendingMutation?.result` before reading `allElements()`.
+
+Result: the snapshot includes everything the user just typed, no matter how quickly they pressed back.
+
+**Persistence integration:**
+
+`CMCanvasElementPayload.text` and `BoardArchiver.ManifestPayload.text` mirror `PlacedText`'s fields (content, fontName, fontSize, color, wrapWidth). `wrapWidth` is encoded via `encodeIfPresent` and decoded via `decodeIfPresent` so older `.refboard` files (no `wrapWidth` key in their manifests) load cleanly with `wrapWidth = nil` (auto-width). See `architecture-backend.md` for the Codable evolution details.
+
+**Per-element undo command coverage:**
+
+| Action | Command | Notes |
+|--------|---------|-------|
+| Tap-create text + commit non-empty content | `.insert` | Fired by `commitTextEdit` for `wasNewlyPlaced && !empty`. |
+| Re-edit text content | `.editTextContent(from, to)` | Only when content actually changed (no-op edits skip the push). |
+| Re-edit cleared all content | `.delete` | Snapshot's element is rebuilt from original content so undo restores text, not empty. |
+| Move text | `.move` | Same command as image move; `applyMoveDelta` walks both arrays. |
+| Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin tuple. |
+| Group resize incl. text | `.groupResize` | Augmented with text-state dicts alongside image rect dicts. |
+| Delete text via action bar | `.delete` | `deleteSelection` snapshots both image and text elements; `applyResizeRects` filters text ids defensively. |
 
 ---
 
@@ -835,6 +1076,68 @@ Because "New Board" requires choosing a save location up front, `currentBoardURL
    - Implement viewport-based culling
    - Optimize render updates
    - Image caching strategy
+
+---
+
+## Known Refactor Opportunities
+
+These are pre-existing trends amplified by the text-elements PR. None are correctness issues; all are scale / hygiene items worth a dedicated cleanup PR before the file becomes harder to navigate.
+
+### `BoardCanvasView.swift` is too large
+
+**Status as of text-elements branch:** ~2,356 lines total, `body` ~515 lines.
+
+The `body` property runs through several distinct render passes that are now interleaved:
+- Background grid `Canvas`
+- Image `ForEach`
+- Text `ForEach`
+- Solo-text selection chrome (external)
+- Editing border (external)
+- Marquee overlay
+- Floating action bar
+- Group bounding box overlay
+- Drag gesture chain
+- Multiple `.onChange` handlers (snapshot, mark-clean, load, active-tool, selection-change, undo/redo triggers)
+
+Each render pass is a candidate for extraction into its own `View` struct in its own file, per `references/views.md` ("Strongly prefer to avoid breaking up view bodies using computed properties or methods that return `some View`. Extract them into separate `View` structs instead, placing each into its own file.").
+
+**Suggested split (rough sketch — refine when actually doing the refactor):**
+- `BoardCanvasGridLayer` — the `Canvas` grid background
+- `PlacedImagesLayer` — the image `ForEach` + per-image rendering
+- `PlacedTextsLayer` — the text `ForEach` + per-text rendering
+- `SelectionChromeLayer` — solo-text handles, editing border, group bbox, action bar
+- `BoardCanvasView` keeps state ownership, gesture wiring, and composition.
+
+### Multiple types in one file
+
+`BoardCanvasView.swift` contains: `BoardCanvasView`, `PlacedImage`, `PlacedText`, `TextElementView`, `FileImageView`, `ImageCache`, `CanvasDropDelegate`, plus `loadURLsFromProviders` and an `NSItemProvider` extension.
+
+Per `references/hygiene.md` and `references/views.md`, each type should live in its own file. Suggested file split:
+- `Models/PlacedImage.swift`
+- `Models/PlacedText.swift`
+- `BoardCanvas/TextElementView.swift`
+- `BoardCanvas/FileImageView.swift`
+- `Persistence/ImageCache.swift`
+- `BoardCanvas/CanvasDropDelegate.swift`
+- `BoardCanvas/ItemProviderHelpers.swift` (also resolves the duplicate file-loading code with `InsertFileControl.swift` flagged elsewhere in this doc)
+
+### Pre-existing modern-concurrency cleanup
+
+**`Task.sleep(nanoseconds:)` (`BoardCanvasView.swift` ~line 1030 in `scheduleRefreshVisibleElements`)** — `references/api.md` rule says use `.sleep(for:)` instead. Pre-existing on `main`.
+
+**Multiple `DispatchQueue.main.async { binding = nil }` patterns (`BoardCanvasView.swift` ~lines 412, 448, 456, 499, 504)** — used to defer-clear trigger / load bindings. `references/swift.md` rule says no GCD; replace with `Task { @MainActor in ... }` or restructure to not need a deferred reset. All pre-existing on `main`.
+
+(The text-elements PR introduced one `DispatchQueue.main.async` in `CanvasTextField.swift` for `becomeFirstResponder` — already converted to `Task { @MainActor }` per the rule.)
+
+### Toolbar accessibility labels
+
+Every `ToolbarButton` in `CanvasToolbar.swift` is icon-only: `Button { Image(systemName: ...) }`. Per `references/accessibility.md`, icon-only buttons need explicit text labels for VoiceOver. Suggested fix: each button passes both an SF Symbol name and a localized title string; the renderer uses `Button(title, systemImage: icon, action: action)` form so VoiceOver reads the title and the icon stays visual-only.
+
+This is a sweep across the toolbar (pointer, group, text, undo, redo, add) plus the standalone `CanvasSettingsButton` and `CanvasOverlayLayout` back button.
+
+### `BoardCanvasView`'s per-text `.onTapGesture` mixes layout + state-machine logic
+
+The closure inside the text `ForEach`'s `.onTapGesture` handles: tap-on-sole-selected-text → re-edit; tap-on-other-text → tool-routed selection. Branches on `selection.selectedIDs` + `editingTextID` and dispatches a Task. Per `references/views.md` ("Button actions should be extracted from view bodies into separate methods"), this belongs in a method on `BoardCanvasView`. Not extracted in this PR because the focus/selection state machine was being actively iterated and behavioral risk was high.
 
 ---
 

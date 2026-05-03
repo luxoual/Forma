@@ -4,4 +4,5 @@ import Foundation
 enum CanvasTool: Equatable {
     case pointer
     case group
+    case text
 }

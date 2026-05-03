@@ -38,6 +38,16 @@ struct CanvasToolbar: View {
             ) {
                 activeTool = .group
             }
+
+            // Text tool
+            ToolbarButton(
+                icon: "textformat",
+                isActive: activeTool == .text,
+                namespace: toolNamespace,
+                id: CanvasTool.text
+            ) {
+                activeTool = .text
+            }
             
             Divider()
                 .background(DesignSystem.Colors.secondary)
