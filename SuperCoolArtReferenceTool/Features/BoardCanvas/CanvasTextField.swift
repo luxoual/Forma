@@ -82,7 +82,7 @@ struct CanvasTextField: UIViewRepresentable {
         if isEditing && !uiView.isFirstResponder {
             // Defer one runloop tick so the view has a window/superview
             // assignment before requesting focus.
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 uiView.becomeFirstResponder()
             }
         } else if !isEditing && uiView.isFirstResponder {
