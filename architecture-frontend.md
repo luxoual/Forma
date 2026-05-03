@@ -1079,6 +1079,68 @@ Because "New Board" requires choosing a save location up front, `currentBoardURL
 
 ---
 
+## Known Refactor Opportunities
+
+These are pre-existing trends amplified by the text-elements PR. None are correctness issues; all are scale / hygiene items worth a dedicated cleanup PR before the file becomes harder to navigate.
+
+### `BoardCanvasView.swift` is too large
+
+**Status as of text-elements branch:** ~2,356 lines total, `body` ~515 lines.
+
+The `body` property runs through several distinct render passes that are now interleaved:
+- Background grid `Canvas`
+- Image `ForEach`
+- Text `ForEach`
+- Solo-text selection chrome (external)
+- Editing border (external)
+- Marquee overlay
+- Floating action bar
+- Group bounding box overlay
+- Drag gesture chain
+- Multiple `.onChange` handlers (snapshot, mark-clean, load, active-tool, selection-change, undo/redo triggers)
+
+Each render pass is a candidate for extraction into its own `View` struct in its own file, per `references/views.md` ("Strongly prefer to avoid breaking up view bodies using computed properties or methods that return `some View`. Extract them into separate `View` structs instead, placing each into its own file.").
+
+**Suggested split (rough sketch — refine when actually doing the refactor):**
+- `BoardCanvasGridLayer` — the `Canvas` grid background
+- `PlacedImagesLayer` — the image `ForEach` + per-image rendering
+- `PlacedTextsLayer` — the text `ForEach` + per-text rendering
+- `SelectionChromeLayer` — solo-text handles, editing border, group bbox, action bar
+- `BoardCanvasView` keeps state ownership, gesture wiring, and composition.
+
+### Multiple types in one file
+
+`BoardCanvasView.swift` contains: `BoardCanvasView`, `PlacedImage`, `PlacedText`, `TextElementView`, `FileImageView`, `ImageCache`, `CanvasDropDelegate`, plus `loadURLsFromProviders` and an `NSItemProvider` extension.
+
+Per `references/hygiene.md` and `references/views.md`, each type should live in its own file. Suggested file split:
+- `Models/PlacedImage.swift`
+- `Models/PlacedText.swift`
+- `BoardCanvas/TextElementView.swift`
+- `BoardCanvas/FileImageView.swift`
+- `Persistence/ImageCache.swift`
+- `BoardCanvas/CanvasDropDelegate.swift`
+- `BoardCanvas/ItemProviderHelpers.swift` (also resolves the duplicate file-loading code with `InsertFileControl.swift` flagged elsewhere in this doc)
+
+### Pre-existing modern-concurrency cleanup
+
+**`Task.sleep(nanoseconds:)` (`BoardCanvasView.swift` ~line 1030 in `scheduleRefreshVisibleElements`)** — `references/api.md` rule says use `.sleep(for:)` instead. Pre-existing on `main`.
+
+**Multiple `DispatchQueue.main.async { binding = nil }` patterns (`BoardCanvasView.swift` ~lines 412, 448, 456, 499, 504)** — used to defer-clear trigger / load bindings. `references/swift.md` rule says no GCD; replace with `Task { @MainActor in ... }` or restructure to not need a deferred reset. All pre-existing on `main`.
+
+(The text-elements PR introduced one `DispatchQueue.main.async` in `CanvasTextField.swift` for `becomeFirstResponder` — already converted to `Task { @MainActor }` per the rule.)
+
+### Toolbar accessibility labels
+
+Every `ToolbarButton` in `CanvasToolbar.swift` is icon-only: `Button { Image(systemName: ...) }`. Per `references/accessibility.md`, icon-only buttons need explicit text labels for VoiceOver. Suggested fix: each button passes both an SF Symbol name and a localized title string; the renderer uses `Button(title, systemImage: icon, action: action)` form so VoiceOver reads the title and the icon stays visual-only.
+
+This is a sweep across the toolbar (pointer, group, text, undo, redo, add) plus the standalone `CanvasSettingsButton` and `CanvasOverlayLayout` back button.
+
+### `BoardCanvasView`'s per-text `.onTapGesture` mixes layout + state-machine logic
+
+The closure inside the text `ForEach`'s `.onTapGesture` handles: tap-on-sole-selected-text → re-edit; tap-on-other-text → tool-routed selection. Branches on `selection.selectedIDs` + `editingTextID` and dispatches a Task. Per `references/views.md` ("Button actions should be extracted from view bodies into separate methods"), this belongs in a method on `BoardCanvasView`. Not extracted in this PR because the focus/selection state machine was being actively iterated and behavioral risk was high.
+
+---
+
 ## Dev A / Dev B Integration Points
 
 **Areas where Dev A (Frontend) interfaces with Dev B (Backend):**
