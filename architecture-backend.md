@@ -51,6 +51,22 @@ enum CMElementType: String, Codable, Hashable {
 }
 ```
 
+### Element Payload
+
+**Enum:** `CMCanvasElementPayload`
+
+```swift
+case rectangle(fillColor: String)
+case ellipse(fillColor: String)
+case path(points: [SIMD2<Double>], strokeColor: String, strokeWidth: Double)
+case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
+case image(url: URL, size: SIMD2<Double>)
+```
+
+`text.wrapWidth` is `nil` for auto-width text (grows horizontally with content) and a world-units width when the text has been wrap-locked via the side resize handle. The decoder uses `decodeIfPresent` and the encoder uses `encodeIfPresent` so older `.refboard` files predating this field load cleanly with `wrapWidth = nil` (auto-width), and freshly-saved auto-width texts omit the key from disk rather than writing `null`. This is the canonical pattern for additive payload-field evolution — image, path, and other payloads should follow the same shape if they grow new optional fields.
+
+The frontend `PlacedText` mirrors this payload 1:1 (see `architecture-frontend.md` → Text Elements). Text content lives **entirely in the manifest** — no asset file is created or referenced — which is why text round-trips through the import/export paths without touching the `assets/` directory inside the ZIP.
+
 ---
 ## Export Package (.refboard)
 

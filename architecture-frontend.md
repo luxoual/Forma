@@ -1027,13 +1027,13 @@ FilePickerView(
 - `RootView` hosts `FilePickerView` and routes to `ContentView` based on which callback fires
 - `initialBoardURL` is tracked through `RootView` → `ContentView` so save-on-back writes to the correct location
 
-### Canvas Back Button
+### Canvas Status Bar (Back Button + Board Name)
 
 **Status: Implemented**
 
-**File:** `CanvasOverlayLayout.swift`
+**File:** `CanvasStatusBar.swift` (rendered via `CanvasOverlayLayout`)
 
-A status bar (`CanvasStatusBar`) permanently anchored to the **top-left** of the canvas, composed of a back button (`CanvasBackButton`) and a board name pill (`CanvasBoardName`). Does not follow `toolbarSide` — position is fixed regardless of toolbar placement. Styled to match the toolbar/settings button: 68pt wide back button, primary background, 12pt corner radius, matching shadow.
+`CanvasStatusBar` is permanently anchored to the **top-left** of the canvas, composed of a back button (`CanvasBackButton`) and a board name pill (`CanvasBoardName`). Does not follow `toolbarSide` — position is fixed regardless of toolbar placement. Styled to match the toolbar/settings button: 68pt wide back button, primary background, 12pt corner radius, matching shadow.
 
 **Save-on-back flow:**
 1. Back button tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
