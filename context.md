@@ -105,6 +105,23 @@ Future platform expansion may be evaluated later.
 
 ---
 
+# Project File Hygiene (Signing Drift)
+
+Xcode's automatic signing rewrites `DEVELOPMENT_TEAM` and `PRODUCT_BUNDLE_IDENTIFIER` in `SuperCoolArtReferenceTool.xcodeproj/project.pbxproj` whenever the current Apple ID isn't on the original signing team. The team has not adopted a paid Apple Developer team, so every dev's local Xcode will silently drift these fields to their own personal values.
+
+**Canonical values on `main`:**
+
+- `DEVELOPMENT_TEAM = JX98H68QDZ`
+- `PRODUCT_BUNDLE_IDENTIFIER = AxI.SuperCoolArtReferenceTool1`
+
+**Rule:** do not commit drift in these two fields. When staging `project.pbxproj`, use `git add -p` and skip any hunk that only touches `DEVELOPMENT_TEAM` or `PRODUCT_BUNDLE_IDENTIFIER`. Legitimate pbxproj changes (adding a file to the project, changing a real build setting) still get staged.
+
+Your local build may need the drifted values to sign — that's fine, just keep them out of commits. A shared `xcconfig`-based signing split becomes worth setting up later if/when the team moves to a paid Apple Developer account with a canonical team ID.
+
+This rule applies to both Dev A and Dev B.
+
+---
+
 # Offline First Philosophy
 
 The application is designed to work **fully offline**.

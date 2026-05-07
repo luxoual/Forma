@@ -7,6 +7,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import os
 
 struct ContentView: View {
     @Environment(AppOpenHandler.self) private var openHandler
@@ -29,8 +30,6 @@ struct ContentView: View {
     
     @State private var snapshotToken: UUID?
     @State private var elementsToLoad: [CMCanvasElement]?
-    @State private var showingExporter = false
-    @State private var exportDocument = BoardExportDocument(elements: [])
 
     // Undo/redo
     @State private var commandHistory = CanvasCommandHistory()
@@ -38,11 +37,7 @@ struct ContentView: View {
     @State private var redoTrigger: UUID?
     @State private var markCleanTrigger: UUID?
 
-    @State private var importerMode: ImporterMode?
     @State private var importerPresented = false
-    /// Latched copy so the result handler can read it even after the binding clears importerMode
-    @State private var lastImporterMode: ImporterMode?
-    private enum ImporterMode { case images, board }
     @State private var pendingBackNavigation = false
     @State private var pendingBackgroundSave = false
     @State private var currentBoardURL: URL?
@@ -72,9 +67,6 @@ struct ContentView: View {
                     } else if pendingBackgroundSave {
                         pendingBackgroundSave = false
                         saveInPlace(elements: elements, wasDirty: wasDirty)
-                    } else {
-                        exportDocument = BoardExportDocument(elements: elements)
-                        showingExporter = true
                     }
                 }
             )
@@ -86,82 +78,24 @@ struct ContentView: View {
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
                 onAddItem: openImageImporter,
-                onSettings: { showingSettings = true }
+                onSettings: { showingSettings = true },
+                canvasName: currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
             )
-        }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 8) {
-                Button("Export") {
-                    snapshotToken = UUID()
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("Import") {
-                    importerMode = .board
-                    lastImporterMode = .board
-                    print("[UI] Import Board tapped")
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(12)
-        }
-        .fileExporter(
-            isPresented: $showingExporter,
-            document: exportDocument,
-            contentType: .refboard,
-            defaultFilename: "Board"
-        ) { result in
-            switch result {
-            case .success(let url):
-                currentBoardURL = url
-                recentsManager.record(url: url)
-                markCleanTrigger = UUID()
-            case .failure(let error):
-                boardErrorMessage = "Export failed: \(error.localizedDescription)"
-                showBoardError = true
-            }
-        }
-        .onChange(of: importerMode) { _, newMode in
-            importerPresented = (newMode != nil)
-        }
-        .onChange(of: importerPresented) { _, presented in
-            if !presented { importerMode = nil }
         }
         .fileImporter(
             isPresented: $importerPresented,
-            allowedContentTypes: (importerMode == .images) ? [.image, .gif] : [.refboard],
-            allowsMultipleSelection: importerMode == .images
+            allowedContentTypes: [.image, .gif],
+            allowsMultipleSelection: true
         ) { result in
-            let currentMode = lastImporterMode
-            print("[Importer] Unified fileImporter fired (mode: \(String(describing: currentMode)))")
+            Logger.importer.info("fileImporter fired")
             switch result {
             case .success(let urls):
-                if currentMode == .images {
-                    print("[Importer] Selected image URLs count = \(urls.count)")
-                    urlsToInsert = urls
-                } else if currentMode == .board {
-                    guard let url = urls.first else { return }
-                    Task {
-                        do {
-                            let elements = try await Task.detached(priority: .userInitiated) {
-                                let accessing = url.startAccessingSecurityScopedResource()
-                                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                                return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
-                            }.value
-                            recentsManager.record(url: url)
-                            currentBoardURL = url
-                            elementsToLoad = elements
-                        } catch {
-                            boardErrorMessage = "Could not open board: \(error.localizedDescription)"
-                            showBoardError = true
-                        }
-                    }
-                }
+                Logger.importer.info("Selected image URLs count = \(urls.count, privacy: .public)")
+                urlsToInsert = urls
             case .failure(let error):
                 boardErrorMessage = error.localizedDescription
                 showBoardError = true
             }
-            importerMode = nil
         }
         .sheet(isPresented: $showingSettings) {
             CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
@@ -192,7 +126,8 @@ struct ContentView: View {
                 openHandler.importedElements = nil
             }
         }
-        .onChange(of: scenePhase) { _, newPhase in
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            Logger.scenePhase.info("phase: \(String(describing: oldPhase), privacy: .public) → \(String(describing: newPhase), privacy: .public)")
             // Autosave on `.inactive`. We can't use `.background` because force-quit from the
             // app switcher sends SIGKILL before `.background` fires — the lifecycle goes
             // `.active → .inactive → killed`, skipping `.background`. `.inactive` does fire on
@@ -207,9 +142,8 @@ struct ContentView: View {
     }
     
     private func openImageImporter() {
-        print("[UI] Add Item tapped")
-        importerMode = .images
-        lastImporterMode = .images
+        Logger.importer.notice("Add Item tapped")
+        importerPresented = true
     }
 
     private func handleBack() {
@@ -230,10 +164,10 @@ struct ContentView: View {
         do {
             _ = try BoardArchiver.export(elements: elements, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-            print("[Save] Autosave wrote \(elements.count) elements to \(url.lastPathComponent) in \(ms)ms")
+            Logger.save.logSaveSuccess(elements: elements.count, url: url, durationMs: ms)
             markCleanTrigger = UUID()
         } catch {
-            print("[Save] Autosave failed: \(error.localizedDescription)")
+            Logger.save.logSaveFailure(url: url, error: error)
         }
     }
 

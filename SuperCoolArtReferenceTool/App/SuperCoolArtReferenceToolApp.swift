@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import os
 
 @main
 struct SuperCoolArtReferenceToolApp: App {
@@ -15,6 +16,7 @@ struct SuperCoolArtReferenceToolApp: App {
             RootView()
                 .environment(openHandler)
                 .onOpenURL { url in
+                    Logger.app.logURLReceipt(url: url, kind: "onOpenURL")
                     Task {
                         guard url.pathExtension.lowercased() == "refboard" else { return }
                         do {
@@ -23,7 +25,7 @@ struct SuperCoolArtReferenceToolApp: App {
                                 openHandler.importedElements = elements
                             }
                         } catch {
-                            print("Failed to import .refboard: ", error)
+                            Logger.app.logFailure("Failed to import .refboard", error: error)
                         }
                     }
                 }

@@ -101,9 +101,45 @@ struct GroupToolBehavior: CanvasToolBehavior {
     }
 }
 
+struct TextToolBehavior: CanvasToolBehavior {
+    @MainActor
+    func dragBegan(
+        worldStart: CGPoint,
+        items: [HitTestItem],
+        selection: CanvasSelectionState
+    ) -> DragMode {
+        if let hit = PointerToolBehavior.topmostItem(at: worldStart, in: items) {
+            if !selection.selectedIDs.contains(hit.id) {
+                selection.select(hit.id)
+            }
+            return .moveItem
+        }
+        return .pan
+    }
+
+    @MainActor
+    func tappedItem(
+        id: UUID,
+        store: LocalBoardStore,
+        selection: CanvasSelectionState
+    ) async {
+        selection.select(id)
+        await store.moveToTop(elementIDs: [id])
+    }
+
+    @MainActor
+    func tappedEmpty(selection: CanvasSelectionState) {
+        // Empty-canvas placement is handled by BoardCanvasView's tap handler,
+        // which has the world point. This just clears any prior selection so
+        // the new text becomes the active focus.
+        selection.clearSelection()
+    }
+}
+
 func toolBehavior(for tool: CanvasTool) -> CanvasToolBehavior {
     switch tool {
     case .pointer: return PointerToolBehavior()
     case .group: return GroupToolBehavior()
+    case .text: return TextToolBehavior()
     }
 }

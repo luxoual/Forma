@@ -22,6 +22,28 @@ final class CanvasSelectionState {
 
     var isResizing: Bool { resizeHandle != nil }
 
+    // MARK: - Text-specific resize state
+    //
+    // Text elements use fontSize (and optionally wrapWidth + origin) as
+    // authoritative state, not a worldRect like images. Tracked separately
+    // so the existing image-resize state stays clean and the gesture
+    // commit can branch by mode.
+
+    var textResizeStartFontSize: CGFloat?
+    var textResizeStartWrapWidth: CGFloat?
+    var textResizeStartWorldRect: CGRect?
+    var textResizeElementID: UUID?
+
+    var isTextResizing: Bool { textResizeStartFontSize != nil }
+
+    func clearTextResize() {
+        textResizeStartFontSize = nil
+        textResizeStartWrapWidth = nil
+        textResizeStartWorldRect = nil
+        textResizeElementID = nil
+        resizeHandle = nil
+    }
+
     func select(_ id: UUID, extending: Bool = false) {
         if extending {
             if selectedIDs.contains(id) {
@@ -72,17 +94,24 @@ final class CanvasSelectionState {
 
     // MARK: - Group resize state
 
-    /// Original world rects of all selected items at resize start
+    /// Original world rects of all selected images at resize start.
     var groupResizeStartRects: [UUID: CGRect]?
+    /// Original text-element states at resize start (fontSize/wrapWidth/
+    /// origin). Parallel to `groupResizeStartRects` but for text — empty
+    /// when the selection contains no text elements.
+    var groupResizeTextStartStates: [UUID: TextResizeSnapshot]?
     /// Group bounding box at resize start
     var groupResizeBBoxStart: CGRect?
     /// Live group bounding box during resize
     var groupResizeBBoxCurrent: CGRect?
 
-    var isGroupResizing: Bool { groupResizeStartRects != nil }
+    var isGroupResizing: Bool {
+        groupResizeStartRects != nil || groupResizeTextStartStates != nil
+    }
 
     func clearGroupResize() {
         groupResizeStartRects = nil
+        groupResizeTextStartStates = nil
         groupResizeBBoxStart = nil
         groupResizeBBoxCurrent = nil
         resizeHandle = nil
