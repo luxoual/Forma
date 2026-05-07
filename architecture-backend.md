@@ -27,6 +27,9 @@ Backend architecture has **core data models and persistence layer** implemented,
 - `LocalBoardStore` now maintains reverse tile membership per element so move/resize/delete operations can update the spatial index precisely instead of leaving stale tile memberships behind.
 - Visible-image refresh now uses a direct `imagePlacements(...)` query from the store instead of doing a headers query followed by a second payload lookup pass in the canvas.
 - Canvas image loading now uses a shared multilevel thumbnail pipeline with snapped thumbnail levels, request deduplication, bounded decode concurrency, and memory-cost-aware caching to reduce pan/zoom decode churn.
+- Multi-image import preparation now runs off the main actor with bounded concurrency for sandbox copying and metadata probing, then applies canvas insertion in chunks so large pastes do not block interaction in one synchronous spike.
+- Dense-view rendering now uses a count-aware level-of-detail budget: once visible image density rises, only the highest-priority images stay on the detailed thumbnail path while the rest fall back to the cheap overview canvas pass.
+- Visible-image querying now uses a zoom-aware preload margin instead of a constant world-space buffer, and detailed-image membership has hysteresis so pan/zoom motion causes less promotion/demotion churn.
 
 ---
 
@@ -183,6 +186,8 @@ That reverse index allows incremental tile maintenance when an image moves or re
 
 The canvas render path now uses `imagePlacements(in:margin:limit:)` as a specialized query for visible image items. That keeps viewport refresh to a single backend pass that returns only the data needed by the image renderer.
 
+The viewport-expanded query margin is no longer effectively constant at the call site. The canvas now computes a zoom-aware preload margin and passes that into `imagePlacements(...)`, which reduces off-screen overfetch at far zoom-out while preserving enough lookahead for normal pan/zoom motion.
+
 ---
 
 ## Thumbnail Loading Pipeline
@@ -201,6 +206,7 @@ Behavior:
 - Duplicate requests for the same `url + level` are deduplicated through an in-flight task map.
 - Thumbnail decode concurrency is bounded by an async limiter.
 - Cached thumbnails are stored in an `NSCache` with both count and total-cost limits, and cache cost is based on decoded pixel size.
+- When visible image density rises, the canvas does not keep every visible image on this detailed thumbnail-backed path. The thumbnail pipeline is now the expensive tier of a broader LOD system; lower-priority images are represented by a lightweight overview pass instead of triggering full per-image thumbnail work.
 
 This is not yet a persistent on-disk thumbnail pyramid. Levels are generated lazily in memory from source files, but the pipeline now behaves like a lightweight multilevel thumbnail system during canvas interaction.
 
@@ -216,12 +222,40 @@ Decision Status: **Implemented**
 Canvas image insertion now treats a paste/import of multiple images as a single batch layout operation.
 
 Behavior:
+- Source file copying into the app sandbox and image metadata probing now happen off the main actor through a bounded-concurrency preparation pipeline.
 - The canvas computes a near-square grid using the number of incoming images.
 - Each image keeps its own aspect ratio and is centered within a shared grid cell size derived from the largest image in the batch.
 - The batch is initially centered around the requested insertion point.
 - If any image in the batch would overlap an existing placed image, the system first searches nearby candidate offsets on coarse and fine grids, then falls back to moving the full batch outside the currently occupied canvas bounds to guarantee a non-overlapping placement.
+- After preparation, insertion is applied in chunks with yields between batches so very large paste/import operations do not monopolize the main actor.
 
 This replaces the older one-by-one diagonal nudge behavior, which could still create visually messy overlaps for larger paste operations.
+
+---
+
+## Canvas Render Support Infrastructure
+
+Decision Status: **Implemented**
+
+**Files:**
+- `SuperCoolArtReferenceTool/Features/BoardCanvas/BoardCanvasView.swift`
+- `SuperCoolArtReferenceTool/Persistence/LocalBoardStore.swift`
+
+The backend-facing canvas support now includes explicit render-budgeting behavior layered on top of tile-based visibility queries.
+
+Behavior:
+- Visible image candidates still come from `LocalBoardStore.imagePlacements(in:margin:limit:)`.
+- If visible count stays below the dense-view threshold, all visible images can remain on the detailed render path.
+- Once visible density rises, the canvas enforces a bounded detailed-image budget and splits rendering into:
+  - a detailed tier backed by the thumbnail pipeline
+  - a cheap overview tier rendered as lightweight canvas primitives
+- Detailed-tier selection is priority-based rather than FIFO:
+  - selected images are always retained
+  - larger on-screen images are favored
+  - images nearer the viewport center are favored
+- Detailed-tier membership has hysteresis (`stickyDetailImageIDs`) so images do not constantly churn between tiers on minor pan deltas.
+
+This keeps total expensive image-render work closer to a capped budget instead of allowing it to scale linearly with every additional visible image in dense zoomed-out views.
 
 ---
 
@@ -234,3 +268,4 @@ This replaces the older one-by-one diagonal nudge behavior, which could still cr
 - `CanvasService` exposes z-order operations (`moveToTop` / `moveToBottom`) for absolute layer adjustments.
 - `LocalBoardStore` provides the specialized `imagePlacements(in:margin:limit:)` query used by the visible-canvas render path.
 - The canvas thumbnail pipeline is currently implemented inside `BoardCanvasView.swift`; it depends on backend file-URL payloads remaining stable after import/export and app-open flows.
+- The dense-view LOD budget and sticky-detail behavior depend on `LocalBoardStore` continuing to provide cheap viewport image placement queries as pan/zoom inputs change frequently.
