@@ -12,8 +12,12 @@ import os
 
 /// Handles importing and exporting reference board data as single-file `.refboard` ZIPs
 /// that contain a package layout (manifest + assets).
-/// Currently supports a JSON manifest (`manifest.json`) and image-based elements, with optional
-/// copying of referenced assets into the app's Application Support directory.
+/// Manifest format (`manifest.json`) carries both image-based elements (with copied
+/// asset bytes in `assets/`) and text-based elements (whose payload — content,
+/// fontName, fontSize, color, optional wrapWidth — lives entirely in the manifest
+/// with no asset file). When `copyAssetsToAppSupport` is true, image asset bytes are
+/// copied into the app's Application Support directory so the canvas can keep stable
+/// file URLs after temporary unzip directories are removed.
 enum BoardArchiver {
     /// Import elements from a `.refboard` URL. Supports both legacy package folders and
     /// the new single-file ZIP container.
@@ -121,6 +125,17 @@ enum BoardArchiver {
                 }
                 let element = CMCanvasElement(header: m.header, payload: .image(url: finalURL, size: size))
                 results.append(element)
+            case .text(let content, let fontName, let fontSize, let color, let wrapWidth):
+                // Text payloads round-trip directly — no asset file to
+                // resolve, just rebuild the CMCanvasElement.
+                let element = CMCanvasElement(
+                    header: m.header,
+                    payload: .text(
+                        content: content, fontName: fontName,
+                        fontSize: fontSize, color: color, wrapWidth: wrapWidth
+                    )
+                )
+                results.append(element)
             }
         }
         return results
@@ -198,6 +213,18 @@ enum BoardArchiver {
                 }
                 manifestElements.append(
                     ManifestElement(header: el.header, payload: .image(relativePath: assetPath, size: size))
+                )
+            case .text(let content, let fontName, let fontSize, let color, let wrapWidth):
+                // Text payload has no asset file — the content lives
+                // entirely in the manifest. Just record it.
+                manifestElements.append(
+                    ManifestElement(
+                        header: el.header,
+                        payload: .text(
+                            content: content, fontName: fontName,
+                            fontSize: fontSize, color: color, wrapWidth: wrapWidth
+                        )
+                    )
                 )
             default:
                 continue
@@ -325,9 +352,22 @@ enum BoardArchiver {
 
     private enum ManifestPayload: Codable {
         case image(relativePath: String, size: SIMD2<Double>)
+        /// Text payload mirrors `CMCanvasElementPayload.text` 1:1 so the
+        /// manifest round-trip is lossless. No asset file lives in the
+        /// archive for text — content is fully captured in the manifest.
+        /// `wrapWidth` is optional and uses `decodeIfPresent` /
+        /// `encodeIfPresent` for forward-compat with files written before
+        /// the wrap-width field existed.
+        case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
 
-        private enum CodingKeys: String, CodingKey { case type, relativePath, size }
-        private enum PayloadType: String, Codable { case image }
+        private enum CodingKeys: String, CodingKey {
+            case type
+            // image
+            case relativePath, size
+            // text
+            case content, fontName, fontSize, color, wrapWidth
+        }
+        private enum PayloadType: String, Codable { case image, text }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -337,6 +377,13 @@ enum BoardArchiver {
                 let path = try container.decode(String.self, forKey: .relativePath)
                 let size = try container.decode(SIMD2<Double>.self, forKey: .size)
                 self = .image(relativePath: path, size: size)
+            case .text:
+                let content = try container.decode(String.self, forKey: .content)
+                let fontName = try container.decode(String.self, forKey: .fontName)
+                let fontSize = try container.decode(Double.self, forKey: .fontSize)
+                let color = try container.decode(String.self, forKey: .color)
+                let wrapWidth = try container.decodeIfPresent(Double.self, forKey: .wrapWidth)
+                self = .text(content: content, fontName: fontName, fontSize: fontSize, color: color, wrapWidth: wrapWidth)
             }
         }
 
@@ -347,6 +394,13 @@ enum BoardArchiver {
                 try container.encode(PayloadType.image, forKey: .type)
                 try container.encode(path, forKey: .relativePath)
                 try container.encode(size, forKey: .size)
+            case .text(let content, let fontName, let fontSize, let color, let wrapWidth):
+                try container.encode(PayloadType.text, forKey: .type)
+                try container.encode(content, forKey: .content)
+                try container.encode(fontName, forKey: .fontName)
+                try container.encode(fontSize, forKey: .fontSize)
+                try container.encode(color, forKey: .color)
+                try container.encodeIfPresent(wrapWidth, forKey: .wrapWidth)
             }
         }
     }

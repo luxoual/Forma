@@ -18,12 +18,18 @@ private struct ResizeHandleView: View {
 struct SelectionOverlay: View {
     private let borderWidth: CGFloat = 2
 
+    /// Which handles to render. Defaults to all 8; text elements pass a
+    /// restricted set (corners + left/right) since top/bottom edge drags
+    /// have no meaningful semantic for text — height is always
+    /// content-derived.
+    var handles: Set<HandlePosition> = Set(HandlePosition.allCases)
+
     var body: some View {
         GeometryReader { geo in
             Rectangle()
                 .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: borderWidth)
 
-            ForEach(HandlePosition.allCases, id: \.self) { position in
+            ForEach(HandlePosition.allCases.filter { handles.contains($0) }, id: \.self) { position in
                 ResizeHandleView()
                     .position(position.point(in: geo.size))
             }

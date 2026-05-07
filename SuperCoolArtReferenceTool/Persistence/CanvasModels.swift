@@ -115,9 +115,14 @@ public enum CMCanvasElementPayload: Codable, Hashable {
     case rectangle(fillColor: String)
     case ellipse(fillColor: String)
     case path(points: [SIMD2<Double>], strokeColor: String, strokeWidth: Double)
-    case text(content: String, fontName: String, fontSize: Double, color: String)
+    /// Text payload. `wrapWidth` is nil for auto-width text (grows
+    /// horizontally with content) and set to a world-units width when the
+    /// text has been wrap-locked via the side resize handle. Decoders use
+    /// `decodeIfPresent` so older `.refboard` files predating this field
+    /// load with `wrapWidth = nil` and behave identically to before.
+    case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
     case image(url: URL, size: SIMD2<Double>)
-    
+
     private enum CodingKeys: String, CodingKey {
         case type
         case fillColor
@@ -128,6 +133,7 @@ public enum CMCanvasElementPayload: Codable, Hashable {
         case fontName
         case fontSize
         case color
+        case wrapWidth
         case url
         case size
     }
@@ -156,7 +162,10 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             let fontName = try container.decode(String.self, forKey: .fontName)
             let fontSize = try container.decode(Double.self, forKey: .fontSize)
             let color = try container.decode(String.self, forKey: .color)
-            self = .text(content: content, fontName: fontName, fontSize: fontSize, color: color)
+            // Optional via decodeIfPresent: older .refboard manifests don't
+            // include `wrapWidth` and must keep loading without throwing.
+            let wrapWidth = try container.decodeIfPresent(Double.self, forKey: .wrapWidth)
+            self = .text(content: content, fontName: fontName, fontSize: fontSize, color: color, wrapWidth: wrapWidth)
         case .image:
             let url = try container.decode(URL.self, forKey: .url)
             let size = try container.decode(SIMD2<Double>.self, forKey: .size)
@@ -178,12 +187,15 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             try container.encode(points, forKey: .points)
             try container.encode(strokeColor, forKey: .strokeColor)
             try container.encode(strokeWidth, forKey: .strokeWidth)
-        case .text(let content, let fontName, let fontSize, let color):
+        case .text(let content, let fontName, let fontSize, let color, let wrapWidth):
             try container.encode(PayloadType.text, forKey: .type)
             try container.encode(content, forKey: .content)
             try container.encode(fontName, forKey: .fontName)
             try container.encode(fontSize, forKey: .fontSize)
             try container.encode(color, forKey: .color)
+            // encodeIfPresent: auto-width texts (wrapWidth == nil) omit the
+            // key from the manifest, matching pre-existing files exactly.
+            try container.encodeIfPresent(wrapWidth, forKey: .wrapWidth)
         case .image(let url, let size):
             try container.encode(PayloadType.image, forKey: .type)
             try container.encode(url, forKey: .url)
