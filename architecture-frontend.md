@@ -1122,16 +1122,16 @@ Each render pass is a candidate for extraction into its own `View` struct in its
 
 ### Multiple types in one file
 
-`BoardCanvasView.swift` contains: `BoardCanvasView`, `PlacedImage`, `PlacedText`, `TextElementView`, `FileImageView`, `ImageCache`, `CanvasDropDelegate`, plus `loadURLsFromProviders` and an `NSItemProvider` extension.
+Resolved by the spring-cleaning extraction. `BoardCanvasView.swift` is now ~2120 lines (down from ~2470), containing only `BoardCanvasView`. The other types now live in:
+- `Features/BoardCanvas/Elements/PlacedImage.swift`
+- `Features/BoardCanvas/Elements/PlacedText.swift`
+- `Features/BoardCanvas/Elements/TextElementView.swift`
+- `Features/BoardCanvas/Elements/FileImageView.swift`
+- `Features/BoardCanvas/Elements/ImageCache.swift`
+- `Features/BoardCanvas/Import/CanvasDropDelegate.swift`
+- `Features/BoardCanvas/Import/ItemProviderHelpers.swift` (the `loadURLsFromProviders` function + `NSItemProvider` extension)
 
-Per `references/hygiene.md` and `references/views.md`, each type should live in its own file. Suggested file split:
-- `Features/BoardCanvas/PlacedImage.swift`
-- `Features/BoardCanvas/PlacedText.swift`
-- `BoardCanvas/TextElementView.swift`
-- `BoardCanvas/FileImageView.swift`
-- `Persistence/ImageCache.swift`
-- `BoardCanvas/CanvasDropDelegate.swift`
-- `BoardCanvas/ItemProviderHelpers.swift` (also resolves the duplicate file-loading code with `InsertFileControl.swift` flagged elsewhere in this doc)
+The duplicate file-loading code shared with `InsertFileControl.swift` (now `Features/BoardCanvas/Import/InsertFileControl.swift`) is still pending — a separate cleanup.
 
 ### Pre-existing modern-concurrency cleanup
 
