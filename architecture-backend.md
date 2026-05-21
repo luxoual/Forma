@@ -103,7 +103,7 @@ At the moment, `UTType.refboard` still conforms to `public.data` in code rather 
 - `SuperCoolArtReferenceTool/App/SuperCoolArtReferenceToolApp.swift`
 - `SuperCoolArtReferenceTool/App/RootView.swift`
 - `SuperCoolArtReferenceTool/App/ContentView.swift`
-- `SuperCoolArtReferenceTool/Features/BoardCanvas/AppOpenHandler.swift`
+- `SuperCoolArtReferenceTool/App/AppOpenHandler.swift`
 
 `.refboard` files can enter the app through two paths:
 - In-app board import via `fileImporter`
