@@ -1125,8 +1125,8 @@ Each render pass is a candidate for extraction into its own `View` struct in its
 `BoardCanvasView.swift` contains: `BoardCanvasView`, `PlacedImage`, `PlacedText`, `TextElementView`, `FileImageView`, `ImageCache`, `CanvasDropDelegate`, plus `loadURLsFromProviders` and an `NSItemProvider` extension.
 
 Per `references/hygiene.md` and `references/views.md`, each type should live in its own file. Suggested file split:
-- `Models/PlacedImage.swift`
-- `Models/PlacedText.swift`
+- `Features/BoardCanvas/PlacedImage.swift`
+- `Features/BoardCanvas/PlacedText.swift`
 - `BoardCanvas/TextElementView.swift`
 - `BoardCanvas/FileImageView.swift`
 - `Persistence/ImageCache.swift`
