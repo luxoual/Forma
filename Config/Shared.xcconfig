@@ -1,0 +1,5 @@
+// Shared build settings — committed.
+// Local overrides live in Config/Local.xcconfig (gitignored).
+// When the team gets a shared Apple Developer cert, set DEVELOPMENT_TEAM here.
+
+#include? "Local.xcconfig"

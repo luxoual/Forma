@@ -77,6 +77,9 @@ playground.xcworkspace
 # User-specific merges/patches
 *.orig
 
+# Per-developer signing config (each dev creates their own from Local.xcconfig.example)
+Config/Local.xcconfig
+
 # Agent skills (dev-specific)
 .agents/
 .claude/skills/
