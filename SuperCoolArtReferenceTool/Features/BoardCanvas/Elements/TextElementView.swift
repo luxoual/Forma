@@ -20,7 +20,7 @@ struct TextElementView: View {
     /// typed content gives the field its own intrinsic width. Scales
     /// with zoom via `.scaleEffect(scale)` like everything else in the
     /// element — visible width is `editingMinWorldWidth * scale`.
-    private static let editingMinScreenWidth: CGFloat = 80
+    private static let editingMinWorldWidth: CGFloat = 80
 
     /// Solo-text selections show only the corners + left/right edges.
     /// Top/bottom edge handles are hidden because text height is
@@ -143,7 +143,7 @@ struct TextElementView: View {
                         onCommit: onCommitEdit
                     )
                 }
-                .frame(minWidth: Self.editingMinScreenWidth, alignment: .topLeading)
+                .frame(minWidth: Self.editingMinWorldWidth, alignment: .topLeading)
             }
         } else {
             Text(placed.content.isEmpty ? "Text" : placed.content)
