@@ -7,27 +7,18 @@
 
 import SwiftUI
 
-/// Settings button for canvas options
-/// Standalone control, separate from the main toolbar so it can be positioned as needed
-/// Matches the styling and dimensions of CanvasToolbar
 struct CanvasSettingsButton: View {
+    var canvasColor: Color
     var onTap: () -> Void
-    
+
     var body: some View {
         Button(action: onTap) {
             Image(systemName: "gear")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(DesignSystem.Colors.secondary)
-                .frame(width: 44, height: 44)
+                .font(.system(size: 22, weight: .medium))
         }
-        .buttonStyle(.plain)
-        .padding(12) // Same padding as toolbar
-        .frame(width: 68) // Same width as toolbar (44pt button + 12pt padding each side)
-        .background(
-            RoundedRectangle(cornerRadius: 12) // Same corner radius as toolbar
-                .fill(DesignSystem.Colors.primary)
-                .shadow(color: .black.opacity(0.3), radius: 8, x: 2, y: 2)
-        )
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .shadow(color: canvasColor.contrastingForeground.opacity(0.25), radius: 6, x: 0, y: 2)
     }
 }
 
@@ -40,7 +31,7 @@ struct CanvasSettingsButton: View {
         VStack {
             Spacer()
             HStack {
-                CanvasSettingsButton {
+                CanvasSettingsButton(canvasColor: .white) {
                     print("Settings tapped")
                 }
                 .padding(.leading, 16)

@@ -12,6 +12,7 @@ struct CanvasOverlayLayout: View {
     let onAddItem: () -> Void
     let onSettings: () -> Void
     var canvasName: String
+    var canvasColor: Color
 
     var body: some View {
         let edge: Edge.Set = (side == .left) ? .leading : .trailing
@@ -37,7 +38,7 @@ struct CanvasOverlayLayout: View {
 
             VStack {
                 Spacer()
-                CanvasSettingsButton(onTap: onSettings)
+                CanvasSettingsButton(canvasColor: canvasColor, onTap: onSettings)
                     .padding(.leading, 16)
                     .padding(.bottom, 16)
                     .frame(maxWidth: .infinity, alignment: .leading)

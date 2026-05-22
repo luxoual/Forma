@@ -79,7 +79,8 @@ struct ContentView: View {
                 onRedo: { redoTrigger = UUID() },
                 onAddItem: openImageImporter,
                 onSettings: { showingSettings = true },
-                canvasName: currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
+                canvasName: currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board",
+                canvasColor: canvasColor
             )
         }
         .fileImporter(
