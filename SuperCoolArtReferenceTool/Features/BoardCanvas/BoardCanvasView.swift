@@ -53,12 +53,6 @@ struct BoardCanvasView: View {
     @State private var nextZIndex: Int = 0
     @State private var canvasSize: CGSize = .zero
 
-    /// Last on-screen center of the selection action bar. The bar is kept
-    /// permanently mounted (rather than inserted on selection) so its Liquid
-    /// Glass never takes a first backdrop sample against an unsettled canvas;
-    /// this lets it stay put while fading out instead of jumping to the origin.
-    @State private var lastBarCenter: CGPoint = .zero
-
     // Backend store for tile-based culling
     @State private var canvasStore: LocalBoardStore
     @State private var refreshTask: Task<Void, Never>? = nil
@@ -362,34 +356,18 @@ struct BoardCanvasView: View {
                         .zIndex(Double(Int.max - 2))
                 }
 
-                // Floating action bar under the current selection.
-                //
-                // Kept permanently mounted (stable view identity) and shown via
-                // opacity/position rather than inserted with `if`. A glass
-                // backdrop filter on a freshly inserted, top-zIndex, positioned
-                // view samples its backdrop before the canvas beneath it has
-                // settled, caching the wrong light/dark variant until an
-                // unrelated re-composite. A persistent view never takes that
-                // bad first sample, so the appearance tracks the canvas.
-                let actionBarBBox = selectionBoundingBox()
-                let actionBarVisible = actionBarBBox != nil
-                    && !selection.isDragging
-                    && !selection.isResizing
-                    && !selection.isGroupResizing
-                    && !selection.isMarqueeing
-                let actionBarCenter: CGPoint = actionBarBBox.map {
-                    CGPoint(x: $0.midX * scale + offset.width,
-                            y: $0.maxY * scale + offset.height + 32)
-                } ?? lastBarCenter
-                CanvasSelectionActionBar(onDelete: deleteSelection)
-                    .position(actionBarCenter)
-                    .opacity(actionBarVisible ? 1 : 0)
-                    .allowsHitTesting(actionBarVisible)
-                    .animation(.snappy(duration: 0.2), value: actionBarVisible)
-                    .zIndex(Double(Int.max))
-                    .onChange(of: actionBarCenter) { _, newValue in
-                        if actionBarVisible { lastBarCenter = newValue }
-                    }
+                // Floating action bar beneath the current selection.
+                SelectionActionBarLayer(
+                    boundingBox: selectionBoundingBox(),
+                    scale: scale,
+                    offset: offset,
+                    isInteracting: selection.isDragging
+                        || selection.isResizing
+                        || selection.isGroupResizing
+                        || selection.isMarqueeing,
+                    onDelete: deleteSelection
+                )
+                .zIndex(Double(Int.max))
 
                 // Group bounding box with resize handles
                 if selection.selectedIDs.count > 1, !selection.isDragging {
