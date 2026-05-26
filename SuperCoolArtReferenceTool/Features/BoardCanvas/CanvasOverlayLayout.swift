@@ -20,7 +20,7 @@ struct CanvasOverlayLayout: View {
 
         Group {
             VStack {
-                CanvasStatusBar(onTap: onBack, canvasName: canvasName)
+                CanvasStatusBar(onTap: onBack, canvasName: canvasName, canvasColor: canvasColor)
                 .padding(.leading, 16)
                 .padding(.top, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)

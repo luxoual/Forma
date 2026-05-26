@@ -15,10 +15,10 @@ struct CanvasSettingsButton: View {
         Button(action: onTap) {
             Image(systemName: "gear")
                 .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(canvasColor.contrastingForeground)
         }
         .buttonStyle(.glass)
         .controlSize(.large)
-        .shadow(color: canvasColor.contrastingForeground.opacity(0.25), radius: 6, x: 0, y: 2)
     }
 }
 
