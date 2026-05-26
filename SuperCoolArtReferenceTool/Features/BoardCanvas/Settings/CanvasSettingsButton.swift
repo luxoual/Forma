@@ -8,14 +8,12 @@
 import SwiftUI
 
 struct CanvasSettingsButton: View {
-    var canvasColor: Color
     var onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             Image(systemName: "gear")
                 .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(canvasColor.contrastingForeground)
         }
         .buttonStyle(.glass)
         .controlSize(.large)
@@ -31,7 +29,7 @@ struct CanvasSettingsButton: View {
         VStack {
             Spacer()
             HStack {
-                CanvasSettingsButton(canvasColor: .white) {
+                CanvasSettingsButton {
                     print("Settings tapped")
                 }
                 .padding(.leading, 16)

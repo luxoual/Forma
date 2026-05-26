@@ -10,10 +10,9 @@ import SwiftUI
 struct CanvasStatusBar: View {
     var onTap: () -> Void
     var canvasName: String
-    var canvasColor: Color
     var body: some View {
         HStack{
-            CanvasBackButton(onTap: onTap, canvasColor: canvasColor)
+            CanvasBackButton(onTap: onTap)
             CanvasBoardName(canvasName: canvasName)
         }
     }
@@ -21,13 +20,11 @@ struct CanvasStatusBar: View {
 
 struct CanvasBackButton: View {
     var onTap: () -> Void
-    var canvasColor: Color
 
     var body: some View {
         Button(action: onTap) {
             Image(systemName: "chevron.left")
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(canvasColor.contrastingForeground)
         }
         .buttonStyle(.glass)
         .controlSize(.large)
@@ -41,7 +38,6 @@ struct CanvasBoardName: View {
     var body: some View {
         Text(canvasName)
             .font(.headline)
-            .foregroundStyle(DesignSystem.Colors.tertiary)
             .lineLimit(1)
             .truncationMode(.middle)
             .frame(maxWidth: 250, alignment: .leading)

@@ -6,20 +6,6 @@
 //
 
 import SwiftUI
-import UIKit
-
-extension Color {
-    /// Black or white, whichever has better contrast against this color.
-    /// Uses Rec. 709 relative luminance; threshold 0.5 in sRGB space is a
-    /// practical heuristic — accurate enough for picking a foreground over
-    /// an arbitrary user-chosen background.
-    var contrastingForeground: Color {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a)
-        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        return luminance > 0.5 ? .black : .white
-    }
-}
 
 extension DesignSystem{
     enum Colors {
