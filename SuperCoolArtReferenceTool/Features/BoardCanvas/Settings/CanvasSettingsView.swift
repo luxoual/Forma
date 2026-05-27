@@ -17,73 +17,37 @@ struct CanvasSettingsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            // Standard Form: it adopts Liquid Glass for its grouped rows,
+            // nav bar, and controls automatically. We deliberately set no
+            // backgrounds, row backgrounds, or toolbar materials — overriding
+            // them is what suppressed the glass before. Our only customization
+            // is the brand accent, applied once via .tint so it flows into the
+            // toggle, picker, color well, and Done button.
+            Form {
                 Section("Canvas") {
-                    HStack {
-                        Text("Canvas Color")
-                            .foregroundStyle(DesignSystem.Colors.text)
-                        Spacer()
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(canvasColor)
-                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                                .allowsHitTesting(false)
-                            ColorPicker("", selection: $canvasColor, supportsOpacity: false)
-                                .labelsHidden()
-                                .scaleEffect(CGSize(width: 2.0, height: 2.0))
-                                .opacity(0.015)
-                        }
-                        .frame(width: 48, height: 28)
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
-                    }
+                    ColorPicker("Canvas Color", selection: $canvasColor, supportsOpacity: false)
 
                     Toggle("Show Grid", isOn: $showGrid)
-                        .tint(DesignSystem.Colors.tertiary)
-                        .foregroundStyle(DesignSystem.Colors.text)
 
-                    HStack {
-                        Text("Toolbar Position")
-                            .foregroundStyle(DesignSystem.Colors.text)
-                        Spacer()
-                        Picker("Toolbar Position", selection: $toolbarSide) {
-                            Text("Left")
-                                .tag(ToolbarSide.left)
-                            Text("Right")
-                                .tag(ToolbarSide.right)
-                        }
-                        .labelsHidden()
-                        .tint(DesignSystem.Colors.secondary)
+                    Picker("Toolbar Position", selection: $toolbarSide) {
+                        Text("Left").tag(ToolbarSide.left)
+                        Text("Right").tag(ToolbarSide.right)
                     }
                 }
-                .listRowBackground(DesignSystem.Colors.primary)
-                
+
                 Section("About") {
-                    HStack {
-                        Text("Version")
-                            .foregroundStyle(DesignSystem.Colors.text)
-                        Spacer()
-                        Text("1.0.0")
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                    }
+                    LabeledContent("Version", value: "1.0.0")
                 }
-                .listRowBackground(DesignSystem.Colors.primary)
             }
-            .scrollContentBackground(.hidden)
-            .background(Color.black)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.primary, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .foregroundStyle(DesignSystem.Colors.tertiary)
+                    Button("Done") { dismiss() }
                 }
             }
         }
+        .tint(DesignSystem.Colors.tertiary)
     }
 }
 
