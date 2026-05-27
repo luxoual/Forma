@@ -14,6 +14,7 @@ struct CanvasSettingsButton: View {
         Button(action: onTap) {
             Image(systemName: "gear")
                 .font(.system(size: 20, weight: .semibold))
+                .frame(width: 24, height: 24)
         }
         .buttonStyle(.glass)
         .controlSize(.large)

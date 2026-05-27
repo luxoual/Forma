@@ -25,6 +25,7 @@ struct CanvasBackButton: View {
         Button(action: onTap) {
             Image(systemName: "chevron.left")
                 .font(.system(size: 20, weight: .semibold))
+                .frame(width: 24, height: 24)
         }
         .buttonStyle(.glass)
         .controlSize(.large)
