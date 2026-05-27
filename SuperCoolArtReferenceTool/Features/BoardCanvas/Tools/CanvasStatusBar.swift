@@ -29,6 +29,7 @@ struct CanvasBackButton: View {
         .buttonStyle(.glass)
         .controlSize(.large)
         .accessibilityLabel("Back to home")
+        .tint(DesignSystem.Colors.tertiary)
     }
 }
 
@@ -36,13 +37,24 @@ struct CanvasBoardName: View {
     var canvasName: String
 
     var body: some View {
-        Text(canvasName)
-            .font(.headline)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .frame(maxWidth: 250, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        // A non-interactive glass button rather than plain Text: the glass
+        // *button style* is what gives the label vibrant, backdrop-adaptive
+        // tinting (a Text over .glassEffect doesn't get that). allowsHitTesting
+        // keeps the enabled/vibrant look while making it non-tappable, and the
+        // button trait is removed so VoiceOver reads it as a label.
+        Button {
+        } label: {
+            Text(canvasName)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 250, alignment: .center)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 16))
+        .controlSize(.large)
+        .tint(DesignSystem.Colors.tertiary)
+        .allowsHitTesting(false)
+        .accessibilityRemoveTraits(.isButton)
     }
 }

@@ -13,10 +13,11 @@ struct CanvasSettingsButton: View {
     var body: some View {
         Button(action: onTap) {
             Image(systemName: "gear")
-                .font(.system(size: 22, weight: .medium))
+                .font(.system(size: 20, weight: .semibold))
         }
         .buttonStyle(.glass)
         .controlSize(.large)
+        .tint(DesignSystem.Colors.tertiary)
     }
 }
 
