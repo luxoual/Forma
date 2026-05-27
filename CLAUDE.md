@@ -54,7 +54,7 @@ SuperCoolArtReferenceTool/
 │   ├── BoardCanvas/            Infinite canvas (main view + supporting modules)
 │   │   ├── Elements/           Placed image/text models + their rendering views, image cache
 │   │   ├── Gestures/           Pinch / two-finger pan installers
-│   │   ├── Import/             Drag/drop delegate, item-provider helpers, insert-file button
+│   │   ├── Import/             Drag/drop delegate, item-provider helpers
 │   │   ├── Selection/          Selection state, marquee, handles, action bar
 │   │   ├── Settings/           Settings sheet + button
 │   │   └── Tools/              Toolbar, tool definitions, tool behavior, status bar
@@ -74,8 +74,7 @@ SuperCoolArtReferenceTool/
 | `App/ContentView.swift` | Main canvas container, toolbar layout, export/import UI |
 | `Features/BoardCanvas/Tools/CanvasToolbar.swift` | Left/right toolbar with tool selection, undo/redo |
 | `Features/FilePicker/FilePickerView.swift` | Landing screen with drag-and-drop/browse for initial file import |
-| `Features/BoardCanvas/Import/InsertFileControl.swift` | Reusable file-import button used by the canvas |
-| `DesignSystem/Colors.swift` | Color palette: primary (#191919), secondary (#535353), tertiary (#86B8FE), text (#FFFFFF) |
+| `DesignSystem/Colors.swift` | Color palette: primary (#191919), secondary (#535353), tertiary (#5E9CFC), text (#FFFFFF) |
 
 ### Coordinate Systems
 
@@ -103,5 +102,4 @@ Document only finalized implementations, not speculative architecture.
 
 ## Known Issues
 
-- File loading logic duplicated between `Features/BoardCanvas/BoardCanvasView.swift` and `Features/BoardCanvas/Import/InsertFileControl.swift`.
 - Pointer and group tools in toolbar are not yet connected to canvas behavior.
