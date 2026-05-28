@@ -57,6 +57,8 @@ struct BoardCanvasView: View {
     @State private var canvasStore: LocalBoardStore
     @State private var refreshTask: Task<Void, Never>? = nil
     @State private var storeMutationTask: Task<Void, Never>? = nil
+    @State private var insertionTask: Task<Void, Never>? = nil
+    @State private var stickyDetailImageIDs: Set<UUID> = []
 
     // Drop/import types (images and GIFs only)
     private let allowedDropTypes: [UTType] = [.image, .gif]
@@ -64,6 +66,16 @@ struct BoardCanvasView: View {
     // Image sizing constraints in world units (adjust as desired)
     private let maxImageDimensionWorld: CGFloat = 512
     private let minImageDimensionWorld: CGFloat = 64
+    private let insertionChunkSize = 48
+    private let denseVisibleImageThreshold = 150
+    private let maxDetailedImagesWhileInteracting = 120
+    private let maxDetailedImagesAtRest = 180
+    private let overviewPromotionMaxDimension: CGFloat = 28
+    private let overviewPromotionMinArea: CGFloat = 36
+    private let countAwareLODThreshold = 200
+    private let minVisibleQueryMargin: Double = 64
+    private let maxVisibleQueryMargin: Double = 512
+    private let lodHysteresisScoreMargin: CGFloat = 0.12
 
     // Text element defaults. Font size is in BASE/world units. The text
     // is rendered at base size and then visually resized by `.scaleEffect(scale)`,
@@ -124,6 +136,7 @@ struct BoardCanvasView: View {
 
     var body: some View {
         GeometryReader { geo in
+            let renderPlan = imageRenderPlan()
             ZStack {
                 // Grid background
                 Canvas { ctx, size in
@@ -186,8 +199,29 @@ struct BoardCanvasView: View {
                     toolBehavior(for: activeTool).tappedEmpty(selection: selection)
                 }
 
-                // Render visible images only (world -> screen mapping)
-                ForEach(visibleImages) { item in
+                if !renderPlan.overviewItems.isEmpty {
+                    Canvas { ctx, _ in
+                        for item in renderPlan.overviewItems {
+                            let screenRect = CGRect(
+                                x: item.worldRect.origin.x * scale + offset.width,
+                                y: item.worldRect.origin.y * scale + offset.height,
+                                width: item.worldRect.width * scale,
+                                height: item.worldRect.height * scale
+                            )
+                            let fillRect = screenRect.integral.insetBy(dx: 0.25, dy: 0.25)
+                            let fillPath = Path(roundedRect: fillRect, cornerRadius: min(3, min(fillRect.width, fillRect.height) * 0.2))
+                            ctx.fill(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.18)))
+                            if fillRect.width >= 6, fillRect.height >= 6 {
+                                ctx.stroke(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.32)), lineWidth: 0.75)
+                            }
+                        }
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+
+                // Render detailed visible images only (world -> screen mapping)
+                ForEach(renderPlan.detailItems) { item in
                     let isSelected = selection.selectedIDs.contains(item.id)
                     let isBeingResized = selection.isResizing && selection.resizeElementID == item.id
                     let isBeingGroupResized = selection.isGroupResizing && isSelected
@@ -212,8 +246,11 @@ struct BoardCanvasView: View {
                     let multiSelected = selection.selectedIDs.count > 1
 
                     let maxDimensionPoints = max(liveRect.width * scale, liveRect.height * scale)
-                    let requestedPixelSize = FileImageView.bucketedMaxPixelSize(maxDimensionPoints * displayScale)
-                    let targetMaxPixelSize = isInteracting ? min(requestedPixelSize, 768) : requestedPixelSize
+                    let targetMaxPixelSize = FileImageView.requestedThumbnailPixelSize(
+                        screenMaxDimensionPoints: maxDimensionPoints,
+                        displayScale: displayScale,
+                        isInteracting: isInteracting
+                    )
                     FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
                         .frame(width: liveRect.width * scale,
                                height: liveRect.height * scale)
@@ -422,6 +459,11 @@ struct BoardCanvasView: View {
                 }
                 scheduleRefreshVisibleElements()
             }
+            .onDisappear {
+                refreshTask?.cancel()
+                interactionEndTask?.cancel()
+                insertionTask?.cancel()
+            }
             .onChange(of: geo.size) { oldValue, newValue in
                 canvasSize = newValue
                 scheduleRefreshVisibleElements()
@@ -603,7 +645,7 @@ struct BoardCanvasView: View {
                             let worldStart = screenToWorld(value.startLocation)
                             dragStartWorldPos = worldStart
                             let behavior = toolBehavior(for: activeTool)
-                            var items = placedImages.map {
+                            var items = visibleImages.map {
                                 HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
                             }
                             items.append(contentsOf: placedTexts.map {
@@ -821,6 +863,89 @@ struct BoardCanvasView: View {
             }
         }
         return bestHandle
+    }
+
+    private func imageRenderPlan() -> ImageRenderPlan {
+        computeImageRenderPlan(previousDetailIDs: stickyDetailImageIDs)
+    }
+
+    private func computeImageRenderPlan(previousDetailIDs: Set<UUID>) -> ImageRenderPlan {
+        let selectedIDs = selection.selectedIDs
+        guard visibleImages.count > denseVisibleImageThreshold else {
+            return ImageRenderPlan(detailItems: visibleImages, overviewItems: [])
+        }
+
+        let detailBudget = isInteracting ? maxDetailedImagesWhileInteracting : maxDetailedImagesAtRest
+        let viewportCenter = CGPoint(x: canvasSize.width * 0.5, y: canvasSize.height * 0.5)
+        let viewportDiagonal = max(hypot(canvasSize.width, canvasSize.height), 1)
+        let applyCountAwareLOD = visibleImages.count >= countAwareLODThreshold
+        var forcedDetailIDs = Set<UUID>()
+        var rankedCandidates: [(id: UUID, score: CGFloat)] = []
+
+        for item in visibleImages {
+            let screenRect = CGRect(
+                x: item.worldRect.origin.x * scale + offset.width,
+                y: item.worldRect.origin.y * scale + offset.height,
+                width: item.worldRect.width * scale,
+                height: item.worldRect.height * scale
+            )
+            let screenMaxDimension = max(screenRect.width, screenRect.height)
+            let screenArea = max(screenRect.width * screenRect.height, 0)
+            let distanceFromCenter = hypot(screenRect.midX - viewportCenter.x, screenRect.midY - viewportCenter.y)
+            let normalizedDistance = min(distanceFromCenter / viewportDiagonal, 1)
+            let centralityScore = 1 - normalizedDistance
+            let sizeScore = min(screenArea / 4096, 1)
+            let dimensionScore = min(screenMaxDimension / 96, 1)
+            let score = (sizeScore * 0.5) + (dimensionScore * 0.2) + (centralityScore * 0.3)
+
+            if selectedIDs.contains(item.id) {
+                forcedDetailIDs.insert(item.id)
+                continue
+            }
+
+            if !applyCountAwareLOD && screenMaxDimension >= overviewPromotionMaxDimension {
+                forcedDetailIDs.insert(item.id)
+                continue
+            }
+
+            if screenArea >= overviewPromotionMinArea || centralityScore > 0.8 {
+                rankedCandidates.append((id: item.id, score: score))
+            }
+        }
+
+        let sortedCandidates = rankedCandidates.sorted { lhs, rhs in
+            if lhs.score == rhs.score {
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            return lhs.score > rhs.score
+        }
+
+        let remainingBudget = max(detailBudget - forcedDetailIDs.count, 0)
+        let promotionFrontierScore = sortedCandidates.indices.contains(max(remainingBudget - 1, 0))
+            ? sortedCandidates[max(remainingBudget - 1, 0)].score
+            : 0
+        let stickyRetainThreshold = max(promotionFrontierScore - lodHysteresisScoreMargin, 0)
+
+        var stickyRetainedIDs: Set<UUID> = []
+        if remainingBudget > 0 {
+            let stickyCandidates = sortedCandidates.filter {
+                previousDetailIDs.contains($0.id) && $0.score >= stickyRetainThreshold
+            }
+            stickyRetainedIDs = Set(stickyCandidates.prefix(remainingBudget).map(\.id))
+        }
+
+        let fillBudget = max(remainingBudget - stickyRetainedIDs.count, 0)
+        let promotedIDs = Set(
+            sortedCandidates
+                .filter { !stickyRetainedIDs.contains($0.id) }
+                .prefix(fillBudget)
+                .map(\.id)
+        )
+        let detailIDs = forcedDetailIDs.union(stickyRetainedIDs).union(promotedIDs)
+
+        let detailItems = visibleImages.filter { detailIDs.contains($0.id) }
+        let overviewItems = visibleImages.filter { !detailIDs.contains($0.id) }
+        return ImageRenderPlan(detailItems: detailItems, overviewItems: overviewItems)
     }
 
     // MARK: - Drag Helpers
@@ -1726,24 +1851,27 @@ struct BoardCanvasView: View {
         }
     }
 
+    private func visibleQueryMargin() -> Double {
+        let zoomAwareMargin = Double(256 * max(scale, 0.25))
+        return min(maxVisibleQueryMargin, max(minVisibleQueryMargin, zoomAwareMargin))
+    }
+
     private func refreshVisibleElements() async {
         guard canvasSize != .zero else { return }
         let viewport = currentViewportRect()
-        let headers = await canvasStore.headers(in: viewport, margin: 512, limit: nil)
-        let ids = headers.map { $0.id }
-        let elementsById = await canvasStore.elements(for: ids)
-        let items: [PlacedImage] = headers.compactMap { header in
-            guard let element = elementsById[header.id] else { return nil }
-            switch element.payload {
-            case .image(let url, _):
-                let b = header.bounds
-                let rect = CGRect(x: CGFloat(b.origin.x), y: CGFloat(b.origin.y), width: CGFloat(b.size.x), height: CGFloat(b.size.y))
-                return PlacedImage(id: header.id, url: url, worldRect: rect, zIndex: header.zIndex)
-            default:
-                return nil
-            }
+        let placements = await canvasStore.imagePlacements(in: viewport, margin: visibleQueryMargin(), limit: nil)
+        let items: [PlacedImage] = placements.map { placement in
+            let bounds = placement.bounds
+            let rect = CGRect(
+                x: CGFloat(bounds.origin.x),
+                y: CGFloat(bounds.origin.y),
+                width: CGFloat(bounds.size.x),
+                height: CGFloat(bounds.size.y)
+            )
+            return PlacedImage(id: placement.id, url: placement.url, worldRect: rect, zIndex: placement.zIndex)
         }
         visibleImages = items
+        stickyDetailImageIDs = Set(computeImageRenderPlan(previousDetailIDs: stickyDetailImageIDs).detailItems.map(\.id))
     }
 
     // MARK: - Image Insertion
@@ -1756,61 +1884,10 @@ struct BoardCanvasView: View {
 
     private func insertImages(atScreenPoint point: CGPoint, urls: [URL]) {
         let worldCenter = screenToWorld(point)
-        let insertionSpacing: CGFloat = 24
-        var preparedImages: [(url: URL, size: CGSize)] = []
-
-        for originalURL in urls {
-            guard let url = makeSandboxCopyIfNeeded(from: originalURL) else { continue }
-            preparedImages.append((url: url, size: worldSizeForPixelSize(imagePixelSize(url: url))))
-        }
-
-        let rects = batchInsertionRects(
-            near: CGPoint(x: worldCenter.x, y: worldCenter.y),
-            sizes: preparedImages.map(\.size),
-            spacing: insertionSpacing
-        )
-
-        var snapshots: [PlacedElementSnapshot] = []
-        var elements: [CMCanvasElement] = []
-
-        for (index, preparedImage) in preparedImages.enumerated() {
-            let url = preparedImage.url
-            let rect = rects[index]
-            let id = UUID()
-            let z = nextZIndex
-            placedImages.append(PlacedImage(id: id, url: url, worldRect: rect, zIndex: z))
-            nextZIndex += 1
-
-            let header = CMElementHeader(
-                id: id,
-                type: .image,
-                transform: CMAffineTransform2D(),
-                bounds: CMWorldRect(
-                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
-                    size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
-                ),
-                layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
-                zIndex: z
-            )
-            let payload = CMCanvasElementPayload.image(
-                url: url,
-                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
-            )
-            let element = CMCanvasElement(header: header, payload: payload)
-            elements.append(element)
-
-            snapshots.append(PlacedElementSnapshot(
-                id: id, url: url, worldRect: rect, zIndex: z, element: element
-            ))
-        }
-
-        if !snapshots.isEmpty {
-            commandHistory.push(.insert(snapshots: snapshots))
-        }
-
-        Task {
-            await canvasStore.upsert(elements: elements)
-            await refreshVisibleElements()
+        insertionTask = Task(priority: .userInitiated) {
+            let prepared = await ImageImportPreparationPipeline.shared.prepare(urls: urls)
+            guard !Task.isCancelled, !prepared.isEmpty else { return }
+            await applyPreparedImages(prepared, near: worldCenter)
         }
     }
 
@@ -1846,6 +1923,70 @@ struct BoardCanvasView: View {
             let h = max(minImageDimensionWorld, min(maxImageDimensionWorld, maxImageDimensionWorld))
             let w = h * max(aspect, 0.01)
             return CGSize(width: w, height: h)
+        }
+    }
+
+    @MainActor
+    private func applyPreparedImages(_ preparedImages: [PreparedImportedImage], near center: CGPoint) async {
+        let insertionSpacing: CGFloat = 24
+        let sizes = preparedImages.map { worldSizeForPixelSize($0.pixelSize) }
+        let rects = batchInsertionRects(
+            near: CGPoint(x: center.x, y: center.y),
+            sizes: sizes,
+            spacing: insertionSpacing
+        )
+
+        var snapshots: [PlacedElementSnapshot] = []
+        snapshots.reserveCapacity(preparedImages.count)
+
+        for (index, preparedImage) in preparedImages.enumerated() {
+            let rect = rects[index]
+            let zIndex = nextZIndex + index
+            let header = CMElementHeader(
+                id: UUID(),
+                type: .image,
+                transform: CMAffineTransform2D(),
+                bounds: CMWorldRect(
+                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                    size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+                ),
+                layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+                zIndex: zIndex
+            )
+            let payload = CMCanvasElementPayload.image(
+                url: preparedImage.url,
+                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+            )
+            let element = CMCanvasElement(header: header, payload: payload)
+            snapshots.append(PlacedElementSnapshot(
+                id: header.id,
+                url: preparedImage.url,
+                worldRect: rect,
+                zIndex: zIndex,
+                element: element
+            ))
+        }
+
+        guard !snapshots.isEmpty else { return }
+
+        commandHistory.push(.insert(snapshots: snapshots))
+        nextZIndex += snapshots.count
+
+        let chunks = snapshots.chunked(into: insertionChunkSize)
+        for (chunkIndex, chunk) in chunks.enumerated() {
+            guard !Task.isCancelled else { break }
+
+            placedImages.append(contentsOf: chunk.map {
+                PlacedImage(id: $0.id, url: $0.url!, worldRect: $0.worldRect, zIndex: $0.zIndex)
+            })
+
+            let chunkElements = chunk.map(\.element)
+            await canvasStore.upsert(elements: chunkElements)
+
+            if chunkIndex == chunks.count - 1 || chunkIndex.isMultiple(of: 2) {
+                await refreshVisibleElements()
+            }
+            await Task.yield()
         }
     }
 
@@ -2116,8 +2257,116 @@ struct BoardCanvasView: View {
         }
     }
 
+    // MARK: - Models
+
+    private struct ImageRenderPlan {
+        let detailItems: [PlacedImage]
+        let overviewItems: [PlacedImage]
+    }
 }
 
 #Preview {
     BoardCanvasView(commandHistory: CanvasCommandHistory())
+}
+
+private struct PreparedImportedImage {
+    let url: URL
+    let pixelSize: CGSize?
+}
+
+private actor ImageImportPreparationPipeline {
+    static let shared = ImageImportPreparationPipeline()
+
+    private let limiter = AsyncLimiter(limit: 4)
+
+    func prepare(urls: [URL]) async -> [PreparedImportedImage] {
+        await withTaskGroup(of: (Int, PreparedImportedImage?).self) { group in
+            for (index, sourceURL) in urls.enumerated() {
+                group.addTask { [limiter] in
+                    await limiter.withPermit {
+                        await Task.detached(priority: .utility) {
+                            guard let copiedURL = Self.sandboxCopyIfNeeded(from: sourceURL) else {
+                                return (index, nil)
+                            }
+                            let pixelSize = Self.imagePixelSize(at: copiedURL)
+                            return (index, PreparedImportedImage(url: copiedURL, pixelSize: pixelSize))
+                        }.value
+                    }
+                }
+            }
+
+            var orderedResults = Array<PreparedImportedImage?>(repeating: nil, count: urls.count)
+            for await (index, prepared) in group {
+                orderedResults[index] = prepared
+            }
+            return orderedResults.compactMap { $0 }
+        }
+    }
+
+    nonisolated private static func sandboxCopyIfNeeded(from url: URL) -> URL? {
+        if url.isFileURL, url.path.contains(Bundle.main.bundleIdentifier ?? "") {
+            return url
+        }
+
+        let accessGranted = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessGranted {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileManager = FileManager.default
+        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return url
+        }
+
+        let directory = appSupport.appendingPathComponent("ImportedImages", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let ext = url.pathExtension.isEmpty ? "dat" : url.pathExtension
+            let destination = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext)
+            do {
+                try fileManager.copyItem(at: url, to: destination)
+                return destination
+            } catch {
+                if let data = try? Data(contentsOf: url) {
+                    try data.write(to: destination, options: [.atomic])
+                    return destination
+                }
+            }
+        } catch {
+            return nil
+        }
+
+        return nil
+    }
+
+    nonisolated private static func imagePixelSize(at url: URL) -> CGSize? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+            return nil
+        }
+        guard let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat else {
+            return nil
+        }
+        return CGSize(width: width, height: height)
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0, !isEmpty else { return isEmpty ? [] : [self] }
+
+        var chunks: [[Element]] = []
+        chunks.reserveCapacity((count + size - 1) / size)
+
+        var index = startIndex
+        while index < endIndex {
+            let nextIndex = self.index(index, offsetBy: size, limitedBy: endIndex) ?? endIndex
+            chunks.append(Array(self[index..<nextIndex]))
+            index = nextIndex
+        }
+        return chunks
+    }
 }
