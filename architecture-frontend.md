@@ -1027,13 +1027,13 @@ FilePickerView(
 - `RootView` hosts `FilePickerView` and routes to `ContentView` based on which callback fires
 - `initialBoardURL` is tracked through `RootView` → `ContentView` so save-on-back writes to the correct location
 
-### Canvas Back Button
+### Canvas Status Bar (Back Button + Board Name)
 
 **Status: Implemented**
 
-**File:** `CanvasOverlayLayout.swift`
+**File:** `CanvasStatusBar.swift` (rendered via `CanvasOverlayLayout`)
 
-A status bar (`CanvasStatusBar`) permanently anchored to the **top-left** of the canvas, composed of a back button (`CanvasBackButton`) and a board name pill (`CanvasBoardName`). Does not follow `toolbarSide` — position is fixed regardless of toolbar placement. Styled to match the toolbar/settings button: 68pt wide back button, primary background, 12pt corner radius, matching shadow.
+`CanvasStatusBar` is permanently anchored to the **top-left** of the canvas, composed of a back button (`CanvasBackButton`) and a board name pill (`CanvasBoardName`). Does not follow `toolbarSide` — position is fixed regardless of toolbar placement. Styled to match the toolbar/settings button: 68pt wide back button, primary background, 12pt corner radius, matching shadow.
 
 **Save-on-back flow:**
 1. Back button tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
@@ -1122,16 +1122,16 @@ Each render pass is a candidate for extraction into its own `View` struct in its
 
 ### Multiple types in one file
 
-`BoardCanvasView.swift` contains: `BoardCanvasView`, `PlacedImage`, `PlacedText`, `TextElementView`, `FileImageView`, `ImageCache`, `CanvasDropDelegate`, plus `loadURLsFromProviders` and an `NSItemProvider` extension.
+Resolved by the spring-cleaning extraction. `BoardCanvasView.swift` is now ~2120 lines (down from ~2470), containing only `BoardCanvasView`. The other types now live in:
+- `Features/BoardCanvas/Elements/PlacedImage.swift`
+- `Features/BoardCanvas/Elements/PlacedText.swift`
+- `Features/BoardCanvas/Elements/TextElementView.swift`
+- `Features/BoardCanvas/Elements/FileImageView.swift`
+- `Features/BoardCanvas/Elements/ImageCache.swift`
+- `Features/BoardCanvas/Import/CanvasDropDelegate.swift`
+- `Features/BoardCanvas/Import/ItemProviderHelpers.swift` (the `loadURLsFromProviders` function + `NSItemProvider` extension)
 
-Per `references/hygiene.md` and `references/views.md`, each type should live in its own file. Suggested file split:
-- `Models/PlacedImage.swift`
-- `Models/PlacedText.swift`
-- `BoardCanvas/TextElementView.swift`
-- `BoardCanvas/FileImageView.swift`
-- `Persistence/ImageCache.swift`
-- `BoardCanvas/CanvasDropDelegate.swift`
-- `BoardCanvas/ItemProviderHelpers.swift` (also resolves the duplicate file-loading code with `InsertFileControl.swift` flagged elsewhere in this doc)
+The duplicate file-loading code shared with `InsertFileControl.swift` (now `Features/BoardCanvas/Import/InsertFileControl.swift`) is still pending — a separate cleanup.
 
 ### Pre-existing modern-concurrency cleanup
 
