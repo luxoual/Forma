@@ -56,7 +56,7 @@ SuperCoolArtReferenceTool/
 │   │   ├── Gestures/           Pinch / two-finger pan installers
 │   │   ├── Import/             Drag/drop delegate, item-provider helpers
 │   │   ├── Selection/          Selection state, marquee, handles, action bar
-│   │   ├── Settings/           Settings sheet + button
+│   │   ├── Settings/           Settings sheet
 │   │   └── Tools/              Toolbar, tool definitions, tool behavior, status bar
 │   └── FilePicker/             Landing screen, recent-board management
 └── Persistence/                In-memory spatial store, canvas models, services
@@ -71,8 +71,8 @@ SuperCoolArtReferenceTool/
 | `Persistence/LocalBoardStore.swift` | In-memory tile-indexed store (actor), spatial queries, z-order management |
 | `Persistence/LocalCanvasService.swift` | Service layer wrapping LocalBoardStore |
 | `App/BoardArchiver.swift` | Import/export `.refboard` packages (JSON manifest + assets/) |
-| `App/ContentView.swift` | Main canvas container, toolbar layout, export/import UI |
-| `Features/BoardCanvas/Tools/CanvasToolbar.swift` | Left/right toolbar with tool selection, undo/redo |
+| `App/ContentView.swift` | Main canvas container with native `.toolbar` chrome (back/board name + tools + history + add/settings) |
+| `Features/BoardCanvas/Tools/CanvasTool.swift` | Tool enum (`pointer`, `group`, `text`); `CanvasToolBehavior.swift` defines per-tool tap/drag semantics |
 | `Features/FilePicker/FilePickerView.swift` | Landing screen with drag-and-drop/browse for initial file import |
 | `DesignSystem/Colors.swift` | Color palette: primary (#191919), secondary (#535353), tertiary (#5E9CFC), text (#FFFFFF) |
 
