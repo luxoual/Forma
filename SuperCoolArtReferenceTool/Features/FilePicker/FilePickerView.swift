@@ -82,6 +82,7 @@ struct FilePickerView: View {
                 }
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
+                .foregroundStyle(DesignSystem.Colors.primary)
                 .tint(DesignSystem.Colors.tertiary)
 
                 // Secondary action: translucent glass.
@@ -137,6 +138,8 @@ struct FilePickerView: View {
 
                 VStack(spacing: 0) {
                     ForEach(recents) { entry in
+                        let isFirst = entry.id == recents.first?.id
+                        let isLast = entry.id == recents.last?.id
                         Button {
                             openRecentBoard(entry)
                         } label: {
@@ -147,27 +150,34 @@ struct FilePickerView: View {
 
                                 Text(entry.name)
                                     .foregroundStyle(DesignSystem.Colors.text)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
 
                                 Spacer()
 
                                 Text(entry.lastOpened.formatted(.relative(presentation: .named)))
                                     .font(.caption)
                                     .foregroundStyle(DesignSystem.Colors.secondary)
+                                    .lineLimit(1)
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 12)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                DesignSystem.Colors.secondary.opacity(0.15),
+                                in: .rect(
+                                    topLeadingRadius: isFirst ? 10 : 0,
+                                    bottomLeadingRadius: isLast ? 10 : 0,
+                                    bottomTrailingRadius: isLast ? 10 : 0,
+                                    topTrailingRadius: isFirst ? 10 : 0
+                                )
+                            )
                             .contentShape(.rect)
                         }
-                        .buttonStyle(.plain)
-
-                        if entry.id != recents.last?.id {
-                            Divider()
-                                .background(DesignSystem.Colors.secondary.opacity(0.3))
-                                .padding(.leading, 56)
-                        }
+                        .buttonStyle(LiftPressStyle())
                     }
                 }
-                .background(DesignSystem.Colors.secondary.opacity(0.15), in: .rect(cornerRadius: 10))
+                .padding(4)
             }
             .frame(maxWidth: 500)
             .padding(.top, 8)
@@ -199,6 +209,20 @@ struct FilePickerView: View {
         }
         // `record(url:)` refreshes the bookmark as a side-effect, so stale entries heal on open.
         openBoard(at: resolved.url)
+    }
+}
+
+/// Press feedback that mimics the bubble/lift of a native glass button:
+/// a small scale-up + upward translate on press, snapped with a spring so
+/// the release bounces back. Used on plain rows where we want the tactile
+/// feel without the full glass material.
+private struct LiftPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 1.02 : 1.0)
+            .offset(y: configuration.isPressed ? -2 : 0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6),
+                       value: configuration.isPressed)
     }
 }
 
