@@ -75,33 +75,22 @@ struct FilePickerView: View {
             }
 
             HStack(spacing: 16) {
-                Button {
+                // Primary action: prominent glass with brand tint.
+                Button("New Board") {
                     newBoardDocument = BoardExportDocument(elements: [])
                     showingNewBoardExporter = true
-                } label: {
-                    Text("New Board")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(DesignSystem.Colors.primary)
-                        .padding(.horizontal, 32)
-                        .padding(.vertical, 12)
-                        .background(DesignSystem.Colors.tertiary, in: .rect(cornerRadius: 8))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .tint(DesignSystem.Colors.tertiary)
 
-                Button {
+                // Secondary action: translucent glass.
+                Button("Open Board") {
                     showingBoardPicker = true
-                } label: {
-                    Text("Open Board")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(DesignSystem.Colors.tertiary)
-                        .padding(.horizontal, 32)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
+                .controlSize(.large)
+                .tint(DesignSystem.Colors.tertiary)
             }
 
             recentBoardsSection
