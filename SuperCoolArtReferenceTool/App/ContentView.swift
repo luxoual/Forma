@@ -25,7 +25,6 @@ struct ContentView: View {
     
     // Settings
     @State private var showGrid = true
-    @State private var toolbarSide: ToolbarSide = .left
     @State private var canvasColor: Color = .white
     
     @State private var snapshotToken: UUID?
@@ -47,7 +46,7 @@ struct ContentView: View {
     @State private var boardErrorMessage = ""
 
     var body: some View {
-        ZStack {
+        NavigationStack {
             BoardCanvasView(
                 activeTool: $activeTool,
                 externalInsertURLs: $urlsToInsert,
@@ -70,17 +69,8 @@ struct ContentView: View {
                     }
                 }
             )
-            
-            CanvasOverlayLayout(
-                side: toolbarSide,
-                activeTool: $activeTool,
-                onBack: handleBack,
-                onUndo: { undoTrigger = UUID() },
-                onRedo: { redoTrigger = UUID() },
-                onAddItem: openImageImporter,
-                onSettings: { showingSettings = true },
-                canvasName: currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
-            )
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { canvasToolbar }
         }
         .fileImporter(
             isPresented: $importerPresented,
@@ -98,7 +88,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingSettings) {
-            CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
+            CanvasSettingsView(showGrid: $showGrid, canvasColor: $canvasColor)
         }
         .alert("Save Failed", isPresented: $showSaveError) {
             Button("Discard & Leave", role: .destructive) { onBack() }
@@ -141,6 +131,94 @@ struct ContentView: View {
         }
     }
     
+    private var boardName: String {
+        currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
+    }
+
+    /// The canvas nav-bar toolbar.
+    ///
+    /// - Back chevron (leading).
+    /// - Board name in `.principal`, wrapped in its own `.glassEffect()`
+    ///   capsule so it stays legible regardless of canvas color showing
+    ///   through the translucent nav bar.
+    /// - Tool selection as a segmented `Picker` — iOS 26's segmented control
+    ///   has the native morphing/bubble selection indicator (the animation
+    ///   you see in Camera-mode pickers), so no manual matched-geometry.
+    /// - History and add as separate items, split by `ToolbarSpacer` so they
+    ///   render as their own glass capsules.
+    /// - Every button uses `Label("Title", systemImage: …)` (not bare
+    ///   `Image + accessibilityLabel`) so the system overflow menu can
+    ///   populate its dropdown from the titles when the bar collapses.
+    @ToolbarContentBuilder
+    private var canvasToolbar: some ToolbarContent {
+        // Back chevron + board name share one leading ToolbarItemGroup pill
+        // — same pattern as the tools group on the right. The boardName is a
+        // disabled plain Button (no inner `.buttonStyle(.glass)`), so the
+        // group's outer pill is the only glass surface, no nesting.
+        ToolbarItemGroup(placement: .topBarLeading) {
+            Button(action: handleBack) {
+                Label("Back to home", systemImage: "chevron.left")
+            }
+
+            Button { } label: {
+                Text(boardName)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 220)
+            }
+            .tint(DesignSystem.Colors.tertiary)
+            .allowsHitTesting(false)
+            .accessibilityRemoveTraits(.isButton)
+        }
+
+        // Tools as discrete Buttons in a single ToolbarItemGroup — one glass
+        // capsule, three buttons inside, same shape/feel as the history group.
+        // Active tool reads via tertiary `.tint` (passing nil for inactive
+        // keeps the system default).
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button { activeTool = .pointer } label: {
+                Label("Pointer", systemImage: "arrow.up.left")
+            }
+            .tint(activeTool == .pointer ? DesignSystem.Colors.tertiary : nil)
+
+            Button { activeTool = .group } label: {
+                Label("Group", systemImage: "rectangle.dashed")
+            }
+            .tint(activeTool == .group ? DesignSystem.Colors.tertiary : nil)
+
+            Button { activeTool = .text } label: {
+                Label("Text", systemImage: "textformat")
+            }
+            .tint(activeTool == .text ? DesignSystem.Colors.tertiary : nil)
+        }
+
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button { undoTrigger = UUID() } label: {
+                Label("Undo", systemImage: "arrow.uturn.backward")
+            }
+            Button { redoTrigger = UUID() } label: {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+            }
+        }
+
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+
+        ToolbarItem(placement: .topBarTrailing) {
+            Button(action: openImageImporter) {
+                Label("Add", systemImage: "plus")
+            }
+        }
+
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { showingSettings = true } label: {
+                Label("Settings", systemImage: "gear")
+            }
+        }
+    }
+
     private func openImageImporter() {
         Logger.importer.notice("Add Item tapped")
         importerPresented = true

@@ -19,7 +19,6 @@ struct CanvasSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @Binding var showGrid: Bool
-    @Binding var toolbarSide: ToolbarSide
     @Binding var canvasColor: Color
 
     /// `.dark` over a dark canvas, `.light` over a light one (Rec. 709 luminance).
@@ -37,11 +36,6 @@ struct CanvasSettingsView: View {
                     ColorPicker("Canvas Color", selection: $canvasColor, supportsOpacity: false)
 
                     Toggle("Show Grid", isOn: $showGrid)
-
-                    Picker("Toolbar Position", selection: $toolbarSide) {
-                        Text("Left").tag(ToolbarSide.left)
-                        Text("Right").tag(ToolbarSide.right)
-                    }
                 }
                 .listRowBackground(Color.clear)
 
@@ -67,15 +61,9 @@ struct CanvasSettingsView: View {
     }
 }
 
-enum ToolbarSide: String, Codable {
-    case left
-    case right
-}
-
 #Preview {
     @Previewable @State var showGrid = true
-    @Previewable @State var toolbarSide = ToolbarSide.left
     @Previewable @State var canvasColor = Color.white
 
-    CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
+    CanvasSettingsView(showGrid: $showGrid, canvasColor: $canvasColor)
 }
