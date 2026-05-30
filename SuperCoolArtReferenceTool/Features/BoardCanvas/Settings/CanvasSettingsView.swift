@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import UIKit
 
 /// Settings sheet for canvas options.
 ///
@@ -17,15 +16,18 @@ import UIKit
 /// match the canvas, keeping text legible and avoiding a flashbang.
 struct CanvasSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.self) private var environment
 
     @Binding var showGrid: Bool
     @Binding var canvasColor: Color
 
     /// `.dark` over a dark canvas, `.light` over a light one (Rec. 709 luminance).
+    /// Uses `Color.Resolved` so we don't need to bridge through UIKit.
     private var canvasColorScheme: ColorScheme {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        UIColor(canvasColor).getRed(&r, green: &g, blue: &b, alpha: &a)
-        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        let rgb = canvasColor.resolve(in: environment)
+        let luminance = 0.2126 * Double(rgb.red)
+            + 0.7152 * Double(rgb.green)
+            + 0.0722 * Double(rgb.blue)
         return luminance < 0.5 ? .dark : .light
     }
 

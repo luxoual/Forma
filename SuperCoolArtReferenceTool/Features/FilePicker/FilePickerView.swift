@@ -94,7 +94,10 @@ struct FilePickerView: View {
                 .tint(DesignSystem.Colors.tertiary)
             }
 
-            recentBoardsSection
+            RecentBoardsList(
+                recents: recentsManager.validEntries(limit: 5),
+                onOpen: openRecentBoard
+            )
         }
         .fileImporter(
             isPresented: $showingBoardPicker,
@@ -127,63 +130,6 @@ struct FilePickerView: View {
         }
     }
 
-    @ViewBuilder
-    private var recentBoardsSection: some View {
-        let recents = recentsManager.validEntries(limit: 5)
-        if !recents.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Recent Boards")
-                    .font(.headline)
-                    .foregroundStyle(DesignSystem.Colors.text)
-
-                VStack(spacing: 0) {
-                    ForEach(recents) { entry in
-                        let isFirst = entry.id == recents.first?.id
-                        let isLast = entry.id == recents.last?.id
-                        Button {
-                            openRecentBoard(entry)
-                        } label: {
-                            HStack {
-                                Image(systemName: "doc.fill")
-                                    .foregroundStyle(DesignSystem.Colors.tertiary)
-                                    .frame(width: 24)
-
-                                Text(entry.name)
-                                    .foregroundStyle(DesignSystem.Colors.text)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-
-                                Spacer()
-
-                                Text(entry.lastOpened.formatted(.relative(presentation: .named)))
-                                    .font(.caption)
-                                    .foregroundStyle(DesignSystem.Colors.secondary)
-                                    .lineLimit(1)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            .frame(maxWidth: .infinity)
-                            .background(
-                                DesignSystem.Colors.secondary.opacity(0.15),
-                                in: .rect(
-                                    topLeadingRadius: isFirst ? 10 : 0,
-                                    bottomLeadingRadius: isLast ? 10 : 0,
-                                    bottomTrailingRadius: isLast ? 10 : 0,
-                                    topTrailingRadius: isFirst ? 10 : 0
-                                )
-                            )
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(LiftPressStyle())
-                    }
-                }
-                .padding(4)
-            }
-            .frame(maxWidth: 500)
-            .padding(.top, 8)
-        }
-    }
-
     private func openBoard(at url: URL) {
         Task {
             do {
@@ -209,20 +155,6 @@ struct FilePickerView: View {
         }
         // `record(url:)` refreshes the bookmark as a side-effect, so stale entries heal on open.
         openBoard(at: resolved.url)
-    }
-}
-
-/// Press feedback that mimics the bubble/lift of a native glass button:
-/// a small scale-up + upward translate on press, snapped with a spring so
-/// the release bounces back. Used on plain rows where we want the tactile
-/// feel without the full glass material.
-private struct LiftPressStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 1.02 : 1.0)
-            .offset(y: configuration.isPressed ? -2 : 0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.6),
-                       value: configuration.isPressed)
     }
 }
 

@@ -7,14 +7,10 @@ struct CanvasSelectionActionBar: View {
     let onDelete: () -> Void
 
     var body: some View {
-        Button(role: .destructive, action: onDelete) {
-            Image(systemName: "trash")
-                .font(.system(size: 18, weight: .medium))
-        }
-        .buttonStyle(.glass)
-        .tint(.red)
-        .controlSize(.large)
-        .accessibilityLabel("Delete")
+        Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+            .buttonStyle(.glass)
+            .tint(.red)
+            .controlSize(.large)
     }
 }
 

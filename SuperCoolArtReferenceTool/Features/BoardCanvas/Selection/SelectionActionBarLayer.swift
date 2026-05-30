@@ -22,21 +22,27 @@ struct SelectionActionBarLayer: View {
 
     private var isVisible: Bool { boundingBox != nil && !isInteracting }
 
-    private var center: CGPoint {
-        guard let box = boundingBox else { return lastCenter }
+    /// Live center for the *current* selection — `nil` when there's nothing
+    /// selected. Kept independent of `lastCenter` to avoid a self-dependency:
+    /// `onChange` watches the bounding box, not a value that depends on its
+    /// own cached output.
+    private var liveCenter: CGPoint? {
+        guard let box = boundingBox else { return nil }
         return CGPoint(x: box.midX * scale + offset.width,
                        y: box.maxY * scale + offset.height + 32)
     }
 
+    private var displayCenter: CGPoint { liveCenter ?? lastCenter }
+
     var body: some View {
         CanvasSelectionActionBar(onDelete: onDelete)
-            .position(center)
+            .position(displayCenter)
             .opacity(isVisible ? 1 : 0)
             .allowsHitTesting(isVisible)
             .animation(.snappy(duration: 0.2), value: isVisible)
-            .animation(.snappy(duration: 0.2), value: center)
-            .onChange(of: center) { _, new in
-                if isVisible { lastCenter = new }
+            .animation(.snappy(duration: 0.2), value: displayCenter)
+            .onChange(of: liveCenter) { _, new in
+                if let new { lastCenter = new }
             }
     }
 }
