@@ -59,12 +59,18 @@ struct TextElementView: View {
             // layout midpoint that the parent's `.position(...)` is
             // already centering at the screen target.
             .scaleEffect(scale, anchor: .center)
-            .onGeometryChange(for: CGSize.self, of: { $0.size }) { newSize in
-                // newSize is the BASE/world-unit size now (scaleEffect
-                // doesn't change layout). Cache directly into worldRect
-                // for hit-testing / bbox math.
-                if placed.worldRect.size != newSize {
-                    placed.worldRect.size = newSize
+            // Round to integer points inside `of:` so the observer itself
+            // only fires when the rounded value changes — sub-pixel CoreText
+            // hinting fluctuations during a resize drag don't trigger the
+            // action at all, instead of just being filtered before the write.
+            // Drops the per-frame action firing while keeping bbox tracking.
+            .onGeometryChange(
+                for: CGSize.self,
+                of: { CGSize(width: $0.size.width.rounded(),
+                             height: $0.size.height.rounded()) }
+            ) { rounded in
+                if placed.worldRect.size != rounded {
+                    placed.worldRect.size = rounded
                 }
             }
             // Focus + commit-on-end-editing are handled inside the
