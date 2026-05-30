@@ -15,8 +15,8 @@ extension DesignSystem{
         /// Secondary color - #535353 (Medium gray)
         static let secondary = Color(red: 83/255, green: 83/255, blue: 83/255)
         
-        /// Tertiary color - #5E9CFC (Light blue)
-        static let tertiary = Color(red: 94/255, green: 156/255, blue: 252/255)
+        /// Tertiary color - #5E9CFC (Light blue)Ij
+        static let tertiary = Color(red: 57/255, green: 119/255, blue: 248/255)
         
         /// Text color - #FFFFFF (White)
         static let text = Color.white

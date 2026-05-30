@@ -7,7 +7,10 @@ struct CanvasSelectionActionBar: View {
     let onDelete: () -> Void
 
     var body: some View {
+        // Title is kept for VoiceOver, then hidden visually so only the
+        // trash icon shows in the button.
         Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+            .labelStyle(.iconOnly)
             .buttonStyle(.glass)
             .tint(.red)
             .controlSize(.large)
