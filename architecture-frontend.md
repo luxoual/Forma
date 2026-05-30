@@ -182,12 +182,7 @@ struct PlacedImage: Identifiable {
 
 **File Loading:**
 
-Async loading via `NSItemProvider` extensions (file-scope):
-- `loadFileURLCompat(for:)` - tries file representation
-- `loadDataAsTempFileCompat(for:)` - fallback to data, writes temp file
-
-**Code Duplication Note:**
-File loading logic is duplicated between `BoardCanvasView.swift` and `InsertFileControl.swift`. Should be extracted to shared utility file (e.g., `FileImportHelpers.swift`).
+Shared file-loading helpers live in `Features/BoardCanvas/Import/ItemProviderHelpers.swift` — `loadURLsFromProviders(_:preferredTypes:)` plus `NSItemProvider` extensions (`loadFileURLCompat(for:)`, `loadDataAsTempFileCompat(for:)`). Both `BoardCanvasView` (drop handler) and `FilePickerView` (landing drop zone) call into this shared helper. The earlier duplicate copy in `InsertFileControl.swift` was deleted along with that unused control.
 
 ---
 
@@ -210,12 +205,11 @@ Lightweight root view that routes between the landing screen and the canvas.
 - Injected through the environment at the app root via `.environment(openHandler)` and read via `@Environment(AppOpenHandler.self)` in `RootView` / `ContentView`
 
 **ContentView:**
-- Hosts `BoardCanvasView` in a `ZStack`
-- Overlays `CanvasOverlayLayout` which places `CanvasStatusBar` (top-left, fixed), `CanvasToolbar` (vertically centered, switches sides), and `CanvasSettingsButton` (bottom-left, fixed) on the canvas
+- Wraps `BoardCanvasView` in a `NavigationStack` and attaches `CanvasNavigationToolbar` via `.toolbar { ... }`. The nav bar renders translucent Liquid Glass over the canvas, which extends edge-to-edge underneath.
 - Manages `@State private var urlsToInsert: [URL]?` binding for file picker integration
 - On `.onAppear`, forwards `initialURLs` to `urlsToInsert` for the canvas to consume
-- Presents `.fileImporter` when toolbar "Add Item" is tapped
-- Presents `.sheet` with `CanvasSettingsView` when settings button is tapped
+- Presents `.fileImporter` when the toolbar's add button is tapped
+- Presents `.sheet` with `CanvasSettingsView` when the toolbar's settings button is tapped
 
 **File Picker Integration:**
 - Toolbar's `onAddItem` callback sets `importerPresented = true`
@@ -242,70 +236,94 @@ Lightweight root view that routes between the landing screen and the canvas.
 
 ---
 
-## Canvas UI Overlay System
+## Canvas Chrome (Native `.toolbar`)
 
-Decision Status: **Implemented**
+Decision Status: **Implemented (native iPadOS 26 Liquid Glass)**
 
-### Canvas Toolbar (HUD)
+### Canvas Navigation Toolbar
 
 **Status: Implemented**
 
-**File:** `CanvasToolbar.swift`
+**File:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`
 
-The Canvas Toolbar provides tool selection and canvas actions through a persistent left-side overlay.
+All canvas chrome (back, board name, tools, history, add, settings) now lives in a single native SwiftUI `.toolbar` attached to a `NavigationStack` wrapping `BoardCanvasView`. The earlier floating overlay system (`CanvasOverlayLayout` + `CanvasToolbar` + `CanvasStatusBar` + `CanvasSettingsButton`) has been removed.
 
-**Components:**
+Native `.toolbar` gives the per-button press feedback, glass material, group capsules via `ToolbarItemGroup`, separation via `ToolbarSpacer`, and automatic overflow into a `•••` menu when the bar narrows — all behaviors we were previously hand-rolling.
 
-- `CanvasToolbar`: Main toolbar view component
-- `ToolbarButton`: Private reusable button component with active state support
-- `CanvasTool`: Enum defining available tools (`.pointer`, `.group`, `.text`) — lives in its own file `CanvasTool.swift`
+**Structure (`CanvasNavigationToolbar: ToolbarContent`):**
 
-**Visual Design:**
-
-- **Position**: Centered vertically on left side (16pt leading padding)
-- **Fixed width**: 68pt (44pt button + 12pt padding each side)
-- **Styling**: 
-  - Background: `DesignSystem.Colors.primary` (#191919)
-  - Inactive icons: `DesignSystem.Colors.secondary` (#535353)
-  - Active state: `DesignSystem.Colors.tertiary` (#86B8FE) background with primary-colored icon
-  - Corner radius: 12pt (toolbar container), 8pt (active button indicator)
-  - Shadow: `color: .black.opacity(0.3), radius: 8, x: 2, y: 2`
-- **Touch targets**: 44pt × 44pt (Apple's recommended minimum)
-- **Spacing**: 12pt between buttons, dividers at 8pt total height (1pt line + 4pt padding each side)
-
-**Tool Groups:**
-
-1. **Selection Tools** (mutually exclusive, with active state):
-   - Pointer tool (`arrow.up.left`) - default
-   - Group tool (`rectangle.dashed`)
-   - Text tool (`textformat`) — places a new text element at the tap point
-
-2. **History Actions** (single-action buttons, no active state):
-   - Undo (`arrow.uturn.backward`)
-   - Redo (`arrow.uturn.forward`)
-
-3. **Content Actions**:
-   - Add new item (`plus`)
-
-**Active State Animation:**
-
-Uses SwiftUI's `matchedGeometryEffect` to create smooth transitions between active tools:
-
-```swift
-@Namespace private var toolNamespace
-
-// In ToolbarButton, applied to active tool background
-.matchedGeometryEffect(id: "activeButton", in: toolNamespace)
-.animation(.smooth(duration: 0.3), value: isActive)
+```
+[Leading group]                                            [Trailing items]
+< (back)  |  BoardName pill        [Pointer | Group | Text] | [Undo | Redo] | [Add] | [Settings]
 ```
 
-**Integration:**
+- **Leading `ToolbarItemGroup(.topBarLeading)`** — back chevron + board name pill share one glass capsule. Board name is a non-interactive glass button (see "Board name pill" below) inside the group, so the group's outer pill is the only glass surface — no nesting.
+- **Trailing groups + `ToolbarSpacer(.fixed)`** between them so each group renders as its own glass capsule (tools, history, add, settings). The spacer is what visually separates the capsules.
+- **Every button uses `Label("Title", systemImage:)`** so the system overflow menu can populate its dropdown with real titles when the bar collapses on narrow widths.
 
-- `ContentView` manages `@State private var activeTool: CanvasTool = .pointer`
-- Toolbar binds via `@Binding var activeTool: CanvasTool`
-- `ContentView` passes `$activeTool` to `BoardCanvasView` so the canvas knows which tool is active
-- Callbacks for actions: `onUndo`, `onRedo`, `onAddItem`
-- `onAddItem` opens `.fileImporter` for selecting images/GIFs
+**Tools group (active-state indicator):**
+
+```swift
+ToolbarItemGroup(placement: .topBarTrailing) {
+    toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
+    toolButton(.group,   label: "Group",   icon: "rectangle.dashed")
+    toolButton(.text,    label: "Text",    icon: "textformat")
+}
+
+private func toolButton(_ tool: CanvasTool, label: String, icon: String) -> some View {
+    let isActive = activeTool == tool
+    return Button { activeTool = tool } label: {
+        Label(label, systemImage: icon)
+    }
+    .tint(isActive ? DesignSystem.Colors.tertiary : nil)
+    .accessibilityAddTraits(isActive ? [.isSelected] : [])
+}
+```
+
+Active state is communicated via tertiary `.tint` *and* the `.isSelected` accessibility trait. Color-only would leave VoiceOver users without an indicator. No `matchedGeometryEffect` — the system handles all transitions natively, and discrete buttons participate in the system overflow menu (a segmented `Picker` does not).
+
+**Board name pill — disabled-button trick:**
+
+A bare `Text(boardName).glassEffect()` placed in a leading toolbar slot is squeezed by the system to roughly chevron width — it doesn't respect `frame(maxWidth:)` for raw text views. Wrapping the text in a non-interactive glass button makes the system treat it as a real toolbar control, which honors the size:
+
+```swift
+Button { } label: {
+    Text(boardName)
+        .font(.headline)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(maxWidth: 220)
+}
+.tint(DesignSystem.Colors.tertiary)
+.allowsHitTesting(false)              // non-tappable
+.accessibilityRemoveTraits(.isButton) // VoiceOver reads it as a label
+```
+
+Pre-PR this pill lived in a separate floating `CanvasStatusBar` overlay (now removed).
+
+**Integration (`ContentView`):**
+
+```swift
+NavigationStack {
+    BoardCanvasView(...)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            CanvasNavigationToolbar(
+                boardName: boardName,
+                activeTool: $activeTool,
+                onBack: handleBack,
+                onUndo: { undoTrigger = UUID() },
+                onRedo: { redoTrigger = UUID() },
+                onAddItem: openImageImporter,
+                onSettings: { showingSettings = true }
+            )
+        }
+}
+```
+
+`ContentView` no longer hosts a custom overlay layer; the nav bar renders translucent glass over `BoardCanvasView`, which extends edge-to-edge underneath.
+
+**Settings sheet** is still presented from `ContentView` via `.sheet(isPresented: $showingSettings)` when the gear toolbar item fires. See "Canvas Settings Sheet" below.
 
 ---
 
@@ -534,21 +552,47 @@ ContentView                  — triggers undo/redo from toolbar
 
 **Status: Implemented**
 
-**File:** `CanvasSelectionActionBar.swift`
+**Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`
 
-Floating action bar that appears next to the current canvas selection, hosting selection-scoped actions (currently: delete). Chosen over a context menu after trials with `.contextMenu(menuItems:preview:)` — the default preview couldn't elevate the whole group, and a custom preview couldn't blur non-source items. An action bar gives Figma-style affordances that scale to more actions without preview constraints.
+Floating action bar that appears next to the current canvas selection, hosting selection-scoped actions (currently: delete). Chosen over a context menu after trials with `.contextMenu(menuItems:preview:)` — the default preview couldn't elevate the whole group, and a custom preview couldn't blur non-source items.
 
-**Visual Design:**
-- Horizontal `HStack` containing a 44×44pt trash `Button` with `.buttonStyle(.plain)`
-- Trash icon: `DesignSystem.Colors.destructive` (#FE8686)
-- Background: `DesignSystem.Colors.primary`, 10pt corner radius, 4pt horizontal padding
-- Shadow: `color: .black.opacity(0.3), radius: 8, x: 2, y: 2`
-- `.accessibilityLabel("Delete")` on the button
+**Visual Design (`CanvasSelectionActionBar`):**
 
-**Positioning (in `BoardCanvasView`):**
-- Rendered inside the canvas ZStack only when `selectionBoundingBox()` returns non-nil **and** no gesture is active (`!isDragging && !isResizing && !isGroupResizing && !isMarqueeing`)
-- Screen position: `x = bbox.midX * scale + offset.width`, `y = bbox.maxY * scale + offset.height + 24` — centered under the selection bounding box
-- `.zIndex(Double(Int.max))` so it always sits above canvas items
+```swift
+Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+    .labelStyle(.iconOnly)     // visible: just the trash icon
+    .buttonStyle(.glass)       // native Liquid Glass
+    .tint(.red)
+    .controlSize(.large)
+```
+
+Title is preserved for VoiceOver but hidden visually via `.labelStyle(.iconOnly)`. The native glass button supplies its own material, press animation, and shape — none of the previous hand-rolled `RoundedRectangle` + shadow chrome.
+
+**Positioning — `SelectionActionBarLayer` (persistent + animated):**
+
+The bar is **permanently mounted** in `BoardCanvasView`'s ZStack via `SelectionActionBarLayer`, not conditionally inserted. Reason: a Liquid Glass backdrop filter on a freshly inserted, top-`zIndex`, `.position()`-ed view captures its backdrop *before* the canvas beneath it has settled in that compositing pass — caches the wrong light/dark variant until an unrelated re-composite forces a re-sample. The "tap again to fix it" behavior. A persistent view with stable identity never takes that bad first sample.
+
+Layer responsibilities:
+- **Show/hide** — opacity 1/0 driven by `isVisible = boundingBox != nil && !isInteracting`, where `isInteracting = isDragging || isResizing || isGroupResizing || isMarqueeing`.
+- **Position** — `displayCenter = isVisible ? liveCenter : lastCenter`. Parking at `lastCenter` while interacting prevents re-publishing a moving position every gesture frame, which would otherwise spawn a fresh `.snappy` animation per frame on the (invisible) bar — invisible but real frame-budget cost that showed up as text-resize jitter.
+- **Position tracking** — `@State private var lastCenter` is updated via `.onChange(of: liveCenter)`, guarded by `isVisible` so it doesn't drift during interactions. Live center comes from `boundingBox.midX/maxY * scale + offset (+ 32pt gap)`.
+- **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar snaps to/from hidden instantly at drag start/end instead of animating opacity + position for 0.2s on top of the gesture (the source of "first ~0.2s of every drag is jittery" before this fix).
+
+Host wiring (`BoardCanvasView`):
+
+```swift
+SelectionActionBarLayer(
+    boundingBox: selectionBoundingBox(),
+    scale: scale,
+    offset: offset,
+    isInteracting: selection.isDragging
+        || selection.isResizing
+        || selection.isGroupResizing
+        || selection.isMarqueeing,
+    onDelete: deleteSelection
+)
+.zIndex(Double(Int.max))
+```
 
 **Delete Flow:**
 - `deleteSelection()` fetches authoritative `CMCanvasElement`s from `LocalBoardStore` via `elements(for:)` before snapshotting — avoids fabricating elements from the view's `placedImages` cache, which could be stale
@@ -597,13 +641,19 @@ sizedContent           // base-scale layout: font, frame, wrap all in world unit
     .padding(4)
     .overlay { ... }   // multi-select dim border (cosmetic, scales with text)
     .scaleEffect(scale, anchor: .center)
-    .onGeometryChange(...) { newSize in
+    .onGeometryChange(
+        for: CGSize.self,
+        of: { CGSize(width: $0.size.width.rounded(),
+                     height: $0.size.height.rounded()) }
+    ) { rounded in
         // newSize is BASE/world-unit size (scaleEffect doesn't change layout).
-        if placed.worldRect.size != newSize { placed.worldRect.size = newSize }
+        if placed.worldRect.size != rounded { placed.worldRect.size = rounded }
     }
 ```
 
 `onGeometryChange` is the loop that keeps `worldRect.size` in sync with the actual rendered text — used by hit-testing, marquee, group bbox math.
+
+**Rounding inside `of:` (not the action closure):** during a resize drag, intermediate `fontSize`/`wrapWidth` values hit CoreText sub-pixel hinting, which fluctuates the measured size by fractions of a point per frame. Without filtering, every fluctuation fires `onGeometryChange` → writes the binding → re-renders → re-measures → visible jitter. Rounding inside `of:` means the observer only fires when the *rounded* value changes, so sub-pixel noise doesn't trigger the action at all. The bbox still tracks real drag-driven size changes (which are multi-point deltas).
 
 **Auto-width vs wrap-mode rendering:**
 
@@ -796,90 +846,65 @@ Result: the snapshot includes everything the user just typed, no matter how quic
 
 ---
 
-### Canvas Settings Button
+### Canvas Settings Sheet
 
-**Status: Implemented**
+**Status: Implemented (native Liquid Glass material)**
 
-**File:** `CanvasSettingsButton.swift`
+**File:** `Features/BoardCanvas/Settings/CanvasSettingsView.swift`
 
-A standalone settings button positioned dynamically at the bottom corner of the canvas (left or right based on user preference), separate from the main toolbar but matching its visual styling.
+Settings is now a `ToolbarItem` in `CanvasNavigationToolbar` (the gear button), opening a translucent material sheet over the canvas. The standalone `CanvasSettingsButton.swift` and `CanvasOverlayLayout.swift` have been removed.
 
-**Visual Design:**
+**Structure:**
 
-- **Position**: Bottom-left corner with 16pt padding from edges — always fixed to the left, independent of `toolbarSide` setting
-- **Fixed width**: 68pt (matches toolbar width)
-- **Styling**:
-  - Background: `DesignSystem.Colors.primary` (#191919)
-  - Icon: `gearshape.fill` SF Symbol (size 20pt, medium weight)
-  - Icon color: `DesignSystem.Colors.secondary` (#535353)
-  - Corner radius: 12pt (matches toolbar container)
-  - Padding: 12pt (matches toolbar padding)
-  - Shadow: `color: .black.opacity(0.3), radius: 8, x: 2, y: 2`
-- **Touch target**: 44pt × 44pt
+```swift
+NavigationStack {
+    Form {
+        Section("Canvas") {
+            ColorPicker("Canvas Color", selection: $canvasColor, supportsOpacity: false)
+            Toggle("Show Grid", isOn: $showGrid)
+        }
+        .listRowBackground(Color.clear)
 
-**Integration:**
+        Section("About") {
+            LabeledContent("Version", value: "1.0.0")
+        }
+        .listRowBackground(Color.clear)
+    }
+    .scrollContentBackground(.hidden)        // reveal the sheet glass
+    .navigationTitle("Settings")
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+}
+.tint(DesignSystem.Colors.tertiary)
+.presentationBackground(.thinMaterial)       // translucent frosted-glass sheet
+.preferredColorScheme(canvasColorScheme)     // match canvas darkness
+```
 
-- Positioned in `CanvasOverlayLayout`, always bottom-left
-- Position is fixed and does not change with `toolbarSide`
-- Opens `.sheet` with `CanvasSettingsView` when tapped
-- `@State private var showingSettings` controls sheet presentation
-- Callback: `onTap: () -> Void`
+Key decisions:
 
-**Settings Sheet:**
+- **`.presentationBackground(.thinMaterial)`** — gives the sheet a translucent frosted-glass surface that blurs the canvas behind it. A sheet sits behind a dimming scrim, so a true Liquid Glass `.glassEffect()` modifier can't sample the live canvas the way the toolbar buttons can; the material is the correct sheet-level equivalent.
+- **`.scrollContentBackground(.hidden)`** + `.listRowBackground(Color.clear)` on each section — strips `Form`'s opaque grouped background and clears row backgrounds so the presentation material shows through everywhere, not just margins.
+- **`canvasColorScheme` (light/dark from canvas luminance)** — keeps the panel's text/control color scheme matched to the canvas behind it, so opening Settings over a dark canvas doesn't flash a bright panel. Computed from `Color.Resolved` via `@Environment(\.self)` (Rec. 709 luminance, threshold 0.5):
 
-- **File:** `CanvasSettingsView.swift`
-- Navigation-based settings interface with full dark theme styling
-- **Functional Settings:**
-  - **Canvas Color Picker** - Changes the canvas background color via a custom pill-shaped color swatch that opens the system color picker
-  - **Show Grid Toggle** - Controls canvas grid visibility via binding to `BoardCanvasView`
-  - **Toolbar Position Picker** - Switches `CanvasToolbar` between left/right side (status bar and settings button remain fixed)
-- "Done" button styled with tertiary color to dismiss
-- **About Section** - Version info display
+  ```swift
+  private var canvasColorScheme: ColorScheme {
+      let rgb = canvasColor.resolve(in: environment)
+      let lum = 0.2126 * Double(rgb.red) + 0.7152 * Double(rgb.green) + 0.0722 * Double(rgb.blue)
+      return lum < 0.5 ? .dark : .light
+  }
+  ```
 
-**Settings Functionality:**
+- **Native color well** — replaced the previous invisible-`ColorPicker`-over-a-pill hack with the standard `ColorPicker("Canvas Color", selection:, supportsOpacity: false)`. Version row uses native `LabeledContent`.
+- **Single `.tint(DesignSystem.Colors.tertiary)`** at the `NavigationStack` propagates to the toggle, color well, and Done button — no per-element foreground/tint overrides.
 
-1. **Canvas Color:**
-   - Binding: `@Binding var canvasColor: Color`
-   - Connected to `BoardCanvasView.canvasColor` binding, applied as `.background(canvasColor)` on the canvas ZStack
-   - Custom pill-shaped UI: a `RoundedRectangle` (48×28pt) filled with the current color, with an invisible `ColorPicker` scaled on top (`.opacity(0.015)`, `.scaleEffect(2.0)`)
-   - Pill set to `.allowsHitTesting(false)` so taps pass through to the picker; hit area constrained to pill shape via `.contentShape(RoundedRectangle)` on the container
-   - `supportsOpacity: false` — solid colors only
-   - Default: `.white`
+**Removed settings:**
 
-2. **Grid Toggle:**
-   - Binding: `@Binding var showGrid: Bool`
-   - Connected to `BoardCanvasView.showGrid` binding
-   - Instantly shows/hides grid lines on canvas
-   - Default: `true`
+The "Toolbar Position" picker (`left` / `right`) and the `ToolbarSide` enum were dropped along with the floating overlay system — the toolbar is now native top-bar and side-of-canvas placement isn't a meaningful knob anymore.
 
-3. **Toolbar Position:**
-   - Enum: `ToolbarSide` (`.left` or `.right`)
-   - Controls position of `CanvasToolbar` only; `CanvasStatusBar` (top-left) and `CanvasSettingsButton` (bottom-left) are always fixed to the left
-   - `ContentView` passes `toolbarSide` to `CanvasOverlayLayout`, which derives `edge`/`frameAlignment` and applies them only to the toolbar
-   - Default: `.left`
-   - Changes apply immediately, persists during session
+**Functional Settings:**
 
-**Dynamic UI Layout:**
-
-**File:** `CanvasOverlayLayout.swift`
-
-A single reusable view that composes all canvas overlay UI elements with fixed or side-aware positioning:
-- Takes `side: ToolbarSide` and derives `edge: Edge.Set` and `frameAlignment: Alignment` — applied **only** to `CanvasToolbar`
-- `CanvasStatusBar` (back button + board name pill) is always anchored **top-left**, 16pt from edges
-- `CanvasToolbar` (vertically centered) switches left/right based on `side`
-- `CanvasSettingsButton` is always anchored **bottom-left**, 16pt from edges
-- All elements maintain 16pt padding from edges
-
-**Visual Styling:**
-
-Settings sheet fully integrated with design system:
-- Background: `DesignSystem.Colors.primary` + black
-- Navigation bar: Dark with primary background
-- Primary labels: `DesignSystem.Colors.text` (white)
-- Secondary text/values: `DesignSystem.Colors.secondary` (gray)
-- Interactive accents: `DesignSystem.Colors.tertiary` (blue toggles, picker tint, Done button)
-- Section rows use dark backgrounds
-- Dark color scheme applied to navigation
+1. **Canvas Color** — `@Binding var canvasColor: Color`, applied via `.background(canvasColor)` on the canvas ZStack. Default `.white`.
+2. **Show Grid** — `@Binding var showGrid: Bool`, drives the grid `Canvas` layer in `BoardCanvasView`. Default `true`.
 
 ---
 
@@ -894,11 +919,11 @@ Central design token system for consistent styling across the application.
 **Color Palette:**
 
 ```swift
-DesignSystem.Colors.primary     // #191919 (25, 25, 25) - Dark gray
-DesignSystem.Colors.secondary   // #535353 (83, 83, 83) - Medium gray
-DesignSystem.Colors.tertiary    // #86B8FE (134, 184, 254) - Light blue
+DesignSystem.Colors.primary     // #191919 (25, 25, 25)   - Dark gray
+DesignSystem.Colors.secondary   // #535353 (83, 83, 83)   - Medium gray
+DesignSystem.Colors.tertiary    // #3977F8 (57, 119, 248) - Saturated blue
 DesignSystem.Colors.text        // #FFFFFF (255, 255, 255) - White
-DesignSystem.Colors.destructive // #FE8686 (254, 134, 134) - Red (same S/L as tertiary)
+DesignSystem.Colors.destructive // #FE8686 (254, 134, 134) - Red
 ```
 
 **Usage:**
@@ -933,64 +958,62 @@ This applies to any other design primitive that lives (or should live) in the de
 
 ---
 
-### File Import Controls
-
-**Status: Implemented (Standalone)**
-
-**File:** `InsertFileControl.swift`
-
-Reusable SwiftUI component for importing files via file picker or drag-and-drop.
-
-**Features:**
-- Button interface with "Insert File" label and tray icon
-- SwiftUI `.fileImporter` for manual file selection
-- `.onDrop` support for drag-and-drop with visual feedback
-- Border highlight when drop is targeted
-- Supports `UTType.image` and `UTType.gif`
-- Multiple file selection enabled
-- Async file loading with automatic fallback from file representation → data representation → temp file
-
-**API:**
-```swift
-InsertFileControl(onImportURLs: ([URL]) -> Void)
-```
-
-**Integration Status:**
-- Component exists and is functional in isolation
-- **Not currently used** in main canvas flow (toolbar uses direct `.fileImporter` instead)
-- Could be used in future file-picking contexts
-
-**Technical Notes:**
-- Accessibility labels and hints included
-- File loading helpers handle async provider resolution
-
-**Code Duplication:**
-File loading logic (`loadURLs(from:preferredTypes:)`) is duplicated between `InsertFileControl.swift` and `BoardCanvasView.swift`. Candidate for extraction to shared utility file.
-
----
-
 ### Other UI Components
 
 **FilePickerView (Landing Page)**
 
 **Status: Implemented**
 
-**Files:** `FilePickerView.swift`, `RecentBoardsManager.swift`
+**Files:** `FilePickerView.swift`, `RecentBoardsList.swift`, `RecentBoardRow.swift`, `LiftPressStyle.swift`, `RecentBoardsManager.swift`
 
 The app's landing screen with three entry paths to the canvas and a recent boards section.
 
 **Entry Paths:**
 
-1. **"New Board" (primary CTA)** — filled tertiary button, presents a `.fileExporter` for `Untitled Board.refboard`. On success, an empty canvas opens with that save location as its `currentBoardURL`, so the back button can write straight to it.
-2. **"Open Board" (secondary)** — outlined tertiary button, opens `.fileImporter` for `.refboard` files. Imports via `BoardArchiver.importElements` on a detached task, records in recents, passes elements + URL to `ContentView`
+1. **"New Board" (primary CTA)** — `.buttonStyle(.glassProminent)` + tertiary tint, presents a `.fileExporter` for `Untitled Board.refboard`. On success, an empty canvas opens with that save location as its `currentBoardURL`, so the back button can write straight to it.
+2. **"Open Board" (secondary)** — `.buttonStyle(.glass)` + tertiary tint, opens `.fileImporter` for `.refboard` files. Imports via `BoardArchiver.importElements` on a detached task, records in recents, passes elements + URL to `ContentView`
 3. **Drag-and-drop** — drop images/GIFs onto the dashed rectangle area. `.contentShape(.rect)` ensures the entire padded area is a valid drop target, not just the icon/text
 
 **Visual Design:**
+- Background stays flat `DesignSystem.Colors.primary` — Liquid Glass on a flat dark fill renders muted (Apple's docs explicitly call this out), but we accept it for the larger surfaces (drop zone, recents) and reserve glass for the CTA buttons where `.buttonStyle(.glass)` has its own backdrop-independent fallbacks.
 - Large photo icon (`photo.on.rectangle.angled`, `@ScaledMetric` for Dynamic Type) with `.accessibilityHidden(true)`
 - Dashed border rectangle highlights on drag target (`isTargeted` state)
-- "New Board" and "Open Board" buttons side-by-side below
-- "Recent Boards" section below buttons (up to 5 entries)
+- "New Board" and "Open Board" buttons side-by-side below as native glass buttons
+- "Recent Boards" section below buttons (up to 5 entries) — see `RecentBoardsList` / `RecentBoardRow` below
 - Error alert (`showImportError` bool + `importErrorMessage` string) for failed imports
+
+**Recent Boards List (`RecentBoardsList` + `RecentBoardRow`):**
+
+The list is a flush stack of per-row cards rather than one shared container with hairline dividers. Each row owns its own background so a press effect (`LiftPressStyle`) scales the whole card, not just the inner content. Rows stack flush (`VStack(spacing: 0)`) with only the first row's top corners and last row's bottom corners rounded via `UnevenRoundedRectangle` — the group reads as one continuous shape while each row remains independently pressable.
+
+```swift
+ForEach(Array(recents.enumerated()), id: \.element.id) { index, entry in
+    RecentBoardRow(
+        entry: entry,
+        isFirst: index == 0,
+        isLast: index == recents.count - 1,
+        onTap: { onOpen(entry) }
+    )
+}
+```
+
+**`LiftPressStyle` (`Features/FilePicker/LiftPressStyle.swift`):**
+
+Custom `ButtonStyle` that mimics the bubble/lift of a native glass button on plain rows. Scale `1.02` + lift `−2pt y` on press, spring-released:
+
+```swift
+struct LiftPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 1.02 : 1.0)
+            .offset(y: configuration.isPressed ? -2 : 0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6),
+                       value: configuration.isPressed)
+    }
+}
+```
+
+Used on the recents rows where we want tactile press feedback without the full Liquid Glass material (which doesn't render correctly on the flat dark background).
 
 **Recent Boards:**
 
@@ -1027,21 +1050,16 @@ FilePickerView(
 - `RootView` hosts `FilePickerView` and routes to `ContentView` based on which callback fires
 - `initialBoardURL` is tracked through `RootView` → `ContentView` so save-on-back writes to the correct location
 
-### Canvas Status Bar (Back Button + Board Name)
+### Save-on-Back Flow
 
-**Status: Implemented**
+Back navigation is wired through the leading toolbar's back chevron (see "Canvas Navigation Toolbar"). Floating `CanvasStatusBar`/`CanvasBackButton` have been removed.
 
-**File:** `CanvasStatusBar.swift` (rendered via `CanvasOverlayLayout`)
-
-`CanvasStatusBar` is permanently anchored to the **top-left** of the canvas, composed of a back button (`CanvasBackButton`) and a board name pill (`CanvasBoardName`). Does not follow `toolbarSide` — position is fixed regardless of toolbar placement. Styled to match the toolbar/settings button: 68pt wide back button, primary background, 12pt corner radius, matching shadow.
-
-**Save-on-back flow:**
-1. Back button tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
+1. Back chevron tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
 2. `onSnapshot` callback checks the flag — if pending back, calls `saveAndGoBack(elements:wasDirty:)`
 3. `saveAndGoBack` writes to `currentBoardURL` via `BoardArchiver.export` on a detached task, flips `markCleanTrigger`, then calls `onBack()` which sets `showCanvas = false` in `RootView`
 4. If the export throws, an alert offers "Discard & Leave" or "Stay"; otherwise navigation proceeds
 
-Because "New Board" requires choosing a save location up front, `currentBoardURL` is always set by the time the canvas appears, so the back button always has somewhere to write to.
+Because "New Board" requires choosing a save location up front, `currentBoardURL` is always set by the time the canvas appears, so the back chevron always has somewhere to write to.
 
 ---
 
@@ -1131,7 +1149,7 @@ Resolved by the spring-cleaning extraction. `BoardCanvasView.swift` is now ~2120
 - `Features/BoardCanvas/Import/CanvasDropDelegate.swift`
 - `Features/BoardCanvas/Import/ItemProviderHelpers.swift` (the `loadURLsFromProviders` function + `NSItemProvider` extension)
 
-The duplicate file-loading code shared with `InsertFileControl.swift` (now `Features/BoardCanvas/Import/InsertFileControl.swift`) is still pending — a separate cleanup.
+The duplicate file-loading code that previously existed in `InsertFileControl.swift` is also resolved: `InsertFileControl` was deleted (it was never instantiated outside its own `#Preview`) and both the canvas drop handler and `FilePickerView` now call into `Import/ItemProviderHelpers.swift`.
 
 ### Pre-existing modern-concurrency cleanup
 
@@ -1143,9 +1161,7 @@ The duplicate file-loading code shared with `InsertFileControl.swift` (now `Feat
 
 ### Toolbar accessibility labels
 
-Every `ToolbarButton` in `CanvasToolbar.swift` is icon-only: `Button { Image(systemName: ...) }`. Per `references/accessibility.md`, icon-only buttons need explicit text labels for VoiceOver. Suggested fix: each button passes both an SF Symbol name and a localized title string; the renderer uses `Button(title, systemImage: icon, action: action)` form so VoiceOver reads the title and the icon stays visual-only.
-
-This is a sweep across the toolbar (pointer, group, text, undo, redo, add) plus the standalone `CanvasSettingsButton` and `CanvasOverlayLayout` back button.
+Resolved by the native-toolbar migration. Every button in `CanvasNavigationToolbar` now uses `Label("Title", systemImage:)`, which carries the title for both VoiceOver and the system overflow menu. The active tool also gets `.accessibilityAddTraits(.isSelected)` so the selection state isn't conveyed by color alone. The standalone `CanvasSettingsButton` / `CanvasOverlayLayout` back button are deleted.
 
 ### `BoardCanvasView`'s per-text `.onTapGesture` mixes layout + state-machine logic
 
