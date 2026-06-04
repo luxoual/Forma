@@ -413,7 +413,6 @@ struct BoardCanvasView: View {
             .background {
                 canvasColor.ignoresSafeArea()
             }
-            .border(Color.gray.opacity(0.4), width: 1)
             .onAppear {
                 canvasSize = geo.size
                 // Center the canvas on world origin (0, 0) on first appearance
