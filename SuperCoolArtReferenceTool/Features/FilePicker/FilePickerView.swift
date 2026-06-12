@@ -19,7 +19,10 @@ struct FilePickerView: View {
     @Environment(RecentBoardsManager.self) private var recentsManager
 
     var onNewBoard: (URL) -> Void
-    var onBoardSelected: ([CMCanvasElement], URL) -> Void
+    /// Called when an existing board is opened. The hex string is the canvas
+    /// color saved in the manifest (`#RRGGBB`), or `nil` for legacy boards
+    /// — the caller resolves `nil` to the system background.
+    var onBoardSelected: ([CMCanvasElement], URL, String?) -> Void
     var onFilesDropped: ([URL]) -> Void
 
     var body: some View {
@@ -133,13 +136,13 @@ struct FilePickerView: View {
     private func openBoard(at url: URL) {
         Task {
             do {
-                let elements = try await Task.detached(priority: .userInitiated) {
+                let imported = try await Task.detached(priority: .userInitiated) {
                     let accessing = url.startAccessingSecurityScopedResource()
                     defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                     return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                 }.value
                 recentsManager.record(url: url)
-                onBoardSelected(elements, url)
+                onBoardSelected(imported.elements, url, imported.canvasColorHex)
             } catch {
                 importErrorMessage = error.localizedDescription
                 showImportError = true
@@ -159,6 +162,6 @@ struct FilePickerView: View {
 }
 
 #Preview {
-    FilePickerView(onNewBoard: { _ in }, onBoardSelected: { _, _ in }, onFilesDropped: { _ in })
+    FilePickerView(onNewBoard: { _ in }, onBoardSelected: { _, _, _ in }, onFilesDropped: { _ in })
         .environment(RecentBoardsManager())
 }

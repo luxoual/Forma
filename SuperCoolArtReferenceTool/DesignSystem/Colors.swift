@@ -26,3 +26,32 @@ extension DesignSystem{
         static let destructive = Color(red: 254/255, green: 134/255, blue: 134/255)
     }
 }
+
+// MARK: - Hex coding
+
+extension Color {
+    /// Parse an opaque `#RRGGBB` or `RRGGBB` hex string into sRGB. Returns nil on
+    /// any malformed input — callers can fall back to a default. Opacity is not
+    /// supported (the canvas color picker disables it).
+    ///
+    /// `nonisolated` because the project defaults type isolation to `MainActor`,
+    /// and this init is called from `ContentView.init` (a non-isolated context).
+    nonisolated init?(hex: String) {
+        var s = hex
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        let r = Double((v >> 16) & 0xFF) / 255
+        let g = Double((v >> 8) & 0xFF) / 255
+        let b = Double(v & 0xFF) / 255
+        self = Color(red: r, green: g, blue: b)
+    }
+}
+
+/// `#RRGGBB` for an opaque resolved color. Opacity is discarded — callers that
+/// need it (none today) should encode it separately. Resolving requires an
+/// `EnvironmentValues`, so this is split from the `Color` extension above:
+/// the call site has the environment, this helper just formats.
+func canvasColorHexString(from resolved: Color.Resolved) -> String {
+    func byte(_ x: Float) -> Int { max(0, min(255, Int((x * 255).rounded()))) }
+    return String(format: "#%02X%02X%02X", byte(resolved.red), byte(resolved.green), byte(resolved.blue))
+}
