@@ -136,10 +136,12 @@ struct FilePickerView: View {
     private func openBoard(at url: URL) {
         Task {
             do {
+                // `BoardArchiver.importElements` already wraps its own
+                // `startAccessingSecurityScopedResource` / stop pair, so we
+                // don't need to nest one here — let the archiver own the
+                // scope.
                 let imported = try await Task.detached(priority: .userInitiated) {
-                    let accessing = url.startAccessingSecurityScopedResource()
-                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                    return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                    try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                 }.value
                 recentsManager.record(url: url)
                 onBoardSelected(imported.elements, url, imported.canvasColorHex)

@@ -64,6 +64,13 @@ struct ContentView: View {
     /// `saveInPlace` would bail. Cleared in lockstep with `markCleanTrigger`
     /// after a successful save.
     @State private var canvasColorDirty = false
+    /// The hex that should be written to the manifest on the next save. Seeded
+    /// from `initialCanvasColorHex` and only mutated when the user actually
+    /// picks a color, so a board with no saved preference (`nil`) keeps that
+    /// state across element-edit autosaves — the canvas continues to follow
+    /// the system background instead of getting a baked-in color the first
+    /// time the user moves anything.
+    @State private var savedCanvasColorHex: String?
 
     /// Custom init so `canvasColor` can default to either the manifest's saved
     /// hex (when reopening a board) or the system background (new boards,
@@ -84,6 +91,7 @@ struct ContentView: View {
         let initial = initialCanvasColorHex.flatMap(Color.init(hex:))
             ?? Color(uiColor: .systemBackground)
         _canvasColor = State(initialValue: initial)
+        _savedCanvasColorHex = State(initialValue: initialCanvasColorHex)
     }
 
     var body: some View {
@@ -143,9 +151,13 @@ struct ContentView: View {
         }
         // `.onChange` skips the value `canvasColor` was initialized to in
         // `init`, so this only fires on real user picks (or programmatic
-        // changes after first render). Either way, the file now needs to be
-        // re-saved on the next autosave / back-out.
-        .onChange(of: canvasColor) { _, _ in
+        // changes after first render). Resolve the picked Color to concrete
+        // RGB right here — that's the value we'll write to the manifest, and
+        // doing it once at pick-time (vs every save) keeps "nil == no
+        // preference" stable across element-edit autosaves on boards the
+        // user hasn't touched the color on.
+        .onChange(of: canvasColor) { _, newValue in
+            savedCanvasColorHex = canvasColorHexString(from: newValue.resolve(in: environment))
             canvasColorDirty = true
         }
         .alert("Save Failed", isPresented: $showSaveError) {
@@ -215,9 +227,8 @@ struct ContentView: View {
         let startedAt = Date()
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        let colorHex = canvasColorHexString(from: canvasColor.resolve(in: environment))
         do {
-            _ = try BoardArchiver.export(elements: elements, canvasColorHex: colorHex, to: url)
+            _ = try BoardArchiver.export(elements: elements, canvasColorHex: savedCanvasColorHex, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
             Logger.save.logSaveSuccess(elements: elements.count, url: url, durationMs: ms)
             markCleanTrigger = UUID()
@@ -232,8 +243,9 @@ struct ContentView: View {
             onBack()
             return
         }
-        // Resolve on MainActor before detaching — captured as a plain String.
-        let colorHex = canvasColorHexString(from: canvasColor.resolve(in: environment))
+        // `savedCanvasColorHex` is a plain `String?`, already Sendable — no
+        // env resolution needed at the actor boundary.
+        let colorHex = savedCanvasColorHex
         Task {
             let failure: Error? = await Task.detached(priority: .userInitiated) {
                 let accessing = url.startAccessingSecurityScopedResource()
