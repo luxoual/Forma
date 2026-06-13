@@ -13,8 +13,10 @@ import SwiftUI
 ///
 /// Layout:
 /// - Leading group: back chevron + board name pill (no nested glass).
-/// - Trailing: tools / undo-redo / add / settings, split by `ToolbarSpacer`
-///   so each group renders as its own glass capsule.
+/// - Trailing: tools+add / undo-redo / settings, split by `ToolbarSpacer`
+///   so each group renders as its own glass capsule. Add lives with the
+///   tools because it's the other put-stuff-on-the-canvas action, not a
+///   settings affordance.
 /// - All buttons use `Label("Title", systemImage: …)` so the system overflow
 ///   menu can populate from titles when the bar collapses.
 struct CanvasNavigationToolbar: ToolbarContent {
@@ -47,13 +49,19 @@ struct CanvasNavigationToolbar: ToolbarContent {
             .accessibilityRemoveTraits(.isButton)
         }
 
-        // Tools — discrete Buttons in a single group so they share one glass
-        // capsule. Active tool gets a tertiary tint *and* the .isSelected
-        // accessibility trait so VoiceOver knows which one is on.
+        // Tools + add — discrete Buttons in a single group so they share one
+        // glass capsule. Active tool gets a tertiary tint *and* the
+        // .isSelected accessibility trait so VoiceOver knows which one is on.
+        // Add isn't a mode toggle (no .isSelected, no tint), it just lives
+        // here because it's the same kind of "put stuff on the canvas"
+        // action as the tools next to it.
         ToolbarItemGroup(placement: .topBarTrailing) {
             toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
             toolButton(.group, label: "Group", icon: "rectangle.dashed")
             toolButton(.text, label: "Text", icon: "textformat")
+            Button(action: onAddItem) {
+                Label("Add", systemImage: "plus")
+            }
         }
 
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
@@ -68,12 +76,6 @@ struct CanvasNavigationToolbar: ToolbarContent {
         }
 
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
-
-        ToolbarItem(placement: .topBarTrailing) {
-            Button(action: onAddItem) {
-                Label("Add", systemImage: "plus")
-            }
-        }
 
         ToolbarItem(placement: .topBarTrailing) {
             Button(action: onSettings) {
