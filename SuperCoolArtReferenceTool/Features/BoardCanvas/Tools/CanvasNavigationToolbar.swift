@@ -59,9 +59,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
             toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
             toolButton(.group, label: "Group", icon: "rectangle.dashed")
             toolButton(.text, label: "Text", icon: "textformat")
-            Button(action: onAddItem) {
-                Label("Add", systemImage: "plus")
-            }
+            Button("Add", systemImage: "plus", action: onAddItem)
         }
 
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
