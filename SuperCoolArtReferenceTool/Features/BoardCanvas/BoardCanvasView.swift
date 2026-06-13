@@ -219,7 +219,7 @@ struct BoardCanvasView: View {
                                height: liveRect.height * scale)
                         .overlay {
                             if isSelected && !multiSelected {
-                                SelectionOverlay()
+                                SelectionOverlay(activeHandle: selection.resizeHandle)
                             } else if isSelected && multiSelected {
                                 // Light border only for individual items in a multi-select
                                 Rectangle()
@@ -328,11 +328,14 @@ struct BoardCanvasView: View {
                         width: placed.worldRect.width * scale,
                         height: placed.worldRect.height * scale
                     )
-                    SelectionOverlay(handles: TextElementView.textHandles)
-                        .frame(width: screenRect.width, height: screenRect.height)
-                        .position(x: screenRect.midX, y: screenRect.midY)
-                        .allowsHitTesting(false)
-                        .zIndex(Double(Int.max - 2))
+                    SelectionOverlay(
+                        handles: TextElementView.textHandles,
+                        activeHandle: selection.resizeHandle
+                    )
+                    .frame(width: screenRect.width, height: screenRect.height)
+                    .position(x: screenRect.midX, y: screenRect.midY)
+                    .allowsHitTesting(false)
+                    .zIndex(Double(Int.max - 2))
                 }
 
                 // Editing border for the active text — rendered externally
@@ -381,7 +384,7 @@ struct BoardCanvasView: View {
                             width: bbox.width * scale,
                             height: bbox.height * scale
                         )
-                        GroupSelectionOverlay()
+                        GroupSelectionOverlay(activeHandle: selection.resizeHandle)
                             .frame(width: screenRect.width, height: screenRect.height)
                             .position(x: screenRect.midX, y: screenRect.midY)
                             .allowsHitTesting(false)

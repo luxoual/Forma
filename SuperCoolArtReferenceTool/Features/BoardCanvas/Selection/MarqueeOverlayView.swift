@@ -8,10 +8,7 @@ struct MarqueeOverlayView: View {
             .fill(DesignSystem.Colors.tertiary.opacity(0.08))
             .overlay(
                 Rectangle()
-                    .strokeBorder(
-                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
-                    )
-                    .foregroundStyle(DesignSystem.Colors.tertiary)
+                    .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
             )
             .frame(width: screenRect.width, height: screenRect.height)
             .position(x: screenRect.midX, y: screenRect.midY)
