@@ -24,6 +24,8 @@ Backend architecture has **core data models and persistence layer** implemented,
 - Batch image insertion shifts the entire grid until it finds a non-overlapping region on the canvas.
 - Board import in the UI is now filtered to `.refboard` only instead of also allowing generic folders and packages.
 - App-open delivery now passes imported `CMCanvasElement` values through the root view into the canvas on first launch/open.
+- **Manifest schema bumped to version 2** with an optional board-level `canvasColor: String?` (`#RRGGBB`) field. v1 files decode cleanly with `canvasColor = nil` via `Codable` synthesis (the second time the manifest has gained an optional field — `text.wrapWidth` was the first — establishing the additive-evolution pattern). `BoardArchiver.importElements(...)` now returns an `ImportResult { elements, canvasColorHex }` struct; `BoardArchiver.export(...)` takes a `canvasColorHex: String?` parameter and writes it (or omits it for `nil`). The SwiftUI layer owns the `Color ↔ String` conversion since it needs an env to resolve adaptive colors; the archiver only deals in hex strings. See `architecture-frontend.md` → "Canvas Color Persistence" for the frontend-side plumbing.
+- **`BoardArchiver` enum marked `nonisolated`** so its helpers don't inherit the project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` default. `export` was already `nonisolated` at the method level for off-main autosave; tagging the enum makes that uniform across `importElements`, `importFromZip`, `importFromPackage`, and the manifest types nested inside.
 
 ---
 
@@ -77,14 +79,34 @@ Decision Status: **Implemented**
 - `SuperCoolArtReferenceTool/App/BoardArchiver.swift`
 
 The export pipeline produces a **single-file `.refboard` ZIP** containing:
-- `manifest.json`
+- `manifest.json` (currently `version: 2`)
 - `assets/` (copied image files)
 
-`BoardArchiver.export(elements:to:)` mutates the archive in place: when the destination already exists it opens the ZIP in `.update` mode, adds only asset entries whose UUIDs weren't already present, removes entries for deleted elements, and rewrites `manifest.json`. Image entries use `.none` compression (already compressed bytes); `manifest.json` uses `.deflate`. This keeps autosave of a "move/resize/add-one-image" change near-free on boards with hundreds of assets. `BoardArchiver.importElements(from:copyAssetsToAppSupport:)` accepts either the new ZIP or a legacy package folder, unpacks if needed, decodes `manifest.json`, and resolves image assets.
+The manifest carries element data plus board-level state. As of version 2 it includes an optional `canvasColor: String?` (`#RRGGBB`) — the user's saved canvas background, or omitted when no preference has been set. v1 files have no `canvasColor` key; `Codable` synthesis treats the missing key as `nil`, so old boards decode without any per-version branching.
 
-The method is `nonisolated` so autosave can run on a detached `.userInitiated` task for off-main saves (back button); force-quit-safe `.inactive` saves still run on the main actor since they must complete before SIGKILL. Save paths coordinate with `LocalBoardStore.peekDirty()` / `markClean()` — the dirty flag is cleared only after a confirmed-successful write, so a cancelled file exporter doesn't silently drop pending changes.
+`BoardArchiver.export(elements:canvasColorHex:to:)` mutates the archive in place: when the destination already exists it opens the ZIP in `.update` mode, adds only asset entries whose UUIDs weren't already present, removes entries for deleted elements, and rewrites `manifest.json`. Image entries use `.none` compression (already compressed bytes); `manifest.json` uses `.deflate`. This keeps autosave of a "move/resize/add-one-image" change near-free on boards with hundreds of assets. The `canvasColorHex` parameter passes the SwiftUI layer's resolved hex straight into the manifest — `nil` writes no key. `BoardArchiver.importElements(from:copyAssetsToAppSupport:)` accepts either the new ZIP or a legacy package folder, unpacks if needed, decodes `manifest.json`, and resolves image assets. It returns an `ImportResult { elements: [CMCanvasElement], canvasColorHex: String? }`.
+
+The method is `nonisolated` so autosave can run on a detached `.userInitiated` task for off-main saves (back button); force-quit-safe `.inactive` saves still run on the main actor since they must complete before SIGKILL. Save paths coordinate with `LocalBoardStore.peekDirty()` / `markClean()` — the dirty flag is cleared only after a confirmed-successful write, so a cancelled file exporter doesn't silently drop pending changes. Note that `BoardCanvasView`'s `peekDirty()` only tracks the element store; canvas-color-only changes are gated by a parallel `canvasColorDirty` flag in `ContentView` (see `architecture-frontend.md` → "Canvas Color Persistence").
 
 When `copyAssetsToAppSupport` is enabled, imported image assets are copied into the app container so the canvas can keep stable file URLs after temporary unzip directories are removed.
+
+### Schema evolution
+
+The manifest's `version: Int` is bumped when a change is observable, but the on-disk shape evolves via additive optional fields and `Codable` synthesis takes care of the round-trip. So far two fields have followed this pattern:
+
+| Field | Added in | Decoder behavior on older files |
+|---|---|---|
+| `ManifestPayload.text.wrapWidth: Double?` | text-elements PR | Explicit `decodeIfPresent` / `encodeIfPresent` (custom Codable). Missing key → `nil`. |
+| `BoardManifest.canvasColor: String?` | v2 | Synthesized `Codable` on the manifest struct. Missing key → `nil`. |
+
+Custom-coded payloads need the explicit `decodeIfPresent` because their `init(from:)` is written by hand; synthesized structs handle the absent-key case automatically. Either way, the v1 → v2 upgrade requires no migration code.
+
+Adding a new manifest field should follow the same pattern:
+1. Declare it `Optional` on the struct.
+2. If the struct has custom `Codable`, branch via `decodeIfPresent` / `encodeIfPresent`. If synthesized, just add the property.
+3. Bump `version: Int` if downstream consumers might need to switch on it (helps future migration logic dispatch correctly); skip the bump if the change is purely additive and forward-readable.
+
+Adding a *breaking* change (rename, type change, mandatory new field) is what would actually demand a version-dispatched migration path. None today.
 
 ### Archive Safety
 
@@ -109,7 +131,9 @@ At the moment, `UTType.refboard` still conforms to `public.data` in code rather 
 - In-app board import via `fileImporter`
 - External open via the app-level `.onOpenURL`
 
-Both paths converge on `BoardArchiver.importElements(...)`, which produces `[CMCanvasElement]`. `AppOpenHandler` temporarily stores imported elements for the app-open path, `RootView` promotes that state into `ContentView`, and `ContentView` forwards the elements into `BoardCanvasView` through `loadElements`.
+Both paths converge on `BoardArchiver.importElements(...)`, which returns an `ImportResult { elements, canvasColorHex }`. `AppOpenHandler` exposes both pieces of state (`importedElements: [CMCanvasElement]?` and `importedCanvasColorHex: String?`) for the app-open path; `RootView` promotes them into `ContentView` (`initialElements` + `initialCanvasColorHex`); `ContentView` forwards the elements into `BoardCanvasView` through `loadElements` and seeds its own `canvasColor` state from the hex (falling back to `Color(uiColor: .systemBackground)` when nil).
+
+`BoardArchiver.importElements` owns its own security-scoped access internally (`startAccessingSecurityScopedResource` / stop pair). Callers should not nest their own — `FilePickerView.openBoard` previously wrapped its detached-task body in a redundant pair; that wrap has been removed so the archiver remains the single owner of the scope.
 
 ---
 

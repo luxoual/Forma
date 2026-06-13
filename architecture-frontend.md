@@ -253,21 +253,22 @@ Native `.toolbar` gives the per-button press feedback, glass material, group cap
 **Structure (`CanvasNavigationToolbar: ToolbarContent`):**
 
 ```
-[Leading group]                                            [Trailing items]
-< (back)  |  BoardName pill        [Pointer | Group | Text] | [Undo | Redo] | [Add] | [Settings]
+[Leading group]                                                [Trailing items]
+< (back)  |  BoardName pill        [Pointer | Group | Text | Add] | [Undo | Redo] | [Settings]
 ```
 
 - **Leading `ToolbarItemGroup(.topBarLeading)`** — back chevron + board name pill share one glass capsule. Board name is a non-interactive glass button (see "Board name pill" below) inside the group, so the group's outer pill is the only glass surface — no nesting.
-- **Trailing groups + `ToolbarSpacer(.fixed)`** between them so each group renders as its own glass capsule (tools, history, add, settings). The spacer is what visually separates the capsules.
+- **Trailing groups + `ToolbarSpacer(.fixed)`** between them so each group renders as its own glass capsule (tools+add, history, settings). The spacer is what visually separates the capsules.
 - **Every button uses `Label("Title", systemImage:)`** so the system overflow menu can populate its dropdown with real titles when the bar collapses on narrow widths.
 
-**Tools group (active-state indicator):**
+**Tools group (active-state indicator + Add):**
 
 ```swift
 ToolbarItemGroup(placement: .topBarTrailing) {
     toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
     toolButton(.group,   label: "Group",   icon: "rectangle.dashed")
     toolButton(.text,    label: "Text",    icon: "textformat")
+    Button("Add", systemImage: "plus", action: onAddItem)
 }
 
 private func toolButton(_ tool: CanvasTool, label: String, icon: String) -> some View {
@@ -281,6 +282,8 @@ private func toolButton(_ tool: CanvasTool, label: String, icon: String) -> some
 ```
 
 Active state is communicated via tertiary `.tint` *and* the `.isSelected` accessibility trait. Color-only would leave VoiceOver users without an indicator. No `matchedGeometryEffect` — the system handles all transitions natively, and discrete buttons participate in the system overflow menu (a segmented `Picker` does not).
+
+Add sits inside the same `ToolbarItemGroup` as the mode tools because it's the other put-stuff-on-the-canvas action — it shares the glass capsule but is not a mode toggle, so it carries no tint and no `.isSelected` trait. Previously it lived next to Settings, which read like a settings affordance.
 
 **Board name pill — disabled-button trick:**
 
@@ -432,10 +435,14 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 **Files:** `SelectionOverlay.swift` (views), `HandlePosition.swift` (data model)
 
 - `ResizeHandleView` — shared 10×10pt rounded rectangle handle with white fill and tertiary border, used by both overlay types
-- `SelectionOverlay` — solid blue border + 8 handles, shown on single-selected items
-- `GroupSelectionOverlay` — dashed blue border + 8 handles, shown on the group bounding box when multiple items are selected
+- `SelectionOverlay` — solid 2pt tertiary border + 8 handles, shown on single-selected items
+- `GroupSelectionOverlay` — solid 2pt tertiary border + 8 handles, shown on the group bounding box when multiple items are selected. Same line weight as `SelectionOverlay` so multi-select reads as the same affordance as single-select rather than a different visual language. (Previously dashed; converted to solid as part of the selection-chrome polish pass.)
 - When multi-selected, individual items show a light semi-transparent border instead of full handles
-- `MarqueeOverlayView` — dashed rectangle with semi-transparent fill, shown during marquee drag
+- `MarqueeOverlayView` — solid 1.5pt tertiary rectangle with 8%-opacity tertiary fill, shown during marquee drag. (Previously dashed.)
+
+**Hide-inactive-handles during resize:**
+
+Both `SelectionOverlay` and `GroupSelectionOverlay` take an `activeHandle: HandlePosition?` parameter. While the user is dragging one handle, the other seven hide so they don't visually compete with the active gesture; the border stays visible. `CanvasSelectionState.resizeHandle` is the unified "which handle is live" state across single-image, single-text, and group resize alike — the three call sites in `BoardCanvasView` all pass `selection.resizeHandle` through. `nil` means "not resizing" and every handle in the overlay's `handles` set renders.
 
 - `HandlePosition` enum (in `HandlePosition.swift`) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`
 - Extracted to its own file to avoid coupling `CanvasSelectionState` to the view layer
@@ -903,8 +910,82 @@ The "Toolbar Position" picker (`left` / `right`) and the `ToolbarSide` enum were
 
 **Functional Settings:**
 
-1. **Canvas Color** — `@Binding var canvasColor: Color`, applied via `.background(canvasColor)` on the canvas ZStack. Default `.white`.
+1. **Canvas Color** — `@Binding var canvasColor: Color`, applied via `.background(canvasColor)` on the canvas ZStack. Default `Color(uiColor: .systemBackground)` for new boards and legacy v1 files with no saved preference, so the canvas adapts to the user's light/dark mode until they pick something explicit. Saved as `#RRGGBB` in the board's manifest once picked — see "Canvas Color Persistence" below.
 2. **Show Grid** — `@Binding var showGrid: Bool`, drives the grid `Canvas` layer in `BoardCanvasView`. Default `true`.
+
+---
+
+### Canvas Color Persistence
+
+**Status: Implemented**
+
+**Files:** `ContentView.swift`, `RootView.swift`, `AppOpenHandler.swift`, `FilePickerView.swift`, `DesignSystem/Colors.swift` (frontend side); see `architecture-backend.md` → "Export Package" for the manifest schema.
+
+The canvas color round-trips through the board's `.refboard` manifest. The split-of-concerns: the SwiftUI layer owns the live `Color` and hex-conversion (since resolving an adaptive `Color` to concrete RGB needs an `EnvironmentValues`), the backend layer owns the on-disk representation (`canvasColor: String?` in the manifest, see backend doc).
+
+**Plumbing chain:**
+
+```
+manifest.json:canvasColor (String?)
+    ↓ BoardArchiver.importElements → ImportResult.canvasColorHex (String?)
+    ↓ FilePickerView.onBoardSelected callback (elements, url, hex)  — or AppOpenHandler.importedCanvasColorHex on .onOpenURL
+    ↓ RootView.initialCanvasColorHex (String?)
+    ↓ ContentView.init(initialCanvasColorHex:)
+    ↓ @State canvasColor (Color)  ← initialCanvasColorHex.flatMap(Color.init(hex:)) ?? Color(uiColor: .systemBackground)
+    ↓ ColorPicker + .background(canvasColor) on canvas ZStack
+```
+
+**`ContentView` state model:**
+
+```swift
+@State private var canvasColor: Color              // live, may be adaptive (system bg)
+@State private var savedCanvasColorHex: String?    // what gets written to manifest; nil = no preference
+@State private var canvasColorDirty = false        // OR'd into the save gate
+
+init(..., initialCanvasColorHex: String? = nil, ...) {
+    let initial = initialCanvasColorHex.flatMap(Color.init(hex:))
+        ?? Color(uiColor: .systemBackground)
+    _canvasColor = State(initialValue: initial)
+    _savedCanvasColorHex = State(initialValue: initialCanvasColorHex)
+}
+```
+
+**Why three pieces of state instead of one:**
+
+1. **`canvasColor`** is what the canvas + ColorPicker bind to. May be an adaptive `Color(uiColor: .systemBackground)` whose resolved RGB depends on the environment's color scheme.
+2. **`savedCanvasColorHex`** is the concrete hex that the manifest holds. Seeded from `initialCanvasColorHex` and only mutated when the user actually picks a color (resolved at pick-time, not at save-time):
+
+   ```swift
+   .onChange(of: canvasColor) { _, newValue in
+       savedCanvasColorHex = canvasColorHexString(from: newValue.resolve(in: environment))
+       canvasColorDirty = true
+   }
+   ```
+
+   Resolving once at pick-time (vs every save) keeps "nil == follow system" stable across element-edit autosaves on boards the user hasn't touched the color on. Without this split, an element-only edit would have baked the current system background into the file, silently breaking the "no preference" contract.
+
+3. **`canvasColorDirty`** flips the save gate. `BoardCanvasView`'s dirty flag only tracks the element store, so a color-only change wouldn't otherwise trigger autosave (`wasDirty` would come back `false` and `saveInPlace` would bail). Both save paths now gate on `wasDirty || canvasColorDirty` and clear `canvasColorDirty` alongside `markCleanTrigger` after a confirmed-successful write.
+
+**Hex helpers (`DesignSystem/Colors.swift`):**
+
+```swift
+extension Color {
+    nonisolated init?(hex: String) { /* parses #RRGGBB or RRGGBB */ }
+}
+
+// Resolved color → "#RRGGBB". Caller resolves Color via env, this just formats.
+func canvasColorHexString(from resolved: Color.Resolved) -> String { ... }
+```
+
+`init(hex:)` is `nonisolated` because the project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` would otherwise make the synthesized init main-actor-isolated, and `ContentView.init` runs in a non-isolated context.
+
+**Pick-time semantics (caveat):**
+
+The hex is captured at the moment the `.onChange(of: canvasColor)` fires, in whatever color scheme the env is in. If a user picks a color via `ColorPicker`'s "System Colors" tab while in dark mode, the saved hex is the dark-mode resolution of that system color — reopening the board in light mode does not adapt. The contract is "saved color = the color you last had on screen," which matches single-resolved behavior; if we ever want "follow system" as an explicit option, that'd be a separate toggle keeping `savedCanvasColorHex` nil with a sentinel.
+
+**Security-scoped access (Copilot fix):**
+
+`BoardArchiver.importElements` owns its own `startAccessingSecurityScopedResource` / stop pair. `FilePickerView.openBoard` previously wrapped its detached-task body in a second, redundant pair; that wrap has been removed so the archiver remains the single owner of the scope.
 
 ---
 
@@ -1039,7 +1120,10 @@ Recording happens on:
 ```swift
 FilePickerView(
     onNewBoard: (URL) -> Void,
-    onBoardSelected: ([CMCanvasElement], URL) -> Void,
+    // Third parameter is the saved canvas color hex from the manifest, or
+    // nil for legacy v1 files. `ContentView` falls back to system background
+    // when nil.
+    onBoardSelected: ([CMCanvasElement], URL, String?) -> Void,
     onFilesDropped: ([URL]) -> Void
 )
 ```
