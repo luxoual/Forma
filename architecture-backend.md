@@ -98,6 +98,8 @@ When `copyAssetsToAppSupport` is enabled, imported image assets are copied into 
 
 ### Schema evolution
 
+Scope: this section is about the **on-disk `manifest.json` schema** — what gets serialized into the `.refboard` ZIP and read back out. Runtime image caches (see "Thumbnail Loading Pipeline") and tile-index layout (see "Spatial Query Helpers") are separate concerns with their own versioning needs and are not affected by manifest field additions.
+
 The manifest's `version: Int` is bumped when a change is observable, but the on-disk shape evolves via additive optional fields and `Codable` synthesis takes care of the round-trip. So far two fields have followed this pattern:
 
 | Field | Added in | Decoder behavior on older files |
@@ -301,11 +303,11 @@ This keeps total expensive image-render work closer to a capped budget instead o
 
 # Integration Points
 
-- `ContentView` collects a snapshot of `CMCanvasElement` from `BoardCanvasView` and exports via `BoardArchiver` (macOS uses a save panel to choose the target URL).
-- `BoardArchiver` is the single backend entry point for encoding/decoding `.refboard` files (ZIP or legacy package).
+- `ContentView` collects a snapshot of `CMCanvasElement` from `BoardCanvasView` and exports via `BoardArchiver` (macOS uses a save panel to choose the target URL). Board-level state beyond the element list — currently just the canvas-color hex — also flows through `BoardArchiver.export(elements:canvasColorHex:to:)`.
+- `BoardArchiver` is the single backend entry point for encoding/decoding `.refboard` files (ZIP or legacy package). Returns an `ImportResult { elements, canvasColorHex }` on import; takes the parallel pair on export.
 - `BoardCanvasView` now performs batch image placement for pasted/imported image URLs before writing the resulting `CMCanvasElement` set into `canvasStore`.
 - `CanvasService` provides viewport and selection queries (`elements(in:margin:...)`, `topmostElement(at:...)`) for tile-based culling and hit-testing.
 - `CanvasService` exposes z-order operations (`moveToTop` / `moveToBottom`) for absolute layer adjustments.
 - `LocalBoardStore` provides the specialized `imagePlacements(in:margin:limit:)` query used by the visible-canvas render path.
-- The canvas thumbnail pipeline is currently implemented inside `BoardCanvasView.swift`; it depends on backend file-URL payloads remaining stable after import/export and app-open flows.
+- The canvas thumbnail pipeline is currently implemented inside `BoardCanvasView.swift`; it depends on backend file-URL payloads remaining stable after import/export and app-open flows. The v2 manifest's added `canvasColor` field doesn't change that contract — image-asset URLs round-trip the same way they always did, and the new field is orthogonal board-level state.
 - The dense-view LOD budget and sticky-detail behavior depend on `LocalBoardStore` continuing to provide cheap viewport image placement queries as pan/zoom inputs change frequently.
