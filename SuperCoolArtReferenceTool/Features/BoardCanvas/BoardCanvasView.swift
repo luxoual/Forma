@@ -256,7 +256,7 @@ struct BoardCanvasView: View {
                                height: liveRect.height * scale)
                         .overlay {
                             if isSelected && !multiSelected {
-                                SelectionOverlay()
+                                SelectionOverlay(activeHandle: selection.resizeHandle)
                             } else if isSelected && multiSelected {
                                 // Light border only for individual items in a multi-select
                                 Rectangle()
@@ -365,11 +365,14 @@ struct BoardCanvasView: View {
                         width: placed.worldRect.width * scale,
                         height: placed.worldRect.height * scale
                     )
-                    SelectionOverlay(handles: TextElementView.textHandles)
-                        .frame(width: screenRect.width, height: screenRect.height)
-                        .position(x: screenRect.midX, y: screenRect.midY)
-                        .allowsHitTesting(false)
-                        .zIndex(Double(Int.max - 2))
+                    SelectionOverlay(
+                        handles: TextElementView.textHandles,
+                        activeHandle: selection.resizeHandle
+                    )
+                    .frame(width: screenRect.width, height: screenRect.height)
+                    .position(x: screenRect.midX, y: screenRect.midY)
+                    .allowsHitTesting(false)
+                    .zIndex(Double(Int.max - 2))
                 }
 
                 // Editing border for the active text — rendered externally
@@ -393,18 +396,18 @@ struct BoardCanvasView: View {
                         .zIndex(Double(Int.max - 2))
                 }
 
-                // Floating action bar under the current selection
-                if let bbox = selectionBoundingBox(),
-                   !selection.isDragging,
-                   !selection.isResizing,
-                   !selection.isGroupResizing,
-                   !selection.isMarqueeing {
-                    let screenX = bbox.midX * scale + offset.width
-                    let screenY = bbox.maxY * scale + offset.height + 24
-                    CanvasSelectionActionBar(onDelete: deleteSelection)
-                        .position(x: screenX, y: screenY)
-                        .zIndex(Double(Int.max))
-                }
+                // Floating action bar beneath the current selection.
+                SelectionActionBarLayer(
+                    boundingBox: selectionBoundingBox(),
+                    scale: scale,
+                    offset: offset,
+                    isInteracting: selection.isDragging
+                        || selection.isResizing
+                        || selection.isGroupResizing
+                        || selection.isMarqueeing,
+                    onDelete: deleteSelection
+                )
+                .zIndex(Double(Int.max))
 
                 // Group bounding box with resize handles
                 if selection.selectedIDs.count > 1, !selection.isDragging {
@@ -418,7 +421,7 @@ struct BoardCanvasView: View {
                             width: bbox.width * scale,
                             height: bbox.height * scale
                         )
-                        GroupSelectionOverlay()
+                        GroupSelectionOverlay(activeHandle: selection.resizeHandle)
                             .frame(width: screenRect.width, height: screenRect.height)
                             .position(x: screenRect.midX, y: screenRect.midY)
                             .allowsHitTesting(false)
@@ -450,7 +453,6 @@ struct BoardCanvasView: View {
             .background {
                 canvasColor.ignoresSafeArea()
             }
-            .border(Color.gray.opacity(0.4), width: 1)
             .onAppear {
                 canvasSize = geo.size
                 // Center the canvas on world origin (0, 0) on first appearance

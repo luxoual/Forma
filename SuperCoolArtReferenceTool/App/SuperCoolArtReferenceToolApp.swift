@@ -20,9 +20,12 @@ struct SuperCoolArtReferenceToolApp: App {
                     Task {
                         guard url.pathExtension.lowercased() == "refboard" else { return }
                         do {
-                            let elements = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                            let imported = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                             await MainActor.run {
-                                openHandler.importedElements = elements
+                                // Set color *first* so the `onChange(of: importedElements)`
+                                // observer in RootView sees a fully-populated handler.
+                                openHandler.importedCanvasColorHex = imported.canvasColorHex
+                                openHandler.importedElements = imported.elements
                             }
                         } catch {
                             Logger.app.logFailure("Failed to import .refboard", error: error)

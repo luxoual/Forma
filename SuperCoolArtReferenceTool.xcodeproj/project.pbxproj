@@ -13,11 +13,11 @@
 /* Begin PBXFileReference section */
 		425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SuperCoolArtReferenceTool.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		428969D02F7C433300C0436A /* context.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = context.md; sourceTree = "<group>"; };
+		42CF160100000000A0000001 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Shared.xcconfig; path = Config/Shared.xcconfig; sourceTree = "<group>"; };
+		42CF160100000000A0000002 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; name = Local.xcconfig.example; path = Config/Local.xcconfig.example; sourceTree = "<group>"; };
 		42D648282F758E8D00E2B842 /* architecture-frontend.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "architecture-frontend.md"; sourceTree = "<group>"; };
 		42D6482A2F758EC400E2B842 /* architecture-backend.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "architecture-backend.md"; sourceTree = "<group>"; };
 		6CC1DB872F735E1400188778 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
-		42CF160100000000A0000001 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Shared.xcconfig; path = Config/Shared.xcconfig; sourceTree = "<group>"; };
-		42CF160100000000A0000002 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; name = Local.xcconfig.example; path = Config/Local.xcconfig.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -53,6 +53,14 @@
 			);
 			sourceTree = "<group>";
 		};
+		425F7A202F43AA8100B7E65B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 		42CF160100000000A0000003 /* Config */ = {
 			isa = PBXGroup;
 			children = (
@@ -60,14 +68,6 @@
 				42CF160100000000A0000002 /* Local.xcconfig.example */,
 			);
 			name = Config;
-			sourceTree = "<group>";
-		};
-		425F7A202F43AA8100B7E65B /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				425F7A1F2F43AA8100B7E65B /* SuperCoolArtReferenceTool.app */,
-			);
-			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */

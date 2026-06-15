@@ -13,20 +13,32 @@ struct ContentView: View {
     @Environment(AppOpenHandler.self) private var openHandler
     @Environment(RecentBoardsManager.self) private var recentsManager
     @Environment(\.scenePhase) private var scenePhase
+    /// Used to resolve `canvasColor` to concrete RGB at save time so the hex
+    /// we write into the manifest matches what the user sees on screen
+    /// (even if the picked color was an adaptive system color).
+    @Environment(\.self) private var environment
 
     let initialURLs: [URL]
     let initialElements: [CMCanvasElement]?
     let initialBoardURL: URL?
+    /// `#RRGGBB` read from the board's manifest, or `nil` for new boards
+    /// and legacy v1 files. `nil` resolves to the platform's system
+    /// background (white in light mode, near-black in dark mode), so the
+    /// canvas adapts to the user's preference until they pick something
+    /// explicit in Settings.
+    let initialCanvasColorHex: String?
     var onBack: () -> Void = {}
 
     @State private var activeTool: CanvasTool = .pointer
     @State private var showingSettings = false
     @State private var urlsToInsert: [URL]?
-    
+
     // Settings
     @State private var showGrid = true
-    @State private var toolbarSide: ToolbarSide = .left
-    @State private var canvasColor: Color = .white
+    // Initial value comes from the saved manifest hex when present, else the
+    // system background. We use `_canvasColor` form in `init` so the @State
+    // wrapper is initialized from a constructor param rather than a literal.
+    @State private var canvasColor: Color
     
     @State private var snapshotToken: UUID?
     @State private var elementsToLoad: [CMCanvasElement]?
@@ -45,9 +57,44 @@ struct ContentView: View {
     @State private var saveErrorMessage = ""
     @State private var showBoardError = false
     @State private var boardErrorMessage = ""
+    /// True once the user picks a non-initial canvas color. `BoardCanvasView`'s
+    /// dirty flag only tracks the element store, so a color-only change wouldn't
+    /// otherwise trigger autosave — `wasDirty` would come back false and
+    /// `saveInPlace` would bail. Cleared in lockstep with `markCleanTrigger`
+    /// after a successful save.
+    @State private var canvasColorDirty = false
+    /// The hex that should be written to the manifest on the next save. Seeded
+    /// from `initialCanvasColorHex` and only mutated when the user actually
+    /// picks a color, so a board with no saved preference (`nil`) keeps that
+    /// state across element-edit autosaves — the canvas continues to follow
+    /// the system background instead of getting a baked-in color the first
+    /// time the user moves anything.
+    @State private var savedCanvasColorHex: String?
+
+    /// Custom init so `canvasColor` can default to either the manifest's saved
+    /// hex (when reopening a board) or the system background (new boards,
+    /// legacy v1 files). The remaining stored / @State properties keep their
+    /// declaration-site defaults.
+    init(
+        initialURLs: [URL],
+        initialElements: [CMCanvasElement]?,
+        initialBoardURL: URL?,
+        initialCanvasColorHex: String? = nil,
+        onBack: @escaping () -> Void = {}
+    ) {
+        self.initialURLs = initialURLs
+        self.initialElements = initialElements
+        self.initialBoardURL = initialBoardURL
+        self.initialCanvasColorHex = initialCanvasColorHex
+        self.onBack = onBack
+        let initial = initialCanvasColorHex.flatMap(Color.init(hex:))
+            ?? Color(uiColor: .systemBackground)
+        _canvasColor = State(initialValue: initial)
+        _savedCanvasColorHex = State(initialValue: initialCanvasColorHex)
+    }
 
     var body: some View {
-        ZStack {
+        NavigationStack {
             BoardCanvasView(
                 activeTool: $activeTool,
                 externalInsertURLs: $urlsToInsert,
@@ -70,17 +117,18 @@ struct ContentView: View {
                     }
                 }
             )
-            
-            CanvasOverlayLayout(
-                side: toolbarSide,
-                activeTool: $activeTool,
-                onBack: handleBack,
-                onUndo: { undoTrigger = UUID() },
-                onRedo: { redoTrigger = UUID() },
-                onAddItem: openImageImporter,
-                onSettings: { showingSettings = true },
-                canvasName: currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
-            )
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                CanvasNavigationToolbar(
+                    boardName: boardName,
+                    activeTool: $activeTool,
+                    onBack: handleBack,
+                    onUndo: { undoTrigger = UUID() },
+                    onRedo: { redoTrigger = UUID() },
+                    onAddItem: openImageImporter,
+                    onSettings: { showingSettings = true }
+                )
+            }
         }
         .fileImporter(
             isPresented: $importerPresented,
@@ -98,7 +146,18 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingSettings) {
-            CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
+            CanvasSettingsView(showGrid: $showGrid, canvasColor: $canvasColor)
+        }
+        // `.onChange` skips the value `canvasColor` was initialized to in
+        // `init`, so this only fires on real user picks (or programmatic
+        // changes after first render). Resolve the picked Color to concrete
+        // RGB right here — that's the value we'll write to the manifest, and
+        // doing it once at pick-time (vs every save) keeps "nil == no
+        // preference" stable across element-edit autosaves on boards the
+        // user hasn't touched the color on.
+        .onChange(of: canvasColor) { _, newValue in
+            savedCanvasColorHex = canvasColorHexString(from: newValue.resolve(in: environment))
+            canvasColorDirty = true
         }
         .alert("Save Failed", isPresented: $showSaveError) {
             Button("Discard & Leave", role: .destructive) { onBack() }
@@ -141,6 +200,10 @@ struct ContentView: View {
         }
     }
     
+    private var boardName: String {
+        currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
+    }
+
     private func openImageImporter() {
         Logger.importer.notice("Add Item tapped")
         importerPresented = true
@@ -157,31 +220,37 @@ struct ContentView: View {
     /// Off-main would be smoother for active use, but nothing calls this during active use —
     /// `.inactive` means the user is already out of the canvas view.
     private func saveInPlace(elements: [CMCanvasElement], wasDirty: Bool) {
-        guard wasDirty, let url = currentBoardURL else { return }
+        // The board needs persisting if either the element store changed or
+        // the user picked a new canvas color since open.
+        guard wasDirty || canvasColorDirty, let url = currentBoardURL else { return }
         let startedAt = Date()
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         do {
-            _ = try BoardArchiver.export(elements: elements, to: url)
+            _ = try BoardArchiver.export(elements: elements, canvasColorHex: savedCanvasColorHex, to: url)
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
             Logger.save.logSaveSuccess(elements: elements.count, url: url, durationMs: ms)
             markCleanTrigger = UUID()
+            canvasColorDirty = false
         } catch {
             Logger.save.logSaveFailure(url: url, error: error)
         }
     }
 
     private func saveAndGoBack(elements: [CMCanvasElement], wasDirty: Bool) {
-        guard wasDirty, let url = currentBoardURL else {
+        guard wasDirty || canvasColorDirty, let url = currentBoardURL else {
             onBack()
             return
         }
+        // `savedCanvasColorHex` is a plain `String?`, already Sendable — no
+        // env resolution needed at the actor boundary.
+        let colorHex = savedCanvasColorHex
         Task {
             let failure: Error? = await Task.detached(priority: .userInitiated) {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                 do {
-                    _ = try BoardArchiver.export(elements: elements, to: url)
+                    _ = try BoardArchiver.export(elements: elements, canvasColorHex: colorHex, to: url)
                     return nil as Error?
                 } catch {
                     return error
@@ -192,6 +261,7 @@ struct ContentView: View {
                 showSaveError = true
             } else {
                 markCleanTrigger = UUID()
+                canvasColorDirty = false
                 onBack()
             }
         }
@@ -199,7 +269,7 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(initialURLs: [], initialElements: nil, initialBoardURL: nil)
+    ContentView(initialURLs: [], initialElements: nil, initialBoardURL: nil, initialCanvasColorHex: nil)
         .environment(AppOpenHandler())
         .environment(RecentBoardsManager())
 }

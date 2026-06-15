@@ -7,95 +7,65 @@
 
 import SwiftUI
 
-/// Settings sheet for canvas options
+/// Settings sheet for canvas options.
+///
+/// A sheet can't live-sample the canvas the way the toolbar buttons do (it
+/// sits behind a dimming scrim), so we bridge the gap manually: a translucent
+/// material gives the frosted-glass look, and `preferredColorScheme` — derived
+/// from the canvas color's luminance — flips the whole panel light/dark to
+/// match the canvas, keeping text legible and avoiding a flashbang.
 struct CanvasSettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    
+    @Environment(\.self) private var environment
+
     @Binding var showGrid: Bool
-    @Binding var toolbarSide: ToolbarSide
     @Binding var canvasColor: Color
+
+    /// `.dark` over a dark canvas, `.light` over a light one (Rec. 709 luminance).
+    /// Uses `Color.Resolved` so we don't need to bridge through UIKit.
+    private var canvasColorScheme: ColorScheme {
+        let rgb = canvasColor.resolve(in: environment)
+        let luminance = 0.2126 * Double(rgb.red)
+            + 0.7152 * Double(rgb.green)
+            + 0.0722 * Double(rgb.blue)
+        return luminance < 0.5 ? .dark : .light
+    }
 
     var body: some View {
         NavigationStack {
-            List {
+            Form {
                 Section("Canvas") {
-                    HStack {
-                        Text("Canvas Color")
-                            .foregroundStyle(DesignSystem.Colors.text)
-                        Spacer()
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(canvasColor)
-                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                                .allowsHitTesting(false)
-                            ColorPicker("", selection: $canvasColor, supportsOpacity: false)
-                                .labelsHidden()
-                                .scaleEffect(CGSize(width: 2.0, height: 2.0))
-                                .opacity(0.015)
-                        }
-                        .frame(width: 48, height: 28)
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
-                    }
+                    ColorPicker("Canvas Color", selection: $canvasColor, supportsOpacity: false)
 
                     Toggle("Show Grid", isOn: $showGrid)
-                        .tint(DesignSystem.Colors.tertiary)
-                        .foregroundStyle(DesignSystem.Colors.text)
+                }
+                .listRowBackground(Color.clear)
 
-                    HStack {
-                        Text("Toolbar Position")
-                            .foregroundStyle(DesignSystem.Colors.text)
-                        Spacer()
-                        Picker("Toolbar Position", selection: $toolbarSide) {
-                            Text("Left")
-                                .tag(ToolbarSide.left)
-                            Text("Right")
-                                .tag(ToolbarSide.right)
-                        }
-                        .labelsHidden()
-                        .tint(DesignSystem.Colors.secondary)
-                    }
-                }
-                .listRowBackground(DesignSystem.Colors.primary)
-                
                 Section("About") {
-                    HStack {
-                        Text("Version")
-                            .foregroundStyle(DesignSystem.Colors.text)
-                        Spacer()
-                        Text("1.0.0")
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                    }
+                    LabeledContent("Version", value: "1.0.0")
                 }
-                .listRowBackground(DesignSystem.Colors.primary)
+                .listRowBackground(Color.clear)
             }
+            // Hide the Form's opaque grouped background so the translucent
+            // presentation material (and the blurred canvas) shows through.
             .scrollContentBackground(.hidden)
-            .background(Color.black)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(DesignSystem.Colors.primary, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .foregroundStyle(DesignSystem.Colors.tertiary)
+                    Button("Done") { dismiss() }
                 }
             }
         }
+        .tint(DesignSystem.Colors.tertiary)
+        .presentationBackground(.thinMaterial)
+        .preferredColorScheme(canvasColorScheme)
     }
-}
-
-enum ToolbarSide: String, Codable {
-    case left
-    case right
 }
 
 #Preview {
     @Previewable @State var showGrid = true
-    @Previewable @State var toolbarSide = ToolbarSide.left
     @Previewable @State var canvasColor = Color.white
 
-    CanvasSettingsView(showGrid: $showGrid, toolbarSide: $toolbarSide, canvasColor: $canvasColor)
+    CanvasSettingsView(showGrid: $showGrid, canvasColor: $canvasColor)
 }

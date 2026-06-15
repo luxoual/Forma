@@ -19,7 +19,10 @@ struct FilePickerView: View {
     @Environment(RecentBoardsManager.self) private var recentsManager
 
     var onNewBoard: (URL) -> Void
-    var onBoardSelected: ([CMCanvasElement], URL) -> Void
+    /// Called when an existing board is opened. The hex string is the canvas
+    /// color saved in the manifest (`#RRGGBB`), or `nil` for legacy boards
+    /// — the caller resolves `nil` to the system background.
+    var onBoardSelected: ([CMCanvasElement], URL, String?) -> Void
     var onFilesDropped: ([URL]) -> Void
 
     var body: some View {
@@ -75,36 +78,29 @@ struct FilePickerView: View {
             }
 
             HStack(spacing: 16) {
-                Button {
+                // Primary action: prominent glass with brand tint.
+                Button("New Board") {
                     newBoardDocument = BoardExportDocument(elements: [])
                     showingNewBoardExporter = true
-                } label: {
-                    Text("New Board")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(DesignSystem.Colors.primary)
-                        .padding(.horizontal, 32)
-                        .padding(.vertical, 12)
-                        .background(DesignSystem.Colors.tertiary, in: .rect(cornerRadius: 8))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .foregroundStyle(DesignSystem.Colors.primary)
+                .tint(DesignSystem.Colors.tertiary)
 
-                Button {
+                // Secondary action: translucent glass.
+                Button("Open Board") {
                     showingBoardPicker = true
-                } label: {
-                    Text("Open Board")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(DesignSystem.Colors.tertiary)
-                        .padding(.horizontal, 32)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
+                .controlSize(.large)
+                .tint(DesignSystem.Colors.tertiary)
             }
 
-            recentBoardsSection
+            RecentBoardsList(
+                recents: recentsManager.validEntries(limit: 5),
+                onOpen: openRecentBoard
+            )
         }
         .fileImporter(
             isPresented: $showingBoardPicker,
@@ -137,64 +133,18 @@ struct FilePickerView: View {
         }
     }
 
-    @ViewBuilder
-    private var recentBoardsSection: some View {
-        let recents = recentsManager.validEntries(limit: 5)
-        if !recents.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Recent Boards")
-                    .font(.headline)
-                    .foregroundStyle(DesignSystem.Colors.text)
-
-                VStack(spacing: 0) {
-                    ForEach(recents) { entry in
-                        Button {
-                            openRecentBoard(entry)
-                        } label: {
-                            HStack {
-                                Image(systemName: "doc.fill")
-                                    .foregroundStyle(DesignSystem.Colors.tertiary)
-                                    .frame(width: 24)
-
-                                Text(entry.name)
-                                    .foregroundStyle(DesignSystem.Colors.text)
-
-                                Spacer()
-
-                                Text(entry.lastOpened.formatted(.relative(presentation: .named)))
-                                    .font(.caption)
-                                    .foregroundStyle(DesignSystem.Colors.secondary)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-
-                        if entry.id != recents.last?.id {
-                            Divider()
-                                .background(DesignSystem.Colors.secondary.opacity(0.3))
-                                .padding(.leading, 56)
-                        }
-                    }
-                }
-                .background(DesignSystem.Colors.secondary.opacity(0.15), in: .rect(cornerRadius: 10))
-            }
-            .frame(maxWidth: 500)
-            .padding(.top, 8)
-        }
-    }
-
     private func openBoard(at url: URL) {
         Task {
             do {
-                let elements = try await Task.detached(priority: .userInitiated) {
-                    let accessing = url.startAccessingSecurityScopedResource()
-                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                    return try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
+                // `BoardArchiver.importElements` already wraps its own
+                // `startAccessingSecurityScopedResource` / stop pair, so we
+                // don't need to nest one here — let the archiver own the
+                // scope.
+                let imported = try await Task.detached(priority: .userInitiated) {
+                    try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                 }.value
                 recentsManager.record(url: url)
-                onBoardSelected(elements, url)
+                onBoardSelected(imported.elements, url, imported.canvasColorHex)
             } catch {
                 importErrorMessage = error.localizedDescription
                 showImportError = true
@@ -214,6 +164,6 @@ struct FilePickerView: View {
 }
 
 #Preview {
-    FilePickerView(onNewBoard: { _ in }, onBoardSelected: { _, _ in }, onFilesDropped: { _ in })
+    FilePickerView(onNewBoard: { _ in }, onBoardSelected: { _, _, _ in }, onFilesDropped: { _ in })
         .environment(RecentBoardsManager())
 }

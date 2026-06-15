@@ -15,17 +15,36 @@ import os
 /// Manifest format (`manifest.json`) carries both image-based elements (with copied
 /// asset bytes in `assets/`) and text-based elements (whose payload — content,
 /// fontName, fontSize, color, optional wrapWidth — lives entirely in the manifest
-/// with no asset file). When `copyAssetsToAppSupport` is true, image asset bytes are
-/// copied into the app's Application Support directory so the canvas can keep stable
-/// file URLs after temporary unzip directories are removed.
-enum BoardArchiver {
-    /// Import elements from a `.refboard` URL. Supports both legacy package folders and
-    /// the new single-file ZIP container.
+/// with no asset file), plus board-level state like canvas color. When
+/// `copyAssetsToAppSupport` is true, image asset bytes are copied into the app's
+/// Application Support directory so the canvas can keep stable file URLs after
+/// temporary unzip directories are removed.
+/// `nonisolated` because `BoardArchiver` is a stateless utility (pure file IO
+/// + JSON), and the project defaults type isolation to `MainActor` — without
+/// this opt-out every helper would inherit that and the off-main autosave /
+/// import paths would all spam warnings.
+nonisolated enum BoardArchiver {
+    /// Result of importing a `.refboard`. Carries the placed elements plus any
+    /// board-level state stored in the manifest (currently just the canvas
+    /// color). Optional fields are `nil` when missing from the file —
+    /// callers fall back to whatever default they prefer (system background
+    /// for canvas color, etc.).
+    struct ImportResult {
+        let elements: [CMCanvasElement]
+        /// `#RRGGBB` hex, or `nil` for legacy v1 boards saved before this
+        /// field existed. The SwiftUI layer turns it into a `Color`.
+        let canvasColorHex: String?
+    }
+
+    /// Import a `.refboard` URL. Supports both legacy package folders and the
+    /// single-file ZIP container.
     /// - Parameters:
     ///   - url: Source file URL (likely a security-scoped resource when coming from `.onOpenURL`).
     ///   - copyAssetsToAppSupport: When `true`, copy any referenced assets into Application Support.
-    /// - Returns: An array of `CMCanvasElement` decoded from the package's `manifest.json`. The array may be empty if the manifest contains no elements.
-    static func importElements(from url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
+    /// - Returns: An `ImportResult` decoded from the package's `manifest.json`.
+    ///   The element array may be empty; the canvas color is `nil` for files
+    ///   written before the field existed.
+    static func importElements(from url: URL, copyAssetsToAppSupport: Bool) throws -> ImportResult {
         guard url.pathExtension.lowercased() == "refboard" else {
             throw ArchiverError.unsupportedFileExtension
         }
@@ -49,7 +68,7 @@ enum BoardArchiver {
         return try importFromZip(url: url, copyAssetsToAppSupport: copyAssetsToAppSupport)
     }
 
-    private static func importFromZip(url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
+    private static func importFromZip(url: URL, copyAssetsToAppSupport: Bool) throws -> ImportResult {
         let fm = FileManager.default
         let tempDir = fm.temporaryDirectory
             .appendingPathComponent("RefboardImport-\(UUID().uuidString)", isDirectory: true)
@@ -72,7 +91,7 @@ enum BoardArchiver {
         return try importFromPackage(url: packageURL, copyAssetsToAppSupport: copyAssetsToAppSupport)
     }
 
-    private static func importFromPackage(url: URL, copyAssetsToAppSupport: Bool) throws -> [CMCanvasElement] {
+    private static func importFromPackage(url: URL, copyAssetsToAppSupport: Bool) throws -> ImportResult {
         // Ensure it's a directory package
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
@@ -138,7 +157,7 @@ enum BoardArchiver {
                 results.append(element)
             }
         }
-        return results
+        return ImportResult(elements: results, canvasColorHex: manifest.canvasColor)
     }
 
     private static func safeAssetURL(packageURL: URL, relativePath: String) -> URL? {
@@ -169,7 +188,11 @@ enum BoardArchiver {
     ///
     /// `nonisolated` so autosave can run this on a utility-priority detached task without
     /// hopping to the main actor.
-    nonisolated static func export(elements: [CMCanvasElement], to destination: URL) throws -> URL {
+    ///
+    /// `canvasColorHex` is `#RRGGBB`; pass `nil` for "no preference saved" (a fresh
+    /// new-board export, or a board the user hasn't touched the color on). On
+    /// reopen, the SwiftUI layer falls back to the system background when nil.
+    nonisolated static func export(elements: [CMCanvasElement], canvasColorHex: String?, to destination: URL) throws -> URL {
         let signposter = OSSignposter.archiver
         let signpostID = signposter.makeSignpostID()
         let intervalState = signposter.beginInterval("export", id: signpostID, "provider: \(fileProviderDescription(for: destination), privacy: .public), elements: \(elements.count, privacy: .public)")
@@ -249,7 +272,9 @@ enum BoardArchiver {
         if let existing = archive["manifest.json"] {
             try archive.remove(existing)
         }
-        let manifestData = try JSONEncoder().encode(BoardManifest(version: 1, elements: manifestElements))
+        let manifestData = try JSONEncoder().encode(
+            BoardManifest(version: 2, elements: manifestElements, canvasColor: canvasColorHex)
+        )
         try archive.addEntry(
             with: "manifest.json",
             type: .file,
@@ -343,6 +368,11 @@ enum BoardArchiver {
     private struct BoardManifest: Codable {
         var version: Int
         var elements: [ManifestElement]
+        /// `#RRGGBB` hex string for the board's canvas background, or `nil`
+        /// (= "use system default"). Added in manifest version 2 — v1 files
+        /// have no key, which `Codable` synthesizes as `nil` automatically,
+        /// so old boards still decode cleanly.
+        var canvasColor: String?
     }
 
     private struct ManifestElement: Codable {

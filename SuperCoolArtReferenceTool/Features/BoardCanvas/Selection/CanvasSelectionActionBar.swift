@@ -7,19 +7,13 @@ struct CanvasSelectionActionBar: View {
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(DesignSystem.Colors.destructive)
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Delete")
-        }
-        .padding(.horizontal, 4)
-        .background(DesignSystem.Colors.primary, in: .rect(cornerRadius: 10))
-        .shadow(color: .black.opacity(0.3), radius: 8, x: 2, y: 2)
+        // Title is kept for VoiceOver, then hidden visually so only the
+        // trash icon shows in the button.
+        Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.glass)
+            .tint(.red)
+            .controlSize(.large)
     }
 }
 
