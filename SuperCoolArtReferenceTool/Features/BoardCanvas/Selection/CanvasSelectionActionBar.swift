@@ -22,6 +22,8 @@ struct CanvasSelectionActionBar: View {
     /// selection contains no text elements (color controls hide then).
     let textColorHex: String?
     let onPickTextColor: (String) -> Void
+    /// Nil hides the Create Frame button (e.g. nothing frameable selected).
+    let onCreateFrame: (() -> Void)?
     let onDelete: () -> Void
 
     var body: some View {
@@ -38,6 +40,18 @@ struct CanvasSelectionActionBar: View {
                     currentHex: textColorHex,
                     onPick: onPickTextColor
                 )
+            }
+
+            if let onCreateFrame {
+                Button("Create Frame", systemImage: "square.on.square", action: onCreateFrame)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.glass)
+                    .tint(DesignSystem.Colors.tertiary)
+                    .controlSize(.large)
+                    .frame(
+                        width: CanvasActionBarMetrics.buttonSide,
+                        height: CanvasActionBarMetrics.buttonSide
+                    )
             }
 
             // Title is kept for VoiceOver, then hidden visually so only the
@@ -59,6 +73,7 @@ struct CanvasSelectionActionBar: View {
     CanvasSelectionActionBar(
         textColorHex: "#3977F8",
         onPickTextColor: { _ in },
+        onCreateFrame: {},
         onDelete: {}
     )
     .padding()
@@ -69,6 +84,7 @@ struct CanvasSelectionActionBar: View {
     CanvasSelectionActionBar(
         textColorHex: nil,
         onPickTextColor: { _ in },
+        onCreateFrame: {},
         onDelete: {}
     )
     .padding()

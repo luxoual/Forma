@@ -57,6 +57,7 @@ struct BoardCanvasView: View {
     /// actually changed. Nil for newly-placed texts (those use the
     /// `.insert` command path instead) and when no re-edit is active.
     @State private var editingTextOriginalContent: String? = nil
+    @State private var placedFrames: [PlacedFrame] = []
 
     @State private var nextZIndex: Int = 0
     @State private var canvasSize: CGSize = .zero
@@ -113,6 +114,7 @@ struct BoardCanvasView: View {
     /// color on every frame of a spectrum drag; without coalescing, one
     /// visit to the picker would push dozens of undo steps.
     @State private var textColorCommitTask: Task<Void, Never>? = nil
+    private let defaultFramePadding: CGFloat = 40
 
     // Zoom bounds
     private let minScale: CGFloat = 0.05
@@ -203,134 +205,11 @@ struct BoardCanvasView: View {
                     )
                 }
 
-                // Render detailed visible images only (world -> screen mapping)
-                ForEach(renderPlan.detailItems) { item in
-                    let isSelected = selection.selectedIDs.contains(item.id)
-                    let isBeingResized = selection.isResizing && selection.resizeElementID == item.id
-                    let isBeingGroupResized = selection.isGroupResizing && isSelected
+                frameLayer()
+                imageLayer(renderPlan: renderPlan)
+                textLayer()
 
-                    let liveRect: CGRect = {
-                        if isBeingGroupResized,
-                           let startRects = selection.groupResizeStartRects,
-                           let originalRect = startRects[item.id],
-                           let bboxStart = selection.groupResizeBBoxStart,
-                           let bboxCurrent = selection.groupResizeBBoxCurrent {
-                            return scaledRect(original: originalRect, bboxStart: bboxStart, bboxCurrent: bboxCurrent)
-                        } else if isBeingResized {
-                            return selection.resizeCurrentRect ?? item.worldRect
-                        } else {
-                            return item.worldRect
-                        }
-                    }()
-
-                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
-                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
-
-                    let multiSelected = selection.selectedIDs.count > 1
-
-                    let maxDimensionPoints = max(liveRect.width * camera.scale, liveRect.height * camera.scale)
-                    let targetMaxPixelSize = FileImageView.requestedThumbnailPixelSize(
-                        screenMaxDimensionPoints: maxDimensionPoints,
-                        displayScale: displayScale,
-                        isInteracting: isInteracting
-                    )
-                    FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
-                        .frame(width: liveRect.width * camera.scale,
-                               height: liveRect.height * camera.scale)
-                        .overlay {
-                            if isSelected && !multiSelected {
-                                SelectionOverlay(activeHandle: selection.resizeHandle)
-                            } else if isSelected && multiSelected {
-                                // Light border only for individual items in a multi-select
-                                Rectangle()
-                                    .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)
-                            }
-                        }
-                        .onTapGesture {
-                            let behavior = toolBehavior(for: activeTool)
-                            let store = canvasStore
-                            let sel = selection
-                            let id = item.id
-                            let extending = keyModifiers.isShiftDown
-                            Task {
-                                await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
-                                await refreshVisibleElements()
-                            }
-                        }
-                        .accessibilityAddTraits(.isButton)
-                        .position(x: (liveRect.midX * camera.scale) + camera.offset.width + liveDX,
-                                  y: (liveRect.midY * camera.scale) + camera.offset.height + liveDY)
-                        .shadow(radius: isInteracting ? 0 : 1)
-                        .zIndex(Double(item.zIndex))
-                }
-
-                // Render placed text elements. Position is computed in screen
-                // space (worldRect.midX × scale + offset). Font size and
-                // wrap width are in BASE/world units; `TextElementView`
-                // applies `.scaleEffect(scale)` so the visible size grows
-                // and shrinks with canvas zoom. The element's world rect
-                // size is updated by `.onGeometryChange` inside the text
-                // view, so hit-testing / selection still operate in world
-                // space against the latest measured layout.
-                ForEach($placedTexts) { $placed in
-                    let isSelected = selection.selectedIDs.contains(placed.id)
-                    let isMultiSelected = selection.selectedIDs.count > 1
-                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
-                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
-                    let id = placed.id
-                    let isEditing = editingTextID == id
-
-                    TextElementView(
-                        placed: $placed,
-                        scale: camera.scale,
-                        isEditing: isEditing,
-                        isSelected: isSelected,
-                        isMultiSelected: isMultiSelected,
-                        onCommitEdit: { commitTextEdit(id: id) }
-                    )
-                    .position(
-                        x: (placed.worldRect.midX * camera.scale) + camera.offset.width + liveDX,
-                        y: (placed.worldRect.midY * camera.scale) + camera.offset.height + liveDY
-                    )
-                    .onTapGesture {
-                        // Tap-on-sole-selected text → re-enter edit mode.
-                        // Standard across both tools since either can produce
-                        // a single-text selection. Clearing selection first
-                        // hides the action bar / chrome so they don't sit on
-                        // top of the focused TextField.
-                        if selection.selectedIDs.count == 1
-                            && selection.selectedIDs.contains(id) {
-                            selection.clearSelection()
-                            // Snapshot the current content so we can detect a
-                            // real change at commit-time and push undo.
-                            editingTextOriginalContent = placed.content
-                            editingTextID = id
-                            return
-                        }
-                        let behavior = toolBehavior(for: activeTool)
-                        let store = canvasStore
-                        let sel = selection
-                        let extending = keyModifiers.isShiftDown
-                        Task {
-                            await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
-                        }
-                    }
-                    .accessibilityAddTraits(.isButton)
-                    .zIndex(Double(placed.zIndex))
-                }
-
-                // Marquee selection rectangle
-                if selection.isMarqueeing, let worldRect = selection.marqueeWorldRect {
-                    let screenRect = CGRect(
-                        x: worldRect.origin.x * camera.scale + camera.offset.width,
-                        y: worldRect.origin.y * camera.scale + camera.offset.height,
-                        width: worldRect.width * camera.scale,
-                        height: worldRect.height * camera.scale
-                    )
-                    MarqueeOverlayView(screenRect: screenRect)
-                        .allowsHitTesting(false)
-                        .zIndex(Double(Int.max - 1))
-                }
+                marqueeLayer()
 
                 // Solo-text selection chrome — rendered externally at
                 // screen coordinates so the resize handles stay at a
@@ -340,86 +219,23 @@ struct BoardCanvasView: View {
                 // text — bad for touch targets on iPad). Symmetric with
                 // how image group selection already renders chrome
                 // outside the per-image view.
-                if selection.selectedIDs.count == 1,
-                   let selectedID = selection.selectedIDs.first,
-                   let placed = placedTexts.first(where: { $0.id == selectedID }),
-                   editingTextID != selectedID,
-                   !selection.isDragging,
-                   !selection.isMarqueeing {
-                    let screenRect = CGRect(
-                        x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
-                        y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
-                        width: placed.worldRect.width * camera.scale,
-                        height: placed.worldRect.height * camera.scale
-                    )
-                    SelectionOverlay(
-                        handles: TextElementView.textHandles,
-                        activeHandle: selection.resizeHandle
-                    )
-                    .frame(width: screenRect.width, height: screenRect.height)
-                    .position(x: screenRect.midX, y: screenRect.midY)
-                    .allowsHitTesting(false)
-                    .zIndex(Double(Int.max - 2))
-                }
+                selectedTextChromeLayer()
 
                 // Editing border for the active text — rendered externally
                 // for the same reason as the selection chrome above. The
                 // 1.5pt stroke would otherwise scale with the text via
                 // scaleEffect and become invisible at low zoom levels
                 // when the text has been size-resized up.
-                if let editingID = editingTextID,
-                   let placed = placedTexts.first(where: { $0.id == editingID }) {
-                    let screenRect = CGRect(
-                        x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
-                        y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
-                        width: placed.worldRect.width * camera.scale,
-                        height: placed.worldRect.height * camera.scale
-                    )
-                    Rectangle()
-                        .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
-                        .frame(width: screenRect.width, height: screenRect.height)
-                        .position(x: screenRect.midX, y: screenRect.midY)
-                        .allowsHitTesting(false)
-                        .zIndex(Double(Int.max - 2))
-                }
+                editingTextBorderLayer()
+
+                selectedFrameBorderLayer()
 
                 // Floating action bar beneath the current selection.
-                SelectionActionBarLayer(
-                    boundingBox: selectionBoundingBox(),
-                    scale: camera.scale,
-                    offset: camera.offset,
-                    isInteracting: selection.isDragging
-                        || selection.isResizing
-                        || selection.isGroupResizing
-                        || selection.isMarqueeing,
-                    textColorHex: selectionTextColorHex(),
-                    onPickTextColor: applyTextColor(hex:),
-                    onDelete: deleteSelection
-                )
-                .zIndex(Double(Int.max))
-
                 // Group bounding box with resize handles
-                if selection.selectedIDs.count > 1, !selection.isDragging {
-                    let bbox: CGRect? = selection.isGroupResizing
-                        ? (selection.groupResizeBBoxCurrent ?? groupBoundingBox())
-                        : groupBoundingBox()
-                    if let bbox {
-                        let screenRect = CGRect(
-                            x: bbox.origin.x * camera.scale + camera.offset.width,
-                            y: bbox.origin.y * camera.scale + camera.offset.height,
-                            width: bbox.width * camera.scale,
-                            height: bbox.height * camera.scale
-                        )
-                        GroupSelectionOverlay(activeHandle: selection.resizeHandle)
-                            .frame(width: screenRect.width, height: screenRect.height)
-                            .position(x: screenRect.midX, y: screenRect.midY)
-                            .allowsHitTesting(false)
-                            .zIndex(Double(Int.max))
-                    }
-                }
+                groupSelectionOverlayLayer()
             }
             .overlay {
-                if placedImages.isEmpty {
+                if placedImages.isEmpty && placedTexts.isEmpty && placedFrames.isEmpty {
                     EmptyCanvasOverlay()
                 }
             }
@@ -438,6 +254,18 @@ struct BoardCanvasView: View {
             })
             .background {
                 canvasColor.ignoresSafeArea()
+            }
+            .overlay(alignment: .topLeading) {
+                AssetOutlinerView(
+                    nodes: assetOutlineNodes(),
+                    selectedIDs: selection.selectedIDs,
+                    canCreateFrame: canCreateFrameFromSelection(),
+                    onSelect: selectAssetFromOutliner,
+                    onCreateFrame: createFrameFromSelection,
+                    onRenameFrame: renameFrame
+                )
+                .padding(.leading, 12)
+                .padding(.top, 12)
             }
             .onAppear {
                 canvasSize = geo.size
@@ -625,12 +453,16 @@ struct BoardCanvasView: View {
                                     selection.textResizeStartWorldRect = text.worldRect
                                     selection.textResizeElementID = text.id
                                 case .group(let handle, let bbox):
+                                    let resizeIDs = expandedElementIDs(for: selection.selectedIDs)
                                     var startRects: [UUID: CGRect] = [:]
-                                    for img in placedImages where selection.selectedIDs.contains(img.id) {
+                                    for img in placedImages where resizeIDs.contains(img.id) {
                                         startRects[img.id] = img.worldRect
                                     }
+                                    for frame in placedFrames where resizeIDs.contains(frame.id) {
+                                        startRects[frame.id] = frame.worldRect
+                                    }
                                     var startTextStates: [UUID: TextResizeSnapshot] = [:]
-                                    for txt in placedTexts where selection.selectedIDs.contains(txt.id) {
+                                    for txt in placedTexts where resizeIDs.contains(txt.id) {
                                         startTextStates[txt.id] = TextResizeSnapshot(
                                             fontSize: txt.fontSize,
                                             wrapWidth: txt.wrapWidth,
@@ -656,6 +488,9 @@ struct BoardCanvasView: View {
                                 HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
                             }
                             items.append(contentsOf: placedTexts.map {
+                                HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
+                            })
+                            items.append(contentsOf: placedFrames.map {
                                 HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
                             })
                             let mode = behavior.dragBegan(
@@ -707,6 +542,205 @@ struct BoardCanvasView: View {
             .background(TwoFingerPanView(onPan: handleTwoFingerPan))
             .background(PinchGestureView(onPinch: handlePinch))
             .background(WindowUndoManagerReader { commandHistory.attach($0) })
+        }
+    }
+
+    @ViewBuilder
+    private func frameLayer() -> some View {
+        let sortedFrames = placedFrames.sorted { $0.zIndex < $1.zIndex }
+        ForEach(sortedFrames, id: \.id) { frame in
+            let isSelected = selection.selectedIDs.contains(frame.id)
+            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
+            let screenRect = CGRect(
+                x: frame.worldRect.origin.x * camera.scale + camera.offset.width + liveDX,
+                y: frame.worldRect.origin.y * camera.scale + camera.offset.height + liveDY,
+                width: frame.worldRect.width * camera.scale,
+                height: frame.worldRect.height * camera.scale
+            )
+
+            CanvasPlacedFrameView(
+                title: frame.title,
+                screenRect: screenRect,
+                isSelected: isSelected,
+                zIndex: frame.zIndex,
+                onTap: { handleItemTap(frame.id, refreshAfterSelection: false) }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func imageLayer(renderPlan: ImageRenderPlan) -> some View {
+        let selectedIDs = selection.selectedIDs
+        ForEach(renderPlan.detailItems) { item in
+            let isSelected = selectedIDs.contains(item.id)
+            let isBeingResized = selection.isResizing && selection.resizeElementID == item.id
+
+            let liveRect: CGRect = {
+                if isBeingResized {
+                    return selection.resizeCurrentRect ?? item.worldRect
+                } else {
+                    return item.worldRect
+                }
+            }()
+
+            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
+
+            let multiSelected = selectedIDs.count > 1
+            let scaledWidth = liveRect.width * camera.scale
+            let scaledHeight = liveRect.height * camera.scale
+            let maxDimensionPoints = max(scaledWidth, scaledHeight)
+            let position = screenPosition(for: liveRect, dx: liveDX, dy: liveDY)
+            let targetMaxPixelSize = FileImageView.requestedThumbnailPixelSize(
+                screenMaxDimensionPoints: maxDimensionPoints,
+                displayScale: displayScale,
+                isInteracting: isInteracting
+            )
+            CanvasPlacedImageItemView(
+                url: item.url,
+                targetMaxPixelSize: targetMaxPixelSize,
+                isInteracting: isInteracting,
+                size: CGSize(width: scaledWidth, height: scaledHeight),
+                position: position,
+                isSelected: isSelected,
+                isMultiSelected: multiSelected,
+                activeHandle: selection.resizeHandle,
+                zIndex: item.zIndex,
+                onTap: { handleItemTap(item.id, refreshAfterSelection: true) }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func textLayer() -> some View {
+        let selectedIDs = selection.selectedIDs
+        ForEach(Array(placedTexts.indices), id: \.self) { index in
+            let placed = placedTexts[index]
+            let isSelected = selectedIDs.contains(placed.id)
+            let isMultiSelected = selectedIDs.count > 1
+            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
+            let id = placed.id
+            let isEditing = editingTextID == id
+            let isOnlySelected = selectedIDs.count == 1 && selectedIDs.contains(id)
+            let position = screenPosition(for: placed.worldRect, dx: liveDX, dy: liveDY)
+
+            CanvasPlacedTextItemView(
+                placed: $placedTexts[index],
+                scale: camera.scale,
+                position: position,
+                isEditing: isEditing,
+                isSelected: isSelected,
+                isMultiSelected: isMultiSelected,
+                onCommitEdit: { commitTextEdit(id: id) },
+                onTap: { handleTextTap(id, currentContent: placed.content, isOnlySelected: isOnlySelected) }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func selectedTextChromeLayer() -> some View {
+        if selection.selectedIDs.count == 1,
+           let selectedID = selection.selectedIDs.first,
+           let placed = placedTexts.first(where: { $0.id == selectedID }),
+           editingTextID != selectedID,
+           !selection.isDragging,
+           !selection.isMarqueeing {
+            let screenRect = CGRect(
+                x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: placed.worldRect.width * camera.scale,
+                height: placed.worldRect.height * camera.scale
+            )
+            SelectionOverlay(
+                handles: TextElementView.textHandles,
+                activeHandle: selection.resizeHandle
+            )
+            .frame(width: screenRect.width, height: screenRect.height)
+            .position(x: screenRect.midX, y: screenRect.midY)
+            .allowsHitTesting(false)
+            .zIndex(Double(Int.max - 2))
+        }
+    }
+
+    @ViewBuilder
+    private func editingTextBorderLayer() -> some View {
+        if let editingID = editingTextID,
+           let placed = placedTexts.first(where: { $0.id == editingID }) {
+            let screenRect = CGRect(
+                x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: placed.worldRect.width * camera.scale,
+                height: placed.worldRect.height * camera.scale
+            )
+            CanvasScreenRectBorderView(
+                screenRect: screenRect,
+                lineWidth: 1.5,
+                color: DesignSystem.Colors.tertiary
+            )
+            .zIndex(Double(Int.max - 2))
+        }
+    }
+
+    @ViewBuilder
+    private func selectedFrameBorderLayer() -> some View {
+        if selection.selectedIDs.count == 1,
+           let selectedID = selection.selectedIDs.first,
+           let frame = placedFrames.first(where: { $0.id == selectedID }),
+           !selection.isDragging,
+           !selection.isMarqueeing {
+            let worldRect = selection.isGroupResizing
+                ? (selection.groupResizeBBoxCurrent ?? frame.worldRect)
+                : frame.worldRect
+            let screenRect = CGRect(
+                x: worldRect.origin.x * camera.scale + camera.offset.width,
+                y: worldRect.origin.y * camera.scale + camera.offset.height,
+                width: worldRect.width * camera.scale,
+                height: worldRect.height * camera.scale
+            )
+            GroupSelectionOverlay(activeHandle: selection.resizeHandle)
+                .frame(width: screenRect.width, height: screenRect.height)
+                .position(x: screenRect.midX, y: screenRect.midY)
+                .allowsHitTesting(false)
+                .zIndex(Double(Int.max - 2))
+        }
+    }
+
+    @ViewBuilder
+    private func marqueeLayer() -> some View {
+        if selection.isMarqueeing, let worldRect = selection.marqueeWorldRect {
+            let screenRect = CGRect(
+                x: worldRect.origin.x * camera.scale + camera.offset.width,
+                y: worldRect.origin.y * camera.scale + camera.offset.height,
+                width: worldRect.width * camera.scale,
+                height: worldRect.height * camera.scale
+            )
+            MarqueeOverlayView(screenRect: screenRect)
+                .allowsHitTesting(false)
+                .zIndex(Double(Int.max - 1))
+        }
+    }
+
+    @ViewBuilder
+    private func groupSelectionOverlayLayer() -> some View {
+        if selection.selectedIDs.count > 1, !selection.isDragging {
+            let bbox: CGRect? = selection.isGroupResizing
+                ? (selection.groupResizeBBoxCurrent ?? groupBoundingBox())
+                : groupBoundingBox()
+            if let bbox {
+                let screenRect = CGRect(
+                    x: bbox.origin.x * camera.scale + camera.offset.width,
+                    y: bbox.origin.y * camera.scale + camera.offset.height,
+                    width: bbox.width * camera.scale,
+                    height: bbox.height * camera.scale
+                )
+                GroupSelectionOverlay(activeHandle: selection.resizeHandle)
+                    .frame(width: screenRect.width, height: screenRect.height)
+                    .position(x: screenRect.midX, y: screenRect.midY)
+                    .allowsHitTesting(false)
+                    .zIndex(Double(Int.max))
+            }
         }
     }
 
@@ -783,6 +817,7 @@ struct BoardCanvasView: View {
     /// Pure query: hit-test screen point against handles on the current selection.
     private func hitTestHandle(screenPoint: CGPoint) -> HandleHitResult? {
         let textIDs = Set(placedTexts.map(\.id))
+        let frameIDs = Set(placedFrames.map(\.id))
         // Solo text selection — corners scale font (Freeform-style),
         // left/right edges set wrap width. Top/bottom never hit since
         // the visual overlay doesn't render those handles for text, but
@@ -803,11 +838,29 @@ struct BoardCanvasView: View {
             }
             return nil
         }
+        // Solo frame selection — resize the frame as a group with all of
+        // its descendants so child assets scale in sync.
+        if selection.selectedIDs.count == 1,
+           let selectedID = selection.selectedIDs.first,
+           frameIDs.contains(selectedID),
+           let frame = placedFrames.first(where: { $0.id == selectedID }) {
+            let frameScreenRect = CGRect(
+                x: frame.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: frame.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: frame.worldRect.width * camera.scale,
+                height: frame.worldRect.height * camera.scale
+            )
+            if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: frameScreenRect) {
+                return .group(handle: handle, bbox: frame.worldRect)
+            }
+            return nil
+        }
         // (Mixed/pure-text multi-selections fall through to the group
         // path below — text scales uniformly with the bbox, same as
         // images. Single-text selections were already handled above.)
         if selection.selectedIDs.count == 1,
            let selectedID = selection.selectedIDs.first,
+           !frameIDs.contains(selectedID),
            let item = visibleImages.first(where: { $0.id == selectedID }) {
             let itemScreenRect = CGRect(
                 x: item.worldRect.origin.x * camera.scale + camera.offset.width,
@@ -1082,6 +1135,7 @@ struct BoardCanvasView: View {
     private func selectionBoundingBox() -> CGRect? {
         var rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect)
         rects.append(contentsOf: placedTexts.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect))
+        rects.append(contentsOf: placedFrames.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect))
         guard let first = rects.first else { return nil }
         return rects.dropFirst().reduce(first) { $0.union($1) }
     }
@@ -1090,6 +1144,7 @@ struct BoardCanvasView: View {
         guard selection.selectedIDs.count > 1 else { return nil }
         var rects = placedImages.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect)
         rects.append(contentsOf: placedTexts.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect))
+        rects.append(contentsOf: placedFrames.filter { selection.selectedIDs.contains($0.id) }.map(\.worldRect))
         guard !rects.isEmpty else { return nil }
         return rects.dropFirst().reduce(rects[0]) { $0.union($1) }
     }
@@ -1110,12 +1165,25 @@ struct BoardCanvasView: View {
               let newBBox = computeResizedRect(handle: handle, startRect: bboxStart, translation: translation) else { return }
         selection.groupResizeBBoxCurrent = newBBox
 
-        // Live-mutate text state for immediate visual feedback. Images
-        // render via `scaledRect` against bboxCurrent inside the ForEach
-        // closure (no underlying mutation needed); text uses a different
-        // render path (font size + frame), so it's simpler to mutate the
-        // PlacedText fields directly each frame and let onGeometryChange
-        // re-derive worldRect.size.
+        // Live-mutate from the original snapshots so frame resize previews
+        // scale the frame, images, nested frames, and text in sync.
+        if let startRects = selection.groupResizeStartRects {
+            for (id, originalRect) in startRects {
+                let rect = scaledRect(original: originalRect, bboxStart: bboxStart, bboxCurrent: newBBox)
+                if let idx = placedImages.firstIndex(where: { $0.id == id }) {
+                    placedImages[idx].worldRect = rect
+                }
+                if let idx = visibleImages.firstIndex(where: { $0.id == id }) {
+                    visibleImages[idx].worldRect = rect
+                }
+                if let idx = placedFrames.firstIndex(where: { $0.id == id }) {
+                    placedFrames[idx].worldRect = rect
+                }
+            }
+        }
+
+        // Text uses a different render path (font size + frame), so mutate
+        // its state directly and let onGeometryChange re-derive worldRect.size.
         if let startTextStates = selection.groupResizeTextStartStates {
             // Geometric mean of width and height ratios so text scales
             // for any axis change, not just width. Corner drags are
@@ -1195,18 +1263,20 @@ struct BoardCanvasView: View {
         guard !rects.isEmpty || !textStates.isEmpty else { return }
 
         // ── In-memory mutations (sync) ─────────────────────────────
-        // Image rects: filter out any text ids defensively (text can't
-        // be in `rects` legally, but applyResizeRects had this guard
-        // historically and we preserve it).
+        // Rect-backed elements: images and frames. Text is handled via
+        // `textStates` because its size is content-derived.
         let textIDs = Set(placedTexts.map(\.id))
-        let imageRects = rects.filter { !textIDs.contains($0.key) }
+        let rectBackedRects = rects.filter { !textIDs.contains($0.key) }
 
-        for (id, rect) in imageRects {
+        for (id, rect) in rectBackedRects {
             if let idx = placedImages.firstIndex(where: { $0.id == id }) {
                 placedImages[idx].worldRect = rect
             }
             if let idx = visibleImages.firstIndex(where: { $0.id == id }) {
                 visibleImages[idx].worldRect = rect
+            }
+            if let idx = placedFrames.firstIndex(where: { $0.id == id }) {
+                placedFrames[idx].worldRect = rect
             }
         }
 
@@ -1224,15 +1294,16 @@ struct BoardCanvasView: View {
         }
 
         // ── Single batched store mutation ──────────────────────────
-        let imageIDs = Array(imageRects.keys)
+        let rectBackedIDs = Array(rectBackedRects.keys)
         enqueueStoreMutation { store in
             var updated: [CMCanvasElement] = []
-            updated.reserveCapacity(imageIDs.count + textElements.count)
+            updated.reserveCapacity(rectBackedIDs.count + textElements.count)
 
-            // Images: fetch authoritative elements, mutate bounds + size.
-            if !imageIDs.isEmpty {
-                let fetched = await store.elements(for: imageIDs)
-                for (id, rect) in imageRects {
+            // Images/frames: fetch authoritative elements, mutate bounds
+            // and, for images, payload size.
+            if !rectBackedIDs.isEmpty {
+                let fetched = await store.elements(for: rectBackedIDs)
+                for (id, rect) in rectBackedRects {
                     if var element = fetched[id] {
                         element.header.bounds = CMWorldRect(
                             origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
@@ -1448,9 +1519,17 @@ struct BoardCanvasView: View {
         // it rather than racing the debounce.
         commitTextColorEdit()
         switch command {
-        case .move(let ids, let delta):
-            applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
-            return .move(elementIDs: ids, delta: CGSize(width: -delta.width, height: -delta.height))
+        case .move(let ids, let delta, let frameRectsToRestore):
+            let reverseDelta = CGSize(width: -delta.width, height: -delta.height)
+            if let frameRectsToRestore {
+                // Undoing a move: slide back without growing frames, then
+                // shrink any frames the original move grew.
+                applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height, expandsParentFrames: false)
+                applyFrameRects(frameRectsToRestore)
+                return .move(elementIDs: ids, delta: reverseDelta)
+            }
+            let frameRectsBeforeExpansion = applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
+            return .move(elementIDs: ids, delta: reverseDelta, frameRectsToRestore: frameRectsBeforeExpansion)
         case .resize(let id, let fromRect, let toRect):
             applyResizeRect(elementID: id, rect: toRect)
             return .resize(elementID: id, fromRect: toRect, toRect: fromRect)
@@ -1466,6 +1545,22 @@ struct BoardCanvasView: View {
         case .delete(let snapshots):
             removeElements(snapshots: snapshots)
             return .insert(snapshots: snapshots)
+        case .createFrame(let frameSnapshot, let beforeChildSnapshots, let afterChildSnapshots):
+            applyElementSnapshots(afterChildSnapshots)
+            addElements(snapshots: [frameSnapshot])
+            return .dissolveFrame(
+                frameSnapshot: frameSnapshot,
+                groupedChildSnapshots: afterChildSnapshots,
+                ungroupedChildSnapshots: beforeChildSnapshots
+            )
+        case .dissolveFrame(let frameSnapshot, let groupedChildSnapshots, let ungroupedChildSnapshots):
+            removeElements(snapshots: [frameSnapshot])
+            applyElementSnapshots(ungroupedChildSnapshots)
+            return .createFrame(
+                frameSnapshot: frameSnapshot,
+                beforeChildSnapshots: ungroupedChildSnapshots,
+                afterChildSnapshots: groupedChildSnapshots
+            )
         case .editTextContent(let id, let fromContent, let toContent):
             applyTextContent(elementID: id, content: toContent)
             return .editTextContent(elementID: id, fromContent: toContent, toContent: fromContent)
@@ -1506,32 +1601,145 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func applyMoveDelta(elementIDs: Set<UUID>, dx: CGFloat, dy: CGFloat) {
+    @discardableResult
+    private func applyMoveDelta(
+        elementIDs: Set<UUID>,
+        dx: CGFloat,
+        dy: CGFloat,
+        expandsParentFrames: Bool = true
+    ) -> [UUID: CGRect] {
+        let expandedIDs = expandedElementIDs(for: elementIDs)
         for i in placedImages.indices {
-            if elementIDs.contains(placedImages[i].id) {
+            if expandedIDs.contains(placedImages[i].id) {
                 placedImages[i].worldRect.origin.x += dx
                 placedImages[i].worldRect.origin.y += dy
             }
         }
         for i in visibleImages.indices {
-            if elementIDs.contains(visibleImages[i].id) {
+            if expandedIDs.contains(visibleImages[i].id) {
                 visibleImages[i].worldRect.origin.x += dx
                 visibleImages[i].worldRect.origin.y += dy
             }
         }
         for i in placedTexts.indices {
-            if elementIDs.contains(placedTexts[i].id) {
+            if expandedIDs.contains(placedTexts[i].id) {
                 placedTexts[i].worldRect.origin.x += dx
                 placedTexts[i].worldRect.origin.y += dy
             }
         }
+        for i in placedFrames.indices {
+            if expandedIDs.contains(placedFrames[i].id) {
+                placedFrames[i].worldRect.origin.x += dx
+                placedFrames[i].worldRect.origin.y += dy
+            }
+        }
+
+        let frameRectsBeforeExpansion = expandsParentFrames
+            ? expandParentFramesToContain(elementIDs: expandedIDs)
+            : [:]
 
         enqueueStoreMutation { store in
-            let fetched = await store.elements(for: Array(elementIDs))
+            let changedFrameIDs = Set(frameRectsBeforeExpansion.keys)
+            let idsToUpsert = expandedIDs.union(changedFrameIDs)
+            let fetched = await store.elements(for: Array(idsToUpsert))
             var updated: [CMCanvasElement] = []
             for (_, var element) in fetched {
-                element.header.bounds.origin.x += Double(dx)
-                element.header.bounds.origin.y += Double(dy)
+                if expandedIDs.contains(element.id) {
+                    element.header.bounds.origin.x += Double(dx)
+                    element.header.bounds.origin.y += Double(dy)
+                }
+                if changedFrameIDs.contains(element.id),
+                   let frame = placedFrames.first(where: { $0.id == element.id }) {
+                    let rect = frame.worldRect
+                    element.header.bounds = CMWorldRect(
+                        origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                        size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                    )
+                }
+                updated.append(element)
+            }
+            if !updated.isEmpty {
+                await store.upsert(elements: updated)
+            }
+        }
+
+        return frameRectsBeforeExpansion
+    }
+
+    private func expandParentFramesToContain(elementIDs: Set<UUID>) -> [UUID: CGRect] {
+        var originalFrameRects: [UUID: CGRect] = [:]
+        var parentIDs = parentFrameIDs(for: elementIDs)
+
+        while !parentIDs.isEmpty {
+            var nextParentIDs: Set<UUID> = []
+            for frameID in parentIDs {
+                guard let index = placedFrames.firstIndex(where: { $0.id == frameID }),
+                      let childBounds = childBounds(of: frameID) else { continue }
+
+                let paddedChildBounds = childBounds.insetBy(dx: -defaultFramePadding, dy: -defaultFramePadding)
+                let currentRect = placedFrames[index].worldRect
+                let expandedRect = currentRect.union(paddedChildBounds)
+                guard expandedRect != currentRect else { continue }
+
+                originalFrameRects[frameID] = originalFrameRects[frameID] ?? currentRect
+                placedFrames[index].worldRect = expandedRect
+
+                if let parentID = placedFrames[index].parentFrameID {
+                    nextParentIDs.insert(parentID)
+                }
+            }
+            parentIDs = nextParentIDs
+        }
+
+        return originalFrameRects
+    }
+
+    private func parentFrameIDs(for elementIDs: Set<UUID>) -> Set<UUID> {
+        var ids: Set<UUID> = []
+        for image in placedImages where elementIDs.contains(image.id) {
+            if let parentFrameID = image.parentFrameID {
+                ids.insert(parentFrameID)
+            }
+        }
+        for text in placedTexts where elementIDs.contains(text.id) {
+            if let parentFrameID = text.parentFrameID {
+                ids.insert(parentFrameID)
+            }
+        }
+        for frame in placedFrames where elementIDs.contains(frame.id) {
+            if let parentFrameID = frame.parentFrameID {
+                ids.insert(parentFrameID)
+            }
+        }
+        return ids
+    }
+
+    private func childBounds(of frameID: UUID) -> CGRect? {
+        var rects = placedImages.filter { $0.parentFrameID == frameID }.map(\.worldRect)
+        rects.append(contentsOf: placedTexts.filter { $0.parentFrameID == frameID }.map(\.worldRect))
+        rects.append(contentsOf: placedFrames.filter { $0.parentFrameID == frameID }.map(\.worldRect))
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    private func applyFrameRects(_ rects: [UUID: CGRect]) {
+        guard !rects.isEmpty else { return }
+
+        for (id, rect) in rects {
+            if let index = placedFrames.firstIndex(where: { $0.id == id }) {
+                placedFrames[index].worldRect = rect
+            }
+        }
+
+        enqueueStoreMutation { store in
+            let fetched = await store.elements(for: Array(rects.keys))
+            var updated: [CMCanvasElement] = []
+            for (id, rect) in rects {
+                guard var element = fetched[id] else { continue }
+                element.header.bounds = CMWorldRect(
+                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                    size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                )
                 updated.append(element)
             }
             if !updated.isEmpty {
@@ -1734,6 +1942,67 @@ struct BoardCanvasView: View {
         }
     }
 
+    private func applyElementSnapshots(_ snapshots: [PlacedElementSnapshot]) {
+        guard !snapshots.isEmpty else { return }
+
+        for snap in snapshots {
+            switch snap.element.payload {
+            case .image:
+                if let index = placedImages.firstIndex(where: { $0.id == snap.id }),
+                   let url = snap.url {
+                    placedImages[index] = PlacedImage(
+                        id: snap.id,
+                        url: url,
+                        worldRect: snap.worldRect,
+                        zIndex: snap.zIndex,
+                        parentFrameID: snap.element.header.parentID
+                    )
+                }
+                if let index = visibleImages.firstIndex(where: { $0.id == snap.id }),
+                   let url = snap.url {
+                    visibleImages[index] = PlacedImage(
+                        id: snap.id,
+                        url: url,
+                        worldRect: snap.worldRect,
+                        zIndex: snap.zIndex,
+                        parentFrameID: snap.element.header.parentID
+                    )
+                }
+            case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
+                if let index = placedTexts.firstIndex(where: { $0.id == snap.id }) {
+                    placedTexts[index] = PlacedText(
+                        id: snap.id,
+                        content: content,
+                        worldRect: snap.worldRect,
+                        zIndex: snap.zIndex,
+                        fontSize: CGFloat(fontSize),
+                        colorHex: colorHex,
+                        wrapWidth: wrapWidth.map { CGFloat($0) },
+                        parentFrameID: snap.element.header.parentID
+                    )
+                }
+            case .frame(let title):
+                if let index = placedFrames.firstIndex(where: { $0.id == snap.id }) {
+                    placedFrames[index] = PlacedFrame(
+                        id: snap.id,
+                        title: title,
+                        worldRect: snap.worldRect,
+                        zIndex: snap.zIndex,
+                        parentFrameID: snap.element.header.parentID
+                    )
+                }
+            default:
+                break
+            }
+            nextZIndex = max(nextZIndex, snap.zIndex + 1)
+        }
+
+        let elements = snapshots.map(\.element)
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
+        }
+    }
+
     private func addElements(snapshots: [PlacedElementSnapshot]) {
         for snap in snapshots {
             switch snap.element.payload {
@@ -1741,7 +2010,8 @@ struct BoardCanvasView: View {
                 if let url = snap.url {
                     placedImages.append(PlacedImage(
                         id: snap.id, url: url,
-                        worldRect: snap.worldRect, zIndex: snap.zIndex
+                        worldRect: snap.worldRect, zIndex: snap.zIndex,
+                        parentFrameID: snap.element.header.parentID
                     ))
                 }
             case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
@@ -1752,7 +2022,16 @@ struct BoardCanvasView: View {
                     zIndex: snap.zIndex,
                     fontSize: CGFloat(fontSize),
                     colorHex: colorHex,
-                    wrapWidth: wrapWidth.map { CGFloat($0) }
+                    wrapWidth: wrapWidth.map { CGFloat($0) },
+                    parentFrameID: snap.element.header.parentID
+                ))
+            case .frame(let title):
+                placedFrames.append(PlacedFrame(
+                    id: snap.id,
+                    title: title,
+                    worldRect: snap.worldRect,
+                    zIndex: snap.zIndex,
+                    parentFrameID: snap.element.header.parentID
                 ))
             default:
                 break
@@ -1774,7 +2053,7 @@ struct BoardCanvasView: View {
     /// Snapshots are fetched from the store so undo restores the authoritative
     /// element (transform, layerId, etc.) rather than a reconstructed one.
     private func deleteSelection() {
-        let targetIDs = selection.selectedIDs
+        let targetIDs = expandedElementIDs(for: selection.selectedIDs)
         let imagesByID: [UUID: PlacedImage] = Dictionary(
             uniqueKeysWithValues: placedImages
                 .filter { targetIDs.contains($0.id) }
@@ -1785,10 +2064,15 @@ struct BoardCanvasView: View {
                 .filter { targetIDs.contains($0.id) }
                 .map { ($0.id, $0) }
         )
-        guard !imagesByID.isEmpty || !textsByID.isEmpty else { return }
+        let framesByID: [UUID: PlacedFrame] = Dictionary(
+            uniqueKeysWithValues: placedFrames
+                .filter { targetIDs.contains($0.id) }
+                .map { ($0.id, $0) }
+        )
+        guard !imagesByID.isEmpty || !textsByID.isEmpty || !framesByID.isEmpty else { return }
 
         let store = canvasStore
-        let allIDs = Array(imagesByID.keys) + Array(textsByID.keys)
+        let allIDs = Array(imagesByID.keys) + Array(textsByID.keys) + Array(framesByID.keys)
         Task { @MainActor in
             let elementsByID = await store.elements(for: allIDs)
             var snapshots: [PlacedElementSnapshot] = []
@@ -1837,6 +2121,28 @@ struct BoardCanvasView: View {
                 ))
             }
 
+            for (id, placed) in framesByID {
+                let authElement = elementsByID[id]
+                let element = authElement ?? fallbackFrameElement(for: placed)
+                let worldRect: CGRect
+                let zIndex: Int
+                if let authElement {
+                    let bounds = authElement.header.bounds
+                    worldRect = CGRect(
+                        x: CGFloat(bounds.origin.x), y: CGFloat(bounds.origin.y),
+                        width: CGFloat(bounds.size.x), height: CGFloat(bounds.size.y)
+                    )
+                    zIndex = authElement.header.zIndex
+                } else {
+                    worldRect = placed.worldRect
+                    zIndex = placed.zIndex
+                }
+                snapshots.append(PlacedElementSnapshot(
+                    id: id, url: nil,
+                    worldRect: worldRect, zIndex: zIndex, element: element
+                ))
+            }
+
             execute(.delete(snapshots: snapshots))
         }
     }
@@ -1854,7 +2160,8 @@ struct BoardCanvasView: View {
                 size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
             ),
             layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
-            zIndex: placed.zIndex
+            zIndex: placed.zIndex,
+            parentID: placed.parentFrameID
         )
         let payload = CMCanvasElementPayload.image(
             url: placed.url,
@@ -1874,7 +2181,8 @@ struct BoardCanvasView: View {
                 size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
             ),
             layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
-            zIndex: placed.zIndex
+            zIndex: placed.zIndex,
+            parentID: placed.parentFrameID
         )
         let payload = CMCanvasElementPayload.text(
             content: placed.content,
@@ -1886,11 +2194,59 @@ struct BoardCanvasView: View {
         return CMCanvasElement(header: header, payload: payload)
     }
 
+    private func fallbackFrameElement(for placed: PlacedFrame) -> CMCanvasElement {
+        let rect = placed.worldRect
+        let header = CMElementHeader(
+            id: placed.id,
+            type: .frame,
+            transform: CMAffineTransform2D(),
+            bounds: CMWorldRect(
+                origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
+                size: SIMD2<Double>(Double(rect.size.width), Double(rect.size.height))
+            ),
+            layerId: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+            zIndex: placed.zIndex,
+            parentID: placed.parentFrameID
+        )
+        return CMCanvasElement(header: header, payload: .frame(title: placed.title))
+    }
+
+    private func snapshot(for placed: PlacedImage) -> PlacedElementSnapshot {
+        PlacedElementSnapshot(
+            id: placed.id,
+            url: placed.url,
+            worldRect: placed.worldRect,
+            zIndex: placed.zIndex,
+            element: fallbackImageElement(for: placed)
+        )
+    }
+
+    private func snapshot(for placed: PlacedText) -> PlacedElementSnapshot {
+        PlacedElementSnapshot(
+            id: placed.id,
+            url: nil,
+            worldRect: placed.worldRect,
+            zIndex: placed.zIndex,
+            element: fallbackTextElement(for: placed)
+        )
+    }
+
+    private func snapshot(for placed: PlacedFrame) -> PlacedElementSnapshot {
+        PlacedElementSnapshot(
+            id: placed.id,
+            url: nil,
+            worldRect: placed.worldRect,
+            zIndex: placed.zIndex,
+            element: fallbackFrameElement(for: placed)
+        )
+    }
+
     private func removeElements(snapshots: [PlacedElementSnapshot]) {
         let idsToRemove = Set(snapshots.map { $0.id })
         placedImages.removeAll { idsToRemove.contains($0.id) }
         visibleImages.removeAll { idsToRemove.contains($0.id) }
         placedTexts.removeAll { idsToRemove.contains($0.id) }
+        placedFrames.removeAll { idsToRemove.contains($0.id) }
         selection.selectedIDs.subtract(idsToRemove)
         if let editing = editingTextID, idsToRemove.contains(editing) {
             editingTextID = nil
@@ -1907,6 +2263,7 @@ struct BoardCanvasView: View {
     private func applyElements(_ elements: [CMCanvasElement]) {
         placedImages.removeAll()
         placedTexts.removeAll()
+        placedFrames.removeAll()
         editingTextID = nil
         pendingTextInserts.removeAll()
         nextZIndex = 0
@@ -1919,7 +2276,7 @@ struct BoardCanvasView: View {
             let z = el.header.zIndex
             switch el.payload {
             case .image(let url, _):
-                placedImages.append(PlacedImage(id: el.id, url: url, worldRect: rect, zIndex: z))
+                placedImages.append(PlacedImage(id: el.id, url: url, worldRect: rect, zIndex: z, parentFrameID: el.header.parentID))
                 nextZIndex = max(nextZIndex, z + 1)
             case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
                 placedTexts.append(PlacedText(
@@ -1929,7 +2286,17 @@ struct BoardCanvasView: View {
                     zIndex: z,
                     fontSize: CGFloat(fontSize),
                     colorHex: colorHex,
-                    wrapWidth: wrapWidth.map { CGFloat($0) }
+                    wrapWidth: wrapWidth.map { CGFloat($0) },
+                    parentFrameID: el.header.parentID
+                ))
+                nextZIndex = max(nextZIndex, z + 1)
+            case .frame(let title):
+                placedFrames.append(PlacedFrame(
+                    id: el.id,
+                    title: title,
+                    worldRect: rect,
+                    zIndex: z,
+                    parentFrameID: el.header.parentID
                 ))
                 nextZIndex = max(nextZIndex, z + 1)
             default:
@@ -1980,7 +2347,7 @@ struct BoardCanvasView: View {
                 width: CGFloat(bounds.size.x),
                 height: CGFloat(bounds.size.y)
             )
-            return PlacedImage(id: placement.id, url: placement.url, worldRect: rect, zIndex: placement.zIndex)
+            return PlacedImage(id: placement.id, url: placement.url, worldRect: rect, zIndex: placement.zIndex, parentFrameID: nil)
         }
         visibleImages = items
         stickyDetailImageIDs = Set(computeImageRenderPlan(previousDetailIDs: stickyDetailImageIDs).detailItems.map(\.id))
@@ -2006,6 +2373,13 @@ struct BoardCanvasView: View {
     private func screenToWorld(_ p: CGPoint) -> CGPoint {
         CGPoint(x: (p.x - camera.offset.width) / camera.scale,
                 y: (p.y - camera.offset.height) / camera.scale)
+    }
+
+    private func screenPosition(for rect: CGRect, dx: CGFloat, dy: CGFloat) -> CGPoint {
+        CGPoint(
+            x: (rect.midX * camera.scale) + camera.offset.width + dx,
+            y: (rect.midY * camera.scale) + camera.offset.height + dy
+        )
     }
 
     private func imagePixelSize(url: URL) -> CGSize? {
@@ -2092,7 +2466,7 @@ struct BoardCanvasView: View {
             guard !Task.isCancelled else { break }
 
             placedImages.append(contentsOf: chunk.map {
-                PlacedImage(id: $0.id, url: $0.url!, worldRect: $0.worldRect, zIndex: $0.zIndex)
+                PlacedImage(id: $0.id, url: $0.url!, worldRect: $0.worldRect, zIndex: $0.zIndex, parentFrameID: nil)
             })
 
             let chunkElements = chunk.map(\.element)
@@ -2238,10 +2612,11 @@ struct BoardCanvasView: View {
                       height: canvasSize.height / camera.scale)
     }
 
-    /// World-space rects for every element (images + texts) on the canvas.
+    /// World-space rects for every element (images, texts, frames) on the canvas.
     private func allElementRects() -> [CGRect] {
         var rects = placedImages.map(\.worldRect)
         rects.append(contentsOf: placedTexts.map(\.worldRect))
+        rects.append(contentsOf: placedFrames.map(\.worldRect))
         return rects
     }
 
@@ -2451,6 +2826,223 @@ struct BoardCanvasView: View {
         }
     }
 
+    private func selectionContainsFrame() -> Bool {
+        let frameIDs = Set(placedFrames.map(\.id))
+        return !selection.selectedIDs.isDisjoint(with: frameIDs)
+    }
+
+    private func expandedElementIDs(for ids: Set<UUID>) -> Set<UUID> {
+        let frameLookup = Dictionary(uniqueKeysWithValues: placedFrames.map { ($0.id, $0) })
+        guard !frameLookup.isEmpty else { return ids }
+
+        var expanded = ids
+        var queue = Array(ids)
+        while let nextID = queue.popLast() {
+            guard frameLookup[nextID] != nil else { continue }
+            let childIDs = directChildIDs(of: nextID)
+            for childID in childIDs where expanded.insert(childID).inserted {
+                queue.append(childID)
+            }
+        }
+        return expanded
+    }
+
+    private func directChildIDs(of frameID: UUID) -> [UUID] {
+        var ids: [UUID] = placedFrames.filter { $0.parentFrameID == frameID }.map(\.id)
+        ids.append(contentsOf: placedImages.filter { $0.parentFrameID == frameID }.map(\.id))
+        ids.append(contentsOf: placedTexts.filter { $0.parentFrameID == frameID }.map(\.id))
+        return ids
+    }
+
+    private func canCreateFrameFromSelection() -> Bool {
+        selection.selectedIDs.count >= 1
+    }
+
+    private func createFrameFromSelection() {
+        let selectedIDs = selection.selectedIDs
+        guard !selectedIDs.isEmpty else { return }
+
+        var rects: [CGRect] = []
+        rects.append(contentsOf: placedImages.filter { selectedIDs.contains($0.id) }.map(\.worldRect))
+        rects.append(contentsOf: placedTexts.filter { selectedIDs.contains($0.id) }.map(\.worldRect))
+        rects.append(contentsOf: placedFrames.filter { selectedIDs.contains($0.id) }.map(\.worldRect))
+        guard let contentBounds = union(of: rects) else { return }
+
+        let selectedFrames = placedFrames.filter { selectedIDs.contains($0.id) }
+        let selectedImages = placedImages.filter { selectedIDs.contains($0.id) }
+        let selectedTexts = placedTexts.filter { selectedIDs.contains($0.id) }
+        let beforeChildSnapshots =
+            selectedImages.map(snapshot(for:)) +
+            selectedTexts.map(snapshot(for:)) +
+            selectedFrames.map(snapshot(for:))
+        let parentCandidates = Set(
+            selectedFrames.map(\.parentFrameID) +
+            selectedImages.map(\.parentFrameID) +
+            selectedTexts.map(\.parentFrameID)
+        )
+        let commonParentFrameID = parentCandidates.count == 1 ? parentCandidates.first ?? nil : nil
+        let parentFrameID = commonParentFrameID.flatMap { parentID in
+            placedFrames.first(where: { $0.id == parentID })?.parentFrameID
+        }
+
+        let frameRect = contentBounds.insetBy(dx: -defaultFramePadding, dy: -defaultFramePadding)
+        let minSelectedZ = rects.isEmpty
+            ? nextZIndex
+            : (
+                selectedFrames.map(\.zIndex) +
+                selectedImages.map(\.zIndex) +
+                selectedTexts.map(\.zIndex)
+            ).min() ?? nextZIndex
+        let frame = PlacedFrame(
+            id: UUID(),
+            title: "Frame \(placedFrames.count + 1)",
+            worldRect: frameRect,
+            zIndex: minSelectedZ - 1,
+            parentFrameID: parentFrameID
+        )
+
+        placedFrames.append(frame)
+        for index in placedFrames.indices where selectedIDs.contains(placedFrames[index].id) {
+            placedFrames[index].parentFrameID = frame.id
+        }
+        for index in placedImages.indices where selectedIDs.contains(placedImages[index].id) {
+            placedImages[index].parentFrameID = frame.id
+        }
+        for index in placedTexts.indices where selectedIDs.contains(placedTexts[index].id) {
+            placedTexts[index].parentFrameID = frame.id
+        }
+
+        let frameElement = fallbackFrameElement(for: frame)
+        let frameSnapshot = snapshot(for: frame)
+        let afterChildSnapshots =
+            placedImages.filter { selectedIDs.contains($0.id) }.map(snapshot(for:)) +
+            placedTexts.filter { selectedIDs.contains($0.id) }.map(snapshot(for:)) +
+            placedFrames.filter { selectedIDs.contains($0.id) }.map(snapshot(for:))
+        selection.selectedIDs = [frame.id]
+        nextZIndex = max(nextZIndex, frame.zIndex + 1)
+        recordUndo(reverse: .dissolveFrame(
+            frameSnapshot: frameSnapshot,
+            groupedChildSnapshots: afterChildSnapshots,
+            ungroupedChildSnapshots: beforeChildSnapshots
+        ))
+
+        enqueueStoreMutation { store in
+            var updates = afterChildSnapshots.map(\.element)
+            updates.append(frameElement)
+            await store.upsert(elements: updates)
+        }
+    }
+
+    private func selectAssetFromOutliner(_ id: UUID) {
+        selection.select(id)
+    }
+
+    private func renameFrame(id: UUID, title: String) {
+        guard let index = placedFrames.firstIndex(where: { $0.id == id }) else { return }
+        placedFrames[index].title = title
+        let element = fallbackFrameElement(for: placedFrames[index])
+
+        enqueueStoreMutation { store in
+            await store.upsert(elements: [element])
+        }
+    }
+
+    private func handleItemTap(_ id: UUID, refreshAfterSelection: Bool) {
+        let behavior = toolBehavior(for: activeTool)
+        let store = canvasStore
+        let sel = selection
+        let extending = keyModifiers.isShiftDown
+        Task {
+            await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
+            if refreshAfterSelection {
+                await refreshVisibleElements()
+            }
+        }
+    }
+
+    private func handleTextTap(_ id: UUID, currentContent: String, isOnlySelected: Bool) {
+        if isOnlySelected {
+            selection.clearSelection()
+            editingTextOriginalContent = currentContent
+            editingTextID = id
+            return
+        }
+        handleItemTap(id, refreshAfterSelection: false)
+    }
+
+    private func assetOutlineNodes() -> [AssetOutlineNode] {
+        let framesByParent = Dictionary(grouping: placedFrames, by: \.parentFrameID)
+        let imagesByParent = Dictionary(grouping: placedImages, by: \.parentFrameID)
+        let textsByParent = Dictionary(grouping: placedTexts, by: \.parentFrameID)
+
+        func nodes(parentID: UUID?) -> [AssetOutlineNode] {
+            var frameNodes = (framesByParent[parentID] ?? []).map { frame in
+                AssetOutlineNode(
+                    id: frame.id,
+                    title: frame.title,
+                    subtitle: frame.worldRect.debugSizeLabel,
+                    kind: .frame,
+                    children: nodes(parentID: frame.id)
+                )
+            }
+
+            let imageNodes = (imagesByParent[parentID] ?? []).map { image in
+                AssetOutlineNode(
+                    id: image.id,
+                    title: image.url.deletingPathExtension().lastPathComponent,
+                    subtitle: image.worldRect.debugSizeLabel,
+                    kind: .image,
+                    children: []
+                )
+            }
+
+            let textNodes = (textsByParent[parentID] ?? []).map { text in
+                AssetOutlineNode(
+                    id: text.id,
+                    title: text.content.isEmpty ? "Text" : text.content,
+                    subtitle: text.worldRect.debugSizeLabel,
+                    kind: .text,
+                    children: []
+                )
+            }
+
+            frameNodes.append(contentsOf: imageNodes)
+            frameNodes.append(contentsOf: textNodes)
+            return frameNodes.sorted { lhs, rhs in
+                if lhs.kind != rhs.kind {
+                    return outlineRank(for: lhs.kind) < outlineRank(for: rhs.kind)
+                }
+                return zIndex(for: lhs.id) > zIndex(for: rhs.id)
+            }
+        }
+
+        return nodes(parentID: nil)
+    }
+
+    private func outlineRank(for kind: AssetOutlineNode.Kind) -> Int {
+        switch kind {
+        case .frame:
+            return 0
+        case .image:
+            return 1
+        case .text:
+            return 2
+        }
+    }
+
+    private func zIndex(for id: UUID) -> Int {
+        if let frame = placedFrames.first(where: { $0.id == id }) {
+            return frame.zIndex
+        }
+        if let image = placedImages.first(where: { $0.id == id }) {
+            return image.zIndex
+        }
+        if let text = placedTexts.first(where: { $0.id == id }) {
+            return text.zIndex
+        }
+        return Int.min
+    }
+
     // MARK: - Models
 
     private struct ImageRenderPlan {
@@ -2562,5 +3154,11 @@ private extension Array {
             index = nextIndex
         }
         return chunks
+    }
+}
+
+private extension CGRect {
+    var debugSizeLabel: String {
+        "\(Int(width.rounded())) × \(Int(height.rounded()))"
     }
 }

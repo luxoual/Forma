@@ -22,7 +22,12 @@ struct TextResizeSnapshot {
 
 /// A reversible canvas operation.
 enum CanvasCommand {
-    case move(elementIDs: Set<UUID>, delta: CGSize)
+    /// Moving items can grow the frames they sit in, so the items stay
+    /// inside. `frameRectsToRestore` says which way the move is going:
+    /// - nil: a real move. Grow parent frames as needed.
+    /// - non-nil: the undo of a move. Don't grow anything; put these frames
+    ///   back to the sizes they had before the original move grew them.
+    case move(elementIDs: Set<UUID>, delta: CGSize, frameRectsToRestore: [UUID: CGRect]? = nil)
     case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
     /// Resize of a multi-element selection. `fromRects`/`toRects` cover
     /// image elements (which use a worldRect as authoritative state).
@@ -39,6 +44,22 @@ enum CanvasCommand {
     )
     case insert(snapshots: [PlacedElementSnapshot])
     case delete(snapshots: [PlacedElementSnapshot])
+    /// Creating a frame inserts the frame and reparents the selected
+    /// children into it. Undo must restore the children to their previous
+    /// parents, not just remove the frame shell.
+    case createFrame(
+        frameSnapshot: PlacedElementSnapshot,
+        beforeChildSnapshots: [PlacedElementSnapshot],
+        afterChildSnapshots: [PlacedElementSnapshot]
+    )
+    /// The reverse of `.createFrame`: removes the frame and puts its
+    /// children back under the parents they had before it was created.
+    /// Only ever registered as the undo of `.createFrame`.
+    case dissolveFrame(
+        frameSnapshot: PlacedElementSnapshot,
+        groupedChildSnapshots: [PlacedElementSnapshot],
+        ungroupedChildSnapshots: [PlacedElementSnapshot]
+    )
     /// Text content was changed during a re-edit. Body of the text element
     /// is the only authoritative state being touched — `worldRect` is
     /// downstream-derived from rendered geometry, so this command doesn't
@@ -81,6 +102,7 @@ enum CanvasCommand {
         case .resize, .groupResize: "Resize"
         case .insert: "Delete"
         case .delete: "Add"
+        case .createFrame, .dissolveFrame: "Create Frame"
         case .editTextContent: "Edit Text"
         case .resizeText: "Resize Text"
         case .setTextColors: "Text Color"
