@@ -14,6 +14,7 @@ struct SelectionActionBarLayer: View {
     let offset: CGSize
     /// True while a drag/resize/marquee is in progress — the bar hides then.
     let isInteracting: Bool
+    let onCreateFrame: (() -> Void)?
     let onDelete: () -> Void
 
     /// Last visible center, so the bar fades out in place instead of snapping
@@ -51,7 +52,7 @@ struct SelectionActionBarLayer: View {
     }
 
     var body: some View {
-        CanvasSelectionActionBar(onDelete: onDelete)
+        CanvasSelectionActionBar(onCreateFrame: onCreateFrame, onDelete: onDelete)
             .position(displayCenter)
             .opacity(isVisible ? 1 : 0)
             .allowsHitTesting(isVisible)

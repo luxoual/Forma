@@ -32,6 +32,8 @@ Backend architecture has **core data models and persistence layer** implemented,
 - Visible-image querying now uses a zoom-aware preload margin instead of a constant world-space buffer, and detailed-image membership has hysteresis so pan/zoom motion causes less promotion/demotion churn.
 - **Manifest schema bumped to version 2** with an optional board-level `canvasColor: String?` (`#RRGGBB`) field. v1 files decode cleanly with `canvasColor = nil` via `Codable` synthesis (the second time the manifest has gained an optional field — `text.wrapWidth` was the first — establishing the additive-evolution pattern). `BoardArchiver.importElements(...)` now returns an `ImportResult { elements, canvasColorHex }` struct; `BoardArchiver.export(...)` takes a `canvasColorHex: String?` parameter and writes it (or omits it for `nil`). The SwiftUI layer owns the `Color ↔ String` conversion since it needs an env to resolve adaptive colors; the archiver only deals in hex strings. See `architecture-frontend.md` → "Canvas Color Persistence" for the frontend-side plumbing.
 - **`BoardArchiver` enum marked `nonisolated`** so its helpers don't inherit the project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` default. `export` was already `nonisolated` at the method level for off-main autosave; tagging the enum makes that uniform across `importElements`, `importFromZip`, `importFromPackage`, and the manifest types nested inside.
+- Added persistent frame/grouping support. Frames are serialized as first-class canvas elements, child relationships are stored via `CMElementHeader.parentID`, and import/export round-trips image, text, and frame hierarchy together.
+- Frame creation, movement, resizing, parent-frame auto-expansion, and undo/redo now use canvas-element snapshots so persistence stays consistent with the visible asset tree.
 
 ---
 
@@ -56,6 +58,7 @@ enum CMElementType: String, Codable, Hashable {
     case path
     case text
     case image
+    case frame
 }
 ```
 
@@ -69,11 +72,22 @@ case ellipse(fillColor: String)
 case path(points: [SIMD2<Double>], strokeColor: String, strokeWidth: Double)
 case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
 case image(url: URL, size: SIMD2<Double>)
+case frame(title: String)
 ```
 
 `text.wrapWidth` is `nil` for auto-width text (grows horizontally with content) and a world-units width when the text has been wrap-locked via the side resize handle. The decoder uses `decodeIfPresent` and the encoder uses `encodeIfPresent` so older `.refboard` files predating this field load cleanly with `wrapWidth = nil` (auto-width), and freshly-saved auto-width texts omit the key from disk rather than writing `null`. This is the canonical pattern for additive payload-field evolution — image, path, and other payloads should follow the same shape if they grow new optional fields.
 
 The frontend `PlacedText` mirrors this payload 1:1 (see `architecture-frontend.md` → Text Elements). Text content lives **entirely in the manifest** — no asset file is created or referenced — which is why text round-trips through the import/export paths without touching the `assets/` directory inside the ZIP.
+
+### Frame Hierarchy
+
+Frames are persisted as normal `CMCanvasElement` records with `type: .frame`, `payload: .frame(title:)`, and bounds stored in `header.bounds`. The hierarchy is represented by `CMElementHeader.parentID` on any child image, text, or nested frame. This keeps grouping orthogonal to payload data: an image remains an image payload, and its membership in a frame is a header relationship.
+
+Runtime frame state is represented by `PlacedFrame { id, title, worldRect, zIndex, parentFrameID }`, mirroring the manifest data needed for save/load and undo reconstruction. `PlacedImage` and `PlacedText` also carry `parentFrameID` so local canvas mutations can update hierarchy before the store write lands.
+
+Frame creation snapshots the selected children before and after reparenting. Undo removes the inserted frame and restores the children to their previous parent IDs; redo restores the child parent IDs and re-adds the frame. This is handled by `CanvasCommand.createFrame(...)` rather than treating frame creation as a plain insert, because grouping changes existing elements in addition to adding a new one.
+
+Moving a child outside its parent frame does not detach it. Instead, the parent frame bounds expand to contain its children, and the move command records the pre-expansion frame rects so undo can restore both the child position and frame bounds. Resizing a frame uses the same group-resize snapshot path as multi-selection: the frame and all descendants are scaled together, then persisted as updated element bounds.
 
 ---
 ## Export Package (.refboard)
