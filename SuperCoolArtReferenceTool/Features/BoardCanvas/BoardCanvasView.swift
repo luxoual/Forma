@@ -22,6 +22,7 @@ struct BoardCanvasView: View {
     @Binding private var canvasColor: Color
     @State private var gridSpacingWorld: CGFloat = 128.0
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // Placed images (source-of-truth for interactions)
     @State private var placedImages: [PlacedImage] = []
@@ -476,7 +477,7 @@ struct BoardCanvasView: View {
                 // (ContentView.onAppear fired before this onAppear), snap to content
                 // center now that canvasSize is known. jumpToContentCenter also calls
                 // scheduleRefreshVisibleElements, so skip the standalone call below.
-                if !allElementRects().isEmpty {
+                if !placedImages.isEmpty || !placedTexts.isEmpty {
                     jumpToContentCenter(animated: false)
                 } else {
                     scheduleRefreshVisibleElements()
@@ -533,8 +534,10 @@ struct BoardCanvasView: View {
             }
             .onChange(of: markCleanTrigger) { _, newValue in
                 guard newValue != nil else { return }
-                Task { await canvasStore.markClean() }
-                DispatchQueue.main.async { markCleanTrigger = nil }
+                Task {
+                    await canvasStore.markClean()
+                    markCleanTrigger = nil
+                }
             }
             .onChange(of: elementsToLoad) { oldValue, newValue in
                 if let els = newValue {
@@ -544,7 +547,7 @@ struct BoardCanvasView: View {
                     // Defer one run-loop tick so every onAppear handler has
                     // fired and canvasSize is guaranteed non-zero before we
                     // try to center on content.
-                    DispatchQueue.main.async {
+                    Task {
                         if !els.isEmpty {
                             jumpToContentCenter(animated: false)
                         }

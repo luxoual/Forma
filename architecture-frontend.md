@@ -121,9 +121,15 @@ Pinch and two-finger-pan fire simultaneously and both write `offset`. An earlier
 - Consumers (pinch + two-finger pan today) conform their `Coordinator` to `GestureInstallerCoordinator` and expose their recognizer via `installedRecognizer`.
 - Teardown: each bridge's `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()`, which removes the recognizer from its host view, clears target/delegate, and replaces the event closure with a no-op — prevents duplicate recognizers and retention cycles if the canvas remounts (e.g. `RootView` toggling `showCanvas`).
 
-**Flag for future — camera model tipping point:**
+**Camera model tipping point — refactor now due:**
 
-`offset` and `scale` currently live on `BoardCanvasView` as `@State` and are mutated directly from two gesture handlers plus read from several places (`Canvas` grid closure, every visible-image `.position(...)`, `screenToWorld`, marquee/bbox mapping). When a **third** write site appears (e.g. a programmatic "fit to selection" action, or a new gesture bridge), lift both into an `@Observable CanvasCamera` with `zoom(by:around:)` and `pan(by:)` methods. `zoomAnchoredOffset` moves in as an instance method at that point. Do not do this refactor pre-emptively — it's a cross-cutting change and the single-caller benefit today is small.
+`offset` and `scale` currently live on `BoardCanvasView` as `@State`. They now have **four write sites**: pinch gesture, two-finger-pan gesture, home button (`jumpToContentCenter`), and board-load landing snap (`onChange(of: elementsToLoad)`). The original flag said to lift when a third site appeared; that threshold has been crossed.
+
+Target shape: extract an `@Observable class CanvasCamera` (or `@Observable struct` + `@State`) with `zoom(by:around:)`, `pan(by:)`, and `jumpToCenter(of:animated:)` methods. `zoomAnchoredOffset` and `jumpToContentCenter` move in as methods. `viewportCGRect()` and `allElementRects()` stay on the view (they need view-local state like `canvasSize` and `placedImages`), but the camera itself becomes injectable/testable independently.
+
+Downstream: the UUID-trigger pattern for `homeTrigger` (and potentially `undoTrigger`/`redoTrigger`) could simplify once the camera is a shared observable — the toolbar can call `canvasCamera.jumpToCenter()` directly instead of firing a UUID binding through ContentView.
+
+This is a cross-cutting change; do it as a standalone PR before adding more camera-writing features.
 
 Related coordinate-space subtlety to watch: `PinchGestureView` reports its centroid in installer-local coordinates; `TwoFingerPanView` uses `recognizer.view` (the hosting ancestor). These coincide today because the installer is mounted as a `.background` of the canvas ZStack, but would drift if the canvas becomes inset. Prefer installer-local coordinates for any new recognizer that reports points.
 
