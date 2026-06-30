@@ -534,7 +534,7 @@ struct BoardCanvasView: View {
                     commandHistory.clear()
                     selection.clearSelection()
                     if !els.isEmpty {
-                        snapToContentCenter()
+                        jumpToContentCenter(animated: false)
                     }
                     // Clear the binding after applying
                     DispatchQueue.main.async {
@@ -2153,22 +2153,10 @@ struct BoardCanvasView: View {
         return rects
     }
 
-    /// Instantly position the viewport so the center of all canvas content is
-    /// centered on screen. Used on board load — no animation, no flash.
-    private func snapToContentCenter() {
-        guard canvasSize != .zero, scale > 0 else { return }
-        let allRects = allElementRects()
-        guard let bounds = union(of: allRects) else { return }
-        offset = CGSize(
-            width: canvasSize.width / 2 - bounds.midX * scale,
-            height: canvasSize.height / 2 - bounds.midY * scale
-        )
-        scheduleRefreshVisibleElements()
-    }
-
-    /// Animate the viewport so the center of all canvas content is centered
-    /// on screen, preserving the current zoom level.
-    private func jumpToContentCenter() {
+    /// Center the viewport on all canvas content. Pass `animated: false` for
+    /// instant repositioning (e.g. on board load); `true` for the home button
+    /// eased pan.
+    private func jumpToContentCenter(animated: Bool = true) {
         guard canvasSize != .zero, scale > 0 else { return }
         let allRects = allElementRects()
         let centerX: CGFloat
@@ -2180,12 +2168,18 @@ struct BoardCanvasView: View {
             centerX = 0
             centerY = 0
         }
-        withAnimation(.easeInOut(duration: 0.4)) {
-            offset = CGSize(
-                width: canvasSize.width / 2 - centerX * scale,
-                height: canvasSize.height / 2 - centerY * scale
-            )
-        } completion: {
+        let target = CGSize(
+            width: canvasSize.width / 2 - centerX * scale,
+            height: canvasSize.height / 2 - centerY * scale
+        )
+        if animated {
+            withAnimation(.easeInOut(duration: 0.4)) {
+                offset = target
+            } completion: {
+                scheduleRefreshVisibleElements()
+            }
+        } else {
+            offset = target
             scheduleRefreshVisibleElements()
         }
     }
