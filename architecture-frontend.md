@@ -32,14 +32,20 @@ The canvas system is implemented as a standalone, reusable SwiftUI component tha
 - World units are arbitrary but consistent (currently ~1 unit per screen point at 1.0 scale)
 
 **Camera/Transform Model:**
-- `offset: CGSize` - Translation from world origin to screen space (in screen points)
-- `scale: CGFloat` - Uniform scale factor (zoom level)
+
+Camera state is encapsulated in `@Observable final class CanvasCamera` (`CanvasCamera.swift`), owned as `@State private var camera = CanvasCamera()` inside `BoardCanvasView`.
+
+- `camera.offset: CGSize` — Translation from world origin to screen space (in screen points)
+- `camera.scale: CGFloat` — Uniform scale factor (zoom level)
 - Bounds: `minScale = 0.05`, `maxScale = 8.0`
-- Transform: `screenPoint = worldPoint * scale + offset`
+- Transform: `screenPoint = worldPoint * camera.scale + camera.offset`
+
+Write sites: pinch gesture, two-finger pan, home button (`jumpToContentCenter`), board-load landing snap. All go through `camera.offset` / `camera.scale`.
 
 **Initial View:**
-- On `.onAppear`, offset is set to `(screenWidth/2, screenHeight/2)` to center world origin
-- Note: Canvas view may not update immediately; visible after first pan gesture
+- On `.onAppear`, `camera.offset` is set to `(screenWidth/2, screenHeight/2)` to center on world origin
+- If elements are already loaded when `onAppear` fires (race with `ContentView.onAppear`), `jumpToContentCenter(animated: false)` runs immediately instead, centering on content
+- When a board with content is loaded via `elementsToLoad`, `jumpToContentCenter(animated: false)` is deferred one run-loop tick via `DispatchQueue.main.async` to guarantee `canvasSize` is set first (see "Landing Snap" under Canvas Navigation Aids below)
 
 **Coordinate Conversion:**
 Implemented via `screenToWorld(_:)` helper:
@@ -54,7 +60,7 @@ func screenToWorld(_ p: CGPoint) -> CGPoint {
 - Canvas rendered using SwiftUI `Canvas` for grid background
 - Items rendered as SwiftUI views in a `ZStack` with `.zIndex()` for layering
 - Transform applied via `.position()` and `.frame()` modifiers
-- Currently no visibility culling (all items rendered); acceptable for MVP with small item counts
+- Viewport culling via `visibleImages` (tile-indexed spatial query against `LocalBoardStore`); images outside the viewport are not rendered
 
 **Grid Visualization:**
 - World-aligned grid with configurable spacing (`gridSpacingWorld = 128.0`)
@@ -97,7 +103,7 @@ Three simultaneous gestures are attached to the canvas ZStack:
 - Emits **per-tick scale deltas** (not cumulative) plus the **live centroid** in installer-local coordinates. `.began`/`.ended` emit delta = 1.0; only `.changed` emits real deltas.
 - Centroid is reported in the installer's coordinate space (not `recognizer.view` / window space) so it matches the canvas's `.position(...)` space — important if the canvas is ever inset by a toolbar or safe area.
 - Attached via `.background(PinchGestureView(onPinch:))` on the canvas ZStack; routed through `handlePinch(phase:scaleDelta:anchor:)`.
-- Zoom math is extracted into a **pure static function**, `BoardCanvasView.zoomAnchoredOffset(anchor:oldOffset:oldScale:newScale:)`, which preserves `worldPoint = (anchor - offset) / scale` across the scale change. Testable without a live view.
+- Zoom math is extracted into a **pure static function**, `CanvasCamera.zoomAnchoredOffset(anchor:oldOffset:oldScale:newScale:)` (lives in `CanvasCamera.swift`), which preserves `worldPoint = (anchor - offset) / scale` across the scale change. Testable without a live view.
 
 **Two-Finger Pan (UIKit Bridge):**
 
@@ -121,15 +127,15 @@ Pinch and two-finger-pan fire simultaneously and both write `offset`. An earlier
 - Consumers (pinch + two-finger pan today) conform their `Coordinator` to `GestureInstallerCoordinator` and expose their recognizer via `installedRecognizer`.
 - Teardown: each bridge's `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()`, which removes the recognizer from its host view, clears target/delegate, and replaces the event closure with a no-op — prevents duplicate recognizers and retention cycles if the canvas remounts (e.g. `RootView` toggling `showCanvas`).
 
-**Camera model tipping point — refactor now due:**
+**Camera model — implemented:**
 
-`offset` and `scale` currently live on `BoardCanvasView` as `@State`. They now have **four write sites**: pinch gesture, two-finger-pan gesture, home button (`jumpToContentCenter`), and board-load landing snap (`onChange(of: elementsToLoad)`). The original flag said to lift when a third site appeared; that threshold has been crossed.
+`offset` and `scale` have been lifted into `@Observable final class CanvasCamera` (`CanvasCamera.swift`). `BoardCanvasView` owns it as `@State private var camera = CanvasCamera()`. `zoomAnchoredOffset` is a static method on `CanvasCamera`.
 
-Target shape: extract an `@Observable class CanvasCamera` (or `@Observable struct` + `@State`) with `zoom(by:around:)`, `pan(by:)`, and `jumpToCenter(of:animated:)` methods. `zoomAnchoredOffset` and `jumpToContentCenter` move in as methods. `viewportCGRect()` and `allElementRects()` stay on the view (they need view-local state like `canvasSize` and `placedImages`), but the camera itself becomes injectable/testable independently.
+`viewportCGRect()` and `allElementRects()` remain on `BoardCanvasView` — they need view-local state (`canvasSize`, `placedImages`, `placedTexts`) that belongs on the view.
 
-Downstream: the UUID-trigger pattern for `homeTrigger` (and potentially `undoTrigger`/`redoTrigger`) could simplify once the camera is a shared observable — the toolbar can call `canvasCamera.jumpToCenter()` directly instead of firing a UUID binding through ContentView.
+`jumpToContentCenter` also remains on the view (needs `canvasSize`, `reduceMotion`, `scheduleRefreshVisibleElements()`), but writes to `camera.offset`.
 
-This is a cross-cutting change; do it as a standalone PR before adding more camera-writing features.
+Next step (future PR): the UUID-trigger pattern for `homeTrigger` (and potentially `undoTrigger`/`redoTrigger`) could simplify once the camera is an environment-injected observable — the toolbar could call camera methods directly instead of firing UUID bindings through `ContentView`.
 
 Related coordinate-space subtlety to watch: `PinchGestureView` reports its centroid in installer-local coordinates; `TwoFingerPanView` uses `recognizer.view` (the hosting ancestor). These coincide today because the installer is mounted as a `.background` of the canvas ZStack, but would drift if the canvas becomes inset. Prefer installer-local coordinates for any new recognizer that reports points.
 
@@ -229,16 +235,15 @@ Lightweight root view that routes between the landing screen and the canvas.
 
 ### Performance Considerations
 
-**Current Approach (MVP):**
-- All placed items rendered every frame
-- No spatial indexing or visibility culling
-- Acceptable for small boards (<100 items)
+**Current Approach:**
+- `visibleImages: [PlacedImage]` is a culled subset of `placedImages` — only images whose world rects intersect the current viewport are rendered as `FileImageView` instances
+- `imageRenderPlan()` splits `visibleImages` into `detailItems` (full image) and `overviewItems` (low-detail placeholder rect) based on screen size and LOD thresholds
+- `scheduleRefreshVisibleElements()` re-queries `LocalBoardStore.imagePlacements(in:viewport:)` after a 40ms debounce (80ms during active interaction)
+- Texts (`placedTexts`) are not culled — they are lightweight SwiftUI views with no image-loading cost
 
 **Future Optimization Paths:**
-- Implement visibility culling based on transformed viewport bounds
-- Use `CMTileKey` system (defined in `CanvasModels.swift` by Dev B) for spatial indexing
-- Consider render caching for static content
-- Investigate Metal-based rendering for large item counts
+- Cull text elements by viewport (low priority — texts are cheap)
+- Consider Metal-based rendering for extremely large boards (1000+ images)
 
 ---
 
@@ -333,6 +338,81 @@ NavigationStack {
 `ContentView` no longer hosts a custom overlay layer; the nav bar renders translucent glass over `BoardCanvasView`, which extends edge-to-edge underneath.
 
 **Settings sheet** is still presented from `ContentView` via `.sheet(isPresented: $showingSettings)` when the gear toolbar item fires. See "Canvas Settings Sheet" below.
+
+---
+
+## Canvas Navigation Aids
+
+### Minimap
+
+**Status: Implemented**
+
+**File:** `Features/BoardCanvas/CanvasMinimapView.swift`
+
+A 160×100pt semi-transparent overlay in the bottom-right corner of the canvas that shows where content is relative to the current viewport.
+
+**Architecture:** Pure stateless view — takes `elementRects: [CGRect]` and `viewportRect: CGRect`, recomputed on every body pass.
+
+```swift
+struct CanvasMinimapView: View {
+    let elementRects: [CGRect]
+    let viewportRect: CGRect
+}
+```
+
+`BoardCanvasView` feeds it via:
+```swift
+.overlay(alignment: .bottomTrailing) {
+    let rects = allElementRects()   // placedImages + placedTexts worldRects
+    if !rects.isEmpty {
+        CanvasMinimapView(elementRects: rects, viewportRect: viewportCGRect())
+            .padding(16)
+    }
+}
+```
+
+Hidden when the canvas is empty (overlay is conditional on `!rects.isEmpty`).
+
+**Rendering (SwiftUI `Canvas`):**
+- `worldExtents()` computes the union of all element rects + viewport, expanded by 12% padding — this is the minimap's world frame
+- `project(_:world:into:)` scales any world-space `CGRect` into the minimap's pixel space
+- Element rects rendered as white rounded rectangles (min 2×2pt so tiny elements remain visible)
+- Viewport rendered as a filled `.white.opacity(0.08)` rect + `DesignSystem.Colors.tertiary` stroke
+- `.allowsHitTesting(false)` — decorative only
+- `.accessibilityHidden(true)` — no semantic content for VoiceOver
+
+### Home Button
+
+**Status: Implemented**
+
+**File:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`, `BoardCanvasView.swift`
+
+A house icon in the undo/redo group of the toolbar that animates the camera to the bounding-box center of all canvas content.
+
+**Trigger pattern:** Same UUID-binding pattern as undo/redo. `ContentView` owns `@State private var homeTrigger: UUID?`; tapping the toolbar button sets it to `UUID()`. `BoardCanvasView` observes it via `.onChange(of: homeTrigger)` and calls `jumpToContentCenter()`, then clears the trigger.
+
+**`jumpToContentCenter(animated: Bool = true)`** (on `BoardCanvasView`):
+1. Guards `canvasSize != .zero, camera.scale > 0`
+2. `guard let bounds = union(of: allElementRects()) else { return }` — no-op on empty canvas
+3. Computes `target = CGSize(width: canvasSize.width/2 - bounds.midX * camera.scale, height: canvasSize.height/2 - bounds.midY * camera.scale)`
+4. If `animated && !reduceMotion`: `.easeInOut(0.4)` animation, `scheduleRefreshVisibleElements()` in the `completion:` block (deferred so images don't pop mid-animation)
+5. Otherwise: instant offset set + immediate refresh
+
+`@Environment(\.accessibilityReduceMotion) private var reduceMotion` is read on `BoardCanvasView` and passed into the animated path.
+
+### Landing Snap
+
+**Status: Implemented**
+
+When a board with content is opened, the viewport automatically centers on the content bounding box instead of defaulting to world origin.
+
+**Timing fix — why `DispatchQueue.main.async`:**
+
+The snap fires from `onChange(of: elementsToLoad)` after `applyElements`. The guard in `jumpToContentCenter` requires `canvasSize != .zero`, but `canvasSize` is set in `BoardCanvasView.onAppear`. In some SwiftUI lifecycle orderings, `ContentView.onAppear` (which sets `elementsToLoad`) fires before `BoardCanvasView.onAppear` — so the guard would trip. Wrapping the `jumpToContentCenter(animated: false)` call in `DispatchQueue.main.async` defers it past the current run-loop drain, guaranteeing all `onAppear` handlers have fired first.
+
+`DispatchQueue.main.async` is intentional here — a bare `Task { }` uses Swift concurrency's cooperative scheduler and does not drain the run loop, so it doesn't carry the same ordering guarantee.
+
+An additional fallback in `onAppear` itself: if elements were already applied before `canvasSize` was available (the inverse race), the snap fires there instead.
 
 ---
 
@@ -1245,7 +1325,7 @@ The duplicate file-loading code that previously existed in `InsertFileControl.sw
 
 **`Task.sleep(nanoseconds:)` (`BoardCanvasView.swift` ~line 1030 in `scheduleRefreshVisibleElements`)** — `references/api.md` rule says use `.sleep(for:)` instead. Pre-existing on `main`.
 
-**Multiple `DispatchQueue.main.async { binding = nil }` patterns (`BoardCanvasView.swift` ~lines 412, 448, 456, 499, 504)** — used to defer-clear trigger / load bindings. `references/swift.md` rule says no GCD; replace with `Task { @MainActor in ... }` or restructure to not need a deferred reset. All pre-existing on `main`.
+**`DispatchQueue.main.async` in trigger-clear patterns (`BoardCanvasView.swift`)** — Several trigger bindings (`undoTrigger`, `redoTrigger`, `homeTrigger`, `externalInsertURLs`) are cleared via `DispatchQueue.main.async`. `references/swift.md` says no GCD. The `elementsToLoad` handler intentionally uses `.main.async` because its run-loop drain guarantee is load-bearing for the landing snap (see "Landing Snap" above). The others are pre-existing and can be migrated to `Task { @MainActor in ... }` in a cleanup PR.
 
 (The text-elements PR introduced one `DispatchQueue.main.async` in `CanvasTextField.swift` for `becomeFirstResponder` — already converted to `Task { @MainActor }` per the rule.)
 
