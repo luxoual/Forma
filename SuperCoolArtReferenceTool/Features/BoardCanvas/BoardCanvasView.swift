@@ -472,7 +472,15 @@ struct BoardCanvasView: View {
                 if offset == .zero {
                     offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
                 }
-                scheduleRefreshVisibleElements()
+                // If elements were already applied before canvasSize was available
+                // (ContentView.onAppear fired before this onAppear), snap to content
+                // center now that canvasSize is known. jumpToContentCenter also calls
+                // scheduleRefreshVisibleElements, so skip the standalone call below.
+                if !allElementRects().isEmpty {
+                    jumpToContentCenter(animated: false)
+                } else {
+                    scheduleRefreshVisibleElements()
+                }
             }
             .onDisappear {
                 refreshTask?.cancel()
@@ -533,11 +541,13 @@ struct BoardCanvasView: View {
                     applyElements(els)
                     commandHistory.clear()
                     selection.clearSelection()
-                    if !els.isEmpty {
-                        jumpToContentCenter(animated: false)
-                    }
-                    // Clear the binding after applying
+                    // Defer one run-loop tick so every onAppear handler has
+                    // fired and canvasSize is guaranteed non-zero before we
+                    // try to center on content.
                     DispatchQueue.main.async {
+                        if !els.isEmpty {
+                            jumpToContentCenter(animated: false)
+                        }
                         elementsToLoad = nil
                     }
                 }
