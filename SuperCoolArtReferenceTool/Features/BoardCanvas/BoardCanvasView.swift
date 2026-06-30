@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import UIKit
 import ImageIO
 import simd
 
@@ -276,6 +275,7 @@ struct BoardCanvasView: View {
                                 await refreshVisibleElements()
                             }
                         }
+                        .accessibilityAddTraits(.isButton)
                         .position(x: (liveRect.midX * camera.scale) + camera.offset.width + liveDX,
                                   y: (liveRect.midY * camera.scale) + camera.offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
@@ -332,6 +332,7 @@ struct BoardCanvasView: View {
                             await behavior.tappedItem(id: id, store: store, selection: sel)
                         }
                     }
+                    .accessibilityAddTraits(.isButton)
                     .zIndex(Double(placed.zIndex))
                 }
 
@@ -497,7 +498,7 @@ struct BoardCanvasView: View {
                     if isFirstInsert {
                         commandHistory.clear()
                     }
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         externalInsertURLs = nil
                     }
                 }
@@ -593,17 +594,17 @@ struct BoardCanvasView: View {
             .onChange(of: undoTrigger) { _, newValue in
                 guard newValue != nil else { return }
                 performUndo()
-                DispatchQueue.main.async { undoTrigger = nil }
+                Task { @MainActor in undoTrigger = nil }
             }
             .onChange(of: redoTrigger) { _, newValue in
                 guard newValue != nil else { return }
                 performRedo()
-                DispatchQueue.main.async { redoTrigger = nil }
+                Task { @MainActor in redoTrigger = nil }
             }
             .onChange(of: homeTrigger) { _, newValue in
                 guard newValue != nil else { return }
                 jumpToContentCenter()
-                DispatchQueue.main.async { homeTrigger = nil }
+                Task { @MainActor in homeTrigger = nil }
             }
             .contentShape(Rectangle())
             // Drag: routed through active tool behavior
@@ -753,7 +754,7 @@ struct BoardCanvasView: View {
     private func endInteraction() {
         interactionEndTask?.cancel()
         interactionEndTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try? await Task.sleep(for: .milliseconds(150))
             isInteracting = false
         }
     }
@@ -1861,8 +1862,7 @@ struct BoardCanvasView: View {
     private func scheduleRefreshVisibleElements() {
         refreshTask?.cancel()
         refreshTask = Task { @MainActor in
-            let delay: UInt64 = isInteracting ? 80_000_000 : 40_000_000
-            try? await Task.sleep(nanoseconds: delay)
+            try? await Task.sleep(for: isInteracting ? .milliseconds(80) : .milliseconds(40))
             await refreshVisibleElements()
         }
     }

@@ -8,6 +8,7 @@ import SwiftUI
 /// home button, landing snap) go through one place, and the type can be
 /// injected or observed independently of the view in future refactors.
 @Observable
+@MainActor
 final class CanvasCamera {
     var offset: CGSize = .zero
     var scale: CGFloat = 1.0

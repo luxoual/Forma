@@ -29,7 +29,7 @@ struct CanvasMinimapView: View {
         }
         .frame(width: 160, height: 100)
         .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(.black.opacity(0.55))
                 .stroke(.white.opacity(0.12), lineWidth: 0.5)
         }
