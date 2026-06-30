@@ -533,6 +533,9 @@ struct BoardCanvasView: View {
                     applyElements(els)
                     commandHistory.clear()
                     selection.clearSelection()
+                    if !els.isEmpty {
+                        snapToContentCenter()
+                    }
                     // Clear the binding after applying
                     DispatchQueue.main.async {
                         elementsToLoad = nil
@@ -2148,6 +2151,19 @@ struct BoardCanvasView: View {
         var rects = placedImages.map(\.worldRect)
         rects.append(contentsOf: placedTexts.map(\.worldRect))
         return rects
+    }
+
+    /// Instantly position the viewport so the center of all canvas content is
+    /// centered on screen. Used on board load — no animation, no flash.
+    private func snapToContentCenter() {
+        guard canvasSize != .zero, scale > 0 else { return }
+        let allRects = allElementRects()
+        guard let bounds = union(of: allRects) else { return }
+        offset = CGSize(
+            width: canvasSize.width / 2 - bounds.midX * scale,
+            height: canvasSize.height / 2 - bounds.midY * scale
+        )
+        scheduleRefreshVisibleElements()
     }
 
     /// Animate the viewport so the center of all canvas content is centered
