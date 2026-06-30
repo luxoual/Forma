@@ -2187,7 +2187,7 @@ struct BoardCanvasView: View {
             width: canvasSize.width / 2 - centerX * scale,
             height: canvasSize.height / 2 - centerY * scale
         )
-        if animated {
+        if animated && !reduceMotion {
             withAnimation(.easeInOut(duration: 0.4)) {
                 offset = target
             } completion: {
