@@ -141,45 +141,12 @@ struct BoardCanvasView: View {
             let renderPlan = imageRenderPlan()
             ZStack {
                 // Grid background
-                Canvas { ctx, size in
-                    guard showGrid else { return }
-
-                    let s = camera.scale
-                    let off = camera.offset
-
-                    // Visible world rect
-                    let worldMinX = (-off.width) / s
-                    let worldMinY = (-off.height) / s
-                    let worldMaxX = (size.width - off.width) / s
-                    let worldMaxY = (size.height - off.height) / s
-
-                    // Draw minor grid lines
-                    var path = Path()
-                    let spacing = max(8.0, gridSpacingWorld)
-
-                    // Start lines aligned to world grid
-                    let startX = floor(worldMinX / spacing) * spacing
-                    let startY = floor(worldMinY / spacing) * spacing
-
-                    // Vertical lines
-                    var x = startX
-                    while x <= worldMaxX {
-                        let screenX = x * s + off.width
-                        path.move(to: CGPoint(x: screenX, y: 0))
-                        path.addLine(to: CGPoint(x: screenX, y: size.height))
-                        x += spacing
-                    }
-                    // Horizontal lines
-                    var y = startY
-                    while y <= worldMaxY {
-                        let screenY = y * s + off.height
-                        path.move(to: CGPoint(x: 0, y: screenY))
-                        path.addLine(to: CGPoint(x: size.width, y: screenY))
-                        y += spacing
-                    }
-
-                    ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.5)
-                }
+                CanvasGridView(
+                    showGrid: showGrid,
+                    scale: camera.scale,
+                    offset: camera.offset,
+                    gridSpacing: gridSpacingWorld
+                )
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
                 .onTapGesture(coordinateSpace: .local) { location in
@@ -202,24 +169,11 @@ struct BoardCanvasView: View {
                 }
 
                 if !renderPlan.overviewItems.isEmpty {
-                    Canvas { ctx, _ in
-                        for item in renderPlan.overviewItems {
-                            let screenRect = CGRect(
-                                x: item.worldRect.origin.x * camera.scale + camera.offset.width,
-                                y: item.worldRect.origin.y * camera.scale + camera.offset.height,
-                                width: item.worldRect.width * camera.scale,
-                                height: item.worldRect.height * camera.scale
-                            )
-                            let fillRect = screenRect.integral.insetBy(dx: 0.25, dy: 0.25)
-                            let fillPath = Path(roundedRect: fillRect, cornerRadius: min(3, min(fillRect.width, fillRect.height) * 0.2))
-                            ctx.fill(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.18)))
-                            if fillRect.width >= 6, fillRect.height >= 6 {
-                                ctx.stroke(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.32)), lineWidth: 0.75)
-                            }
-                        }
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                    CanvasOverviewLayer(
+                        items: renderPlan.overviewItems,
+                        scale: camera.scale,
+                        offset: camera.offset
+                    )
                 }
 
                 // Render detailed visible images only (world -> screen mapping)
@@ -435,20 +389,7 @@ struct BoardCanvasView: View {
             }
             .overlay {
                 if placedImages.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "photo.on.rectangle.angled")
-                            .font(.system(size: 80))
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .compositingGroup()
-                            .blendMode(.difference)
-                            .accessibilityHidden(true)
-
-                        Text("Drag and drop an image here")
-                            .font(.title3)
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .compositingGroup()
-                            .blendMode(.difference)
-                    }
+                    EmptyCanvasOverlay()
                 }
             }
             .overlay(alignment: .bottomTrailing) {
