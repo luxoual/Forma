@@ -546,8 +546,10 @@ struct BoardCanvasView: View {
                     selection.clearSelection()
                     // Defer one run-loop tick so every onAppear handler has
                     // fired and canvasSize is guaranteed non-zero before we
-                    // try to center on content.
-                    Task {
+                    // try to center on content. DispatchQueue.main.async is
+                    // intentional: Task{} uses Swift concurrency's cooperative
+                    // scheduler and doesn't drain the run loop; .main.async does.
+                    DispatchQueue.main.async {
                         if !els.isEmpty {
                             jumpToContentCenter(animated: false)
                         }
