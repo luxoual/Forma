@@ -533,7 +533,7 @@ struct BoardCanvasView: View {
             }
             .onChange(of: markCleanTrigger) { _, newValue in
                 guard newValue != nil else { return }
-                Task {
+                Task { @MainActor in
                     await canvasStore.markClean()
                     markCleanTrigger = nil
                 }
@@ -2154,15 +2154,9 @@ struct BoardCanvasView: View {
     private func jumpToContentCenter(animated: Bool = true) {
         guard canvasSize != .zero, camera.scale > 0 else { return }
         let allRects = allElementRects()
-        let centerX: CGFloat
-        let centerY: CGFloat
-        if let bounds = union(of: allRects) {
-            centerX = bounds.midX
-            centerY = bounds.midY
-        } else {
-            centerX = 0
-            centerY = 0
-        }
+        guard let bounds = union(of: allRects) else { return }
+        let centerX = bounds.midX
+        let centerY = bounds.midY
         let target = CGSize(
             width: canvasSize.width / 2 - centerX * camera.scale,
             height: canvasSize.height / 2 - centerY * camera.scale
