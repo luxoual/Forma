@@ -25,6 +25,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
     let onBack: () -> Void
     let onUndo: () -> Void
     let onRedo: () -> Void
+    let onHome: () -> Void
     let onAddItem: () -> Void
     let onSettings: () -> Void
 
@@ -71,6 +72,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
             Button(action: onRedo) {
                 Label("Redo", systemImage: "arrow.uturn.forward")
             }
+            Button("Go to Content", systemImage: "house", action: onHome)
         }
 
         ToolbarSpacer(.fixed, placement: .topBarTrailing)

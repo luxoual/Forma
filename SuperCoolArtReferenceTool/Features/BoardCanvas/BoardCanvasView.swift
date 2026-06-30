@@ -95,6 +95,8 @@ struct BoardCanvasView: View {
 
     // Active tool from toolbar
     @Binding private var activeTool: CanvasTool
+    // Home-button trigger: fires jumpToContentCenter when set to a non-nil UUID
+    @Binding private var homeTrigger: UUID?
     // Selection state
     @State private var selection = CanvasSelectionState()
     @State private var currentDragMode: DragMode? = nil
@@ -117,7 +119,7 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -127,6 +129,7 @@ struct BoardCanvasView: View {
         self.commandHistory = commandHistory
         self._undoTrigger = undoTrigger
         self._redoTrigger = redoTrigger
+        self._homeTrigger = homeTrigger
         self._markCleanTrigger = markCleanTrigger
         self.onInsertURLs = onInsertURLs
         self._snapshotTrigger = snapshotTrigger
@@ -447,6 +450,16 @@ struct BoardCanvasView: View {
                     }
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                let rects = allElementRects()
+                if !rects.isEmpty {
+                    CanvasMinimapView(
+                        elementRects: rects,
+                        viewportRect: viewportCGRect()
+                    )
+                    .padding(16)
+                }
+            }
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
                 insertImages(atScreenPoint: point, urls: urls)
             })
@@ -570,6 +583,11 @@ struct BoardCanvasView: View {
                 guard newValue != nil else { return }
                 performRedo()
                 DispatchQueue.main.async { redoTrigger = nil }
+            }
+            .onChange(of: homeTrigger) { _, newValue in
+                guard newValue != nil else { return }
+                jumpToContentCenter()
+                DispatchQueue.main.async { homeTrigger = nil }
             }
             .contentShape(Rectangle())
             // Drag: routed through active tool behavior
@@ -2112,6 +2130,47 @@ struct BoardCanvasView: View {
         guard let first = rects.first else { return nil }
         return rects.dropFirst().reduce(first) { partial, rect in
             partial.union(rect)
+        }
+    }
+
+    /// Current visible viewport expressed as a world-space CGRect.
+    private func viewportCGRect() -> CGRect {
+        guard scale > 0, canvasSize != .zero else { return .zero }
+        let worldMinX = (-offset.width) / scale
+        let worldMinY = (-offset.height) / scale
+        return CGRect(x: worldMinX, y: worldMinY,
+                      width: canvasSize.width / scale,
+                      height: canvasSize.height / scale)
+    }
+
+    /// World-space rects for every element (images + texts) on the canvas.
+    private func allElementRects() -> [CGRect] {
+        var rects = placedImages.map(\.worldRect)
+        rects.append(contentsOf: placedTexts.map(\.worldRect))
+        return rects
+    }
+
+    /// Animate the viewport so the center of all canvas content is centered
+    /// on screen, preserving the current zoom level.
+    private func jumpToContentCenter() {
+        guard canvasSize != .zero, scale > 0 else { return }
+        let allRects = allElementRects()
+        let centerX: CGFloat
+        let centerY: CGFloat
+        if let bounds = union(of: allRects) {
+            centerX = bounds.midX
+            centerY = bounds.midY
+        } else {
+            centerX = 0
+            centerY = 0
+        }
+        withAnimation(.easeInOut(duration: 0.4)) {
+            offset = CGSize(
+                width: canvasSize.width / 2 - centerX * scale,
+                height: canvasSize.height / 2 - centerY * scale
+            )
+        } completion: {
+            scheduleRefreshVisibleElements()
         }
     }
 
