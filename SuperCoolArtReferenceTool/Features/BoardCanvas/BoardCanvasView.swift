@@ -472,11 +472,10 @@ struct BoardCanvasView: View {
                 if camera.offset == .zero {
                     camera.offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
                 }
-                // If elements were already applied before canvasSize was available
-                // (ContentView.onAppear fired before this onAppear), snap to content
-                // center now that canvasSize is known. jumpToContentCenter also calls
-                // scheduleRefreshVisibleElements, so skip the standalone call below.
-                if !placedImages.isEmpty || !placedTexts.isEmpty {
+                // If elements were already applied AND no pending load is in flight
+                // (elementsToLoad non-nil means the deferred DispatchQueue handler
+                // will snap after it fires — gating here avoids a redundant double call).
+                if elementsToLoad == nil && (!placedImages.isEmpty || !placedTexts.isEmpty) {
                     jumpToContentCenter(animated: false)
                 } else {
                     scheduleRefreshVisibleElements()
