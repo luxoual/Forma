@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Draws the infinite dot-grid background for the canvas. The canvas always
+/// Draws the infinite line-grid background for the canvas. The canvas always
 /// occupies the full view (so hit-testing on the empty canvas tap gesture is
 /// consistent), but draws nothing when `showGrid` is false.
 struct CanvasGridView: View {
