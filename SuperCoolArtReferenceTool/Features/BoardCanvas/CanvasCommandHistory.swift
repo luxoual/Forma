@@ -22,7 +22,7 @@ struct TextResizeSnapshot {
 
 /// A reversible canvas operation.
 enum CanvasCommand {
-    case move(elementIDs: Set<UUID>, delta: CGSize)
+    case move(elementIDs: Set<UUID>, delta: CGSize, expandedFrameRects: [UUID: CGRect])
     case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
     /// Resize of a multi-element selection. `fromRects`/`toRects` cover
     /// image elements (which use a worldRect as authoritative state).
@@ -39,6 +39,14 @@ enum CanvasCommand {
     )
     case insert(snapshots: [PlacedElementSnapshot])
     case delete(snapshots: [PlacedElementSnapshot])
+    /// Creating a frame inserts the frame and reparents the selected
+    /// children into it. Undo must restore the children to their previous
+    /// parents, not just remove the frame shell.
+    case createFrame(
+        frameSnapshot: PlacedElementSnapshot,
+        beforeChildSnapshots: [PlacedElementSnapshot],
+        afterChildSnapshots: [PlacedElementSnapshot]
+    )
     /// Text content was changed during a re-edit. Body of the text element
     /// is the only authoritative state being touched — `worldRect` is
     /// downstream-derived from rendered geometry, so this command doesn't

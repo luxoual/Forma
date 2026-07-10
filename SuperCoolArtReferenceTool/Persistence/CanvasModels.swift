@@ -8,6 +8,7 @@ public enum CMElementType: String, Codable, Hashable {
     case path
     case text
     case image
+    case frame
 }
 
 /// Represents a rectangular area in the world coordinate space.
@@ -99,14 +100,24 @@ public struct CMElementHeader: Codable, Hashable, Identifiable {
     public var bounds: CMWorldRect
     public var layerId: CMLayerID
     public var zIndex: Int
+    public var parentID: UUID?
 
-    public init(id: UUID, type: CMElementType, transform: CMAffineTransform2D, bounds: CMWorldRect, layerId: CMLayerID, zIndex: Int) {
+    public init(
+        id: UUID,
+        type: CMElementType,
+        transform: CMAffineTransform2D,
+        bounds: CMWorldRect,
+        layerId: CMLayerID,
+        zIndex: Int,
+        parentID: UUID? = nil
+    ) {
         self.id = id
         self.type = type
         self.transform = transform
         self.bounds = bounds
         self.layerId = layerId
         self.zIndex = zIndex
+        self.parentID = parentID
     }
 }
 
@@ -122,6 +133,7 @@ public enum CMCanvasElementPayload: Codable, Hashable {
     /// load with `wrapWidth = nil` and behave identically to before.
     case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
     case image(url: URL, size: SIMD2<Double>)
+    case frame(title: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -136,10 +148,11 @@ public enum CMCanvasElementPayload: Codable, Hashable {
         case wrapWidth
         case url
         case size
+        case title
     }
     
     private enum PayloadType: String, Codable {
-        case rectangle, ellipse, path, text, image
+        case rectangle, ellipse, path, text, image, frame
     }
     
     public init(from decoder: Decoder) throws {
@@ -170,6 +183,9 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             let url = try container.decode(URL.self, forKey: .url)
             let size = try container.decode(SIMD2<Double>.self, forKey: .size)
             self = .image(url: url, size: size)
+        case .frame:
+            let title = try container.decode(String.self, forKey: .title)
+            self = .frame(title: title)
         }
     }
     
@@ -200,6 +216,9 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             try container.encode(PayloadType.image, forKey: .type)
             try container.encode(url, forKey: .url)
             try container.encode(size, forKey: .size)
+        case .frame(let title):
+            try container.encode(PayloadType.frame, forKey: .type)
+            try container.encode(title, forKey: .title)
         }
     }
 }
