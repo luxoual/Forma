@@ -248,6 +248,8 @@ struct BoardCanvasView: View {
                 selectedFrameBorderLayer()
 
                 // Floating action bar beneath the current selection.
+                selectionActionBarLayer()
+
                 // Group bounding box with resize handles
                 groupSelectionOverlayLayer()
             }
@@ -636,6 +638,31 @@ struct BoardCanvasView: View {
                 onTap: { handleTextTap(id, currentContent: placed.content, isOnlySelected: isOnlySelected) }
             )
         }
+    }
+
+    private func selectionActionBarLayer() -> some View {
+        SelectionActionBarLayer(
+            boundingBox: selectionBoundingBox(),
+            scale: scale,
+            offset: offset,
+            isInteracting: isSelectionActionBarInteracting,
+            onCreateFrame: selectionActionBarCreateFrameAction,
+            onDelete: { deleteSelection() }
+        )
+        .zIndex(Double(Int.max - 1))
+    }
+
+    private var selectionActionBarCreateFrameAction: (() -> Void)? {
+        canCreateFrameFromSelection() ? { createFrameFromSelection() } : nil
+    }
+
+    private var isSelectionActionBarInteracting: Bool {
+        isInteracting ||
+        selection.isDragging ||
+        selection.isResizing ||
+        selection.isTextResizing ||
+        selection.isGroupResizing ||
+        selection.isMarqueeing
     }
 
     @ViewBuilder
