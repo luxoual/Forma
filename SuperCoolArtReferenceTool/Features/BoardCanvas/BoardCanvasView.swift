@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import UIKit
 import ImageIO
 import simd
 
@@ -9,8 +8,7 @@ struct BoardCanvasView: View {
     private let onInsertURLs: ImportHandler
 
     // View transform (world -> screen)
-    @State private var scale: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
+    @State private var camera = CanvasCamera()
 
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
@@ -22,6 +20,7 @@ struct BoardCanvasView: View {
     @Binding private var canvasColor: Color
     @State private var gridSpacingWorld: CGFloat = 128.0
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // Placed images (source-of-truth for interactions)
     @State private var placedImages: [PlacedImage] = []
@@ -95,6 +94,8 @@ struct BoardCanvasView: View {
 
     // Active tool from toolbar
     @Binding private var activeTool: CanvasTool
+    // Home-button trigger: fires jumpToContentCenter when set to a non-nil UUID
+    @Binding private var homeTrigger: UUID?
     // Selection state
     @State private var selection = CanvasSelectionState()
     @State private var currentDragMode: DragMode? = nil
@@ -117,7 +118,7 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -127,6 +128,7 @@ struct BoardCanvasView: View {
         self.commandHistory = commandHistory
         self._undoTrigger = undoTrigger
         self._redoTrigger = redoTrigger
+        self._homeTrigger = homeTrigger
         self._markCleanTrigger = markCleanTrigger
         self.onInsertURLs = onInsertURLs
         self._snapshotTrigger = snapshotTrigger
@@ -139,45 +141,12 @@ struct BoardCanvasView: View {
             let renderPlan = imageRenderPlan()
             ZStack {
                 // Grid background
-                Canvas { ctx, size in
-                    guard showGrid else { return }
-
-                    let s = scale
-                    let off = offset
-
-                    // Visible world rect
-                    let worldMinX = (-off.width) / s
-                    let worldMinY = (-off.height) / s
-                    let worldMaxX = (size.width - off.width) / s
-                    let worldMaxY = (size.height - off.height) / s
-
-                    // Draw minor grid lines
-                    var path = Path()
-                    let spacing = max(8.0, gridSpacingWorld)
-
-                    // Start lines aligned to world grid
-                    let startX = floor(worldMinX / spacing) * spacing
-                    let startY = floor(worldMinY / spacing) * spacing
-
-                    // Vertical lines
-                    var x = startX
-                    while x <= worldMaxX {
-                        let screenX = x * s + off.width
-                        path.move(to: CGPoint(x: screenX, y: 0))
-                        path.addLine(to: CGPoint(x: screenX, y: size.height))
-                        x += spacing
-                    }
-                    // Horizontal lines
-                    var y = startY
-                    while y <= worldMaxY {
-                        let screenY = y * s + off.height
-                        path.move(to: CGPoint(x: 0, y: screenY))
-                        path.addLine(to: CGPoint(x: size.width, y: screenY))
-                        y += spacing
-                    }
-
-                    ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.5)
-                }
+                CanvasGridView(
+                    showGrid: showGrid,
+                    scale: camera.scale,
+                    offset: camera.offset,
+                    gridSpacing: gridSpacingWorld
+                )
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
                 .onTapGesture(coordinateSpace: .local) { location in
@@ -200,24 +169,11 @@ struct BoardCanvasView: View {
                 }
 
                 if !renderPlan.overviewItems.isEmpty {
-                    Canvas { ctx, _ in
-                        for item in renderPlan.overviewItems {
-                            let screenRect = CGRect(
-                                x: item.worldRect.origin.x * scale + offset.width,
-                                y: item.worldRect.origin.y * scale + offset.height,
-                                width: item.worldRect.width * scale,
-                                height: item.worldRect.height * scale
-                            )
-                            let fillRect = screenRect.integral.insetBy(dx: 0.25, dy: 0.25)
-                            let fillPath = Path(roundedRect: fillRect, cornerRadius: min(3, min(fillRect.width, fillRect.height) * 0.2))
-                            ctx.fill(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.18)))
-                            if fillRect.width >= 6, fillRect.height >= 6 {
-                                ctx.stroke(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.32)), lineWidth: 0.75)
-                            }
-                        }
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                    CanvasOverviewLayer(
+                        items: renderPlan.overviewItems,
+                        scale: camera.scale,
+                        offset: camera.offset
+                    )
                 }
 
                 // Render detailed visible images only (world -> screen mapping)
@@ -240,20 +196,20 @@ struct BoardCanvasView: View {
                         }
                     }()
 
-                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
-                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
 
                     let multiSelected = selection.selectedIDs.count > 1
 
-                    let maxDimensionPoints = max(liveRect.width * scale, liveRect.height * scale)
+                    let maxDimensionPoints = max(liveRect.width * camera.scale, liveRect.height * camera.scale)
                     let targetMaxPixelSize = FileImageView.requestedThumbnailPixelSize(
                         screenMaxDimensionPoints: maxDimensionPoints,
                         displayScale: displayScale,
                         isInteracting: isInteracting
                     )
                     FileImageView(url: item.url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
-                        .frame(width: liveRect.width * scale,
-                               height: liveRect.height * scale)
+                        .frame(width: liveRect.width * camera.scale,
+                               height: liveRect.height * camera.scale)
                         .overlay {
                             if isSelected && !multiSelected {
                                 SelectionOverlay(activeHandle: selection.resizeHandle)
@@ -273,8 +229,9 @@ struct BoardCanvasView: View {
                                 await refreshVisibleElements()
                             }
                         }
-                        .position(x: (liveRect.midX * scale) + offset.width + liveDX,
-                                  y: (liveRect.midY * scale) + offset.height + liveDY)
+                        .accessibilityAddTraits(.isButton)
+                        .position(x: (liveRect.midX * camera.scale) + camera.offset.width + liveDX,
+                                  y: (liveRect.midY * camera.scale) + camera.offset.height + liveDY)
                         .shadow(radius: isInteracting ? 0 : 1)
                         .zIndex(Double(item.zIndex))
                 }
@@ -290,22 +247,22 @@ struct BoardCanvasView: View {
                 ForEach($placedTexts) { $placed in
                     let isSelected = selection.selectedIDs.contains(placed.id)
                     let isMultiSelected = selection.selectedIDs.count > 1
-                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
-                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+                    let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+                    let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
                     let id = placed.id
                     let isEditing = editingTextID == id
 
                     TextElementView(
                         placed: $placed,
-                        scale: scale,
+                        scale: camera.scale,
                         isEditing: isEditing,
                         isSelected: isSelected,
                         isMultiSelected: isMultiSelected,
                         onCommitEdit: { commitTextEdit(id: id) }
                     )
                     .position(
-                        x: (placed.worldRect.midX * scale) + offset.width + liveDX,
-                        y: (placed.worldRect.midY * scale) + offset.height + liveDY
+                        x: (placed.worldRect.midX * camera.scale) + camera.offset.width + liveDX,
+                        y: (placed.worldRect.midY * camera.scale) + camera.offset.height + liveDY
                     )
                     .onTapGesture {
                         // Tap-on-sole-selected text → re-enter edit mode.
@@ -329,16 +286,17 @@ struct BoardCanvasView: View {
                             await behavior.tappedItem(id: id, store: store, selection: sel)
                         }
                     }
+                    .accessibilityAddTraits(.isButton)
                     .zIndex(Double(placed.zIndex))
                 }
 
                 // Marquee selection rectangle
                 if selection.isMarqueeing, let worldRect = selection.marqueeWorldRect {
                     let screenRect = CGRect(
-                        x: worldRect.origin.x * scale + offset.width,
-                        y: worldRect.origin.y * scale + offset.height,
-                        width: worldRect.width * scale,
-                        height: worldRect.height * scale
+                        x: worldRect.origin.x * camera.scale + camera.offset.width,
+                        y: worldRect.origin.y * camera.scale + camera.offset.height,
+                        width: worldRect.width * camera.scale,
+                        height: worldRect.height * camera.scale
                     )
                     MarqueeOverlayView(screenRect: screenRect)
                         .allowsHitTesting(false)
@@ -360,10 +318,10 @@ struct BoardCanvasView: View {
                    !selection.isDragging,
                    !selection.isMarqueeing {
                     let screenRect = CGRect(
-                        x: placed.worldRect.origin.x * scale + offset.width,
-                        y: placed.worldRect.origin.y * scale + offset.height,
-                        width: placed.worldRect.width * scale,
-                        height: placed.worldRect.height * scale
+                        x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
+                        y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
+                        width: placed.worldRect.width * camera.scale,
+                        height: placed.worldRect.height * camera.scale
                     )
                     SelectionOverlay(
                         handles: TextElementView.textHandles,
@@ -383,10 +341,10 @@ struct BoardCanvasView: View {
                 if let editingID = editingTextID,
                    let placed = placedTexts.first(where: { $0.id == editingID }) {
                     let screenRect = CGRect(
-                        x: placed.worldRect.origin.x * scale + offset.width,
-                        y: placed.worldRect.origin.y * scale + offset.height,
-                        width: placed.worldRect.width * scale,
-                        height: placed.worldRect.height * scale
+                        x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
+                        y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
+                        width: placed.worldRect.width * camera.scale,
+                        height: placed.worldRect.height * camera.scale
                     )
                     Rectangle()
                         .strokeBorder(DesignSystem.Colors.tertiary, lineWidth: 1.5)
@@ -399,8 +357,8 @@ struct BoardCanvasView: View {
                 // Floating action bar beneath the current selection.
                 SelectionActionBarLayer(
                     boundingBox: selectionBoundingBox(),
-                    scale: scale,
-                    offset: offset,
+                    scale: camera.scale,
+                    offset: camera.offset,
                     isInteracting: selection.isDragging
                         || selection.isResizing
                         || selection.isGroupResizing
@@ -416,10 +374,10 @@ struct BoardCanvasView: View {
                         : groupBoundingBox()
                     if let bbox {
                         let screenRect = CGRect(
-                            x: bbox.origin.x * scale + offset.width,
-                            y: bbox.origin.y * scale + offset.height,
-                            width: bbox.width * scale,
-                            height: bbox.height * scale
+                            x: bbox.origin.x * camera.scale + camera.offset.width,
+                            y: bbox.origin.y * camera.scale + camera.offset.height,
+                            width: bbox.width * camera.scale,
+                            height: bbox.height * camera.scale
                         )
                         GroupSelectionOverlay(activeHandle: selection.resizeHandle)
                             .frame(width: screenRect.width, height: screenRect.height)
@@ -431,20 +389,17 @@ struct BoardCanvasView: View {
             }
             .overlay {
                 if placedImages.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "photo.on.rectangle.angled")
-                            .font(.system(size: 80))
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .compositingGroup()
-                            .blendMode(.difference)
-                            .accessibilityHidden(true)
-
-                        Text("Drag and drop an image here")
-                            .font(.title3)
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .compositingGroup()
-                            .blendMode(.difference)
-                    }
+                    EmptyCanvasOverlay()
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                let rects = allElementRects()
+                if !rects.isEmpty {
+                    CanvasMinimapView(
+                        elementRects: rects,
+                        viewportRect: viewportCGRect()
+                    )
+                    .padding(16)
                 }
             }
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
@@ -456,10 +411,17 @@ struct BoardCanvasView: View {
             .onAppear {
                 canvasSize = geo.size
                 // Center the canvas on world origin (0, 0) on first appearance
-                if offset == .zero {
-                    offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
+                if camera.offset == .zero {
+                    camera.offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
                 }
-                scheduleRefreshVisibleElements()
+                // If elements were already applied AND no pending load is in flight
+                // (elementsToLoad non-nil means the deferred DispatchQueue handler
+                // will snap after it fires — gating here avoids a redundant double call).
+                if elementsToLoad == nil && (!placedImages.isEmpty || !placedTexts.isEmpty) {
+                    jumpToContentCenter(animated: false)
+                } else {
+                    scheduleRefreshVisibleElements()
+                }
             }
             .onDisappear {
                 refreshTask?.cancel()
@@ -477,7 +439,7 @@ struct BoardCanvasView: View {
                     if isFirstInsert {
                         commandHistory.clear()
                     }
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         externalInsertURLs = nil
                     }
                 }
@@ -512,16 +474,25 @@ struct BoardCanvasView: View {
             }
             .onChange(of: markCleanTrigger) { _, newValue in
                 guard newValue != nil else { return }
-                Task { await canvasStore.markClean() }
-                DispatchQueue.main.async { markCleanTrigger = nil }
+                Task { @MainActor in
+                    await canvasStore.markClean()
+                    markCleanTrigger = nil
+                }
             }
             .onChange(of: elementsToLoad) { oldValue, newValue in
                 if let els = newValue {
                     applyElements(els)
                     commandHistory.clear()
                     selection.clearSelection()
-                    // Clear the binding after applying
+                    // Defer one run-loop tick so every onAppear handler has
+                    // fired and canvasSize is guaranteed non-zero before we
+                    // try to center on content. DispatchQueue.main.async is
+                    // intentional: Task{} uses Swift concurrency's cooperative
+                    // scheduler and doesn't drain the run loop; .main.async does.
                     DispatchQueue.main.async {
+                        if !els.isEmpty {
+                            jumpToContentCenter(animated: false)
+                        }
                         elementsToLoad = nil
                     }
                 }
@@ -564,12 +535,17 @@ struct BoardCanvasView: View {
             .onChange(of: undoTrigger) { _, newValue in
                 guard newValue != nil else { return }
                 performUndo()
-                DispatchQueue.main.async { undoTrigger = nil }
+                Task { @MainActor in undoTrigger = nil }
             }
             .onChange(of: redoTrigger) { _, newValue in
                 guard newValue != nil else { return }
                 performRedo()
-                DispatchQueue.main.async { redoTrigger = nil }
+                Task { @MainActor in redoTrigger = nil }
+            }
+            .onChange(of: homeTrigger) { _, newValue in
+                guard newValue != nil else { return }
+                jumpToContentCenter()
+                Task { @MainActor in homeTrigger = nil }
             }
             .contentShape(Rectangle())
             // Drag: routed through active tool behavior
@@ -605,7 +581,7 @@ struct BoardCanvasView: View {
                                 currentDragMode = DragMode.none
                                 return
                             }
-                            dragStartOffset = offset
+                            dragStartOffset = camera.offset
 
                             if let hitResult = hitTestHandle(screenPoint: value.startLocation) {
                                 switch hitResult {
@@ -709,26 +685,6 @@ struct BoardCanvasView: View {
         min(max(value, minVal), maxVal)
     }
 
-    /// Pure function: compute the new `offset` that keeps the world point under
-    /// `anchor` (in screen-space points) fixed while scale changes from `oldScale`
-    /// to `newScale`. Extracted from `handlePinch` so the pivot-preserving math is
-    /// callable without a live view (e.g. from future unit tests).
-    ///
-    /// Preserves `worldPoint = (anchor - offset) / scale` across the zoom step.
-    static func zoomAnchoredOffset(
-        anchor: CGPoint,
-        oldOffset: CGSize,
-        oldScale: CGFloat,
-        newScale: CGFloat
-    ) -> CGSize {
-        let worldXBefore = (anchor.x - oldOffset.width) / oldScale
-        let worldYBefore = (anchor.y - oldOffset.height) / oldScale
-        return CGSize(
-            width: anchor.x - worldXBefore * newScale,
-            height: anchor.y - worldYBefore * newScale
-        )
-    }
-
     private func startInteraction() {
         interactionEndTask?.cancel()
         if !isInteracting {
@@ -739,7 +695,7 @@ struct BoardCanvasView: View {
     private func endInteraction() {
         interactionEndTask?.cancel()
         interactionEndTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try? await Task.sleep(for: .milliseconds(150))
             isInteracting = false
         }
     }
@@ -749,20 +705,20 @@ struct BoardCanvasView: View {
         case .began:
             startInteraction()
         case .changed:
-            let newScale = clamp(scale * scaleDelta, minScale, maxScale)
+            let newScale = clamp(camera.scale * scaleDelta, minScale, maxScale)
             // Clamp can cancel the delta; skip to avoid unnecessary offset churn.
-            guard newScale != scale else { return }
+            guard newScale != camera.scale else { return }
             // Pivot-preserving zoom: keep the world point currently under `anchor`
             // pinned to the same screen position after the scale change. Reading
-            // `offset`/`scale` fresh every tick is what lets this compose with the
-            // simultaneous two-finger pan (no frozen baselines to clobber).
-            offset = Self.zoomAnchoredOffset(
+            // `camera.offset`/`camera.scale` fresh every tick is what lets this
+            // compose with the simultaneous two-finger pan (no frozen baselines).
+            camera.offset = CanvasCamera.zoomAnchoredOffset(
                 anchor: anchor,
-                oldOffset: offset,
-                oldScale: scale,
+                oldOffset: camera.offset,
+                oldScale: camera.scale,
                 newScale: newScale
             )
-            scale = newScale
+            camera.scale = newScale
             scheduleRefreshVisibleElements()
         case .ended:
             endInteraction()
@@ -774,8 +730,8 @@ struct BoardCanvasView: View {
         case .began:
             startInteraction()
         case .changed:
-            offset = CGSize(width: offset.width + delta.width,
-                            height: offset.height + delta.height)
+            camera.offset = CGSize(width: camera.offset.width + delta.width,
+                                   height: camera.offset.height + delta.height)
             scheduleRefreshVisibleElements()
         case .ended:
             endInteraction()
@@ -805,10 +761,10 @@ struct BoardCanvasView: View {
            textIDs.contains(selectedID),
            let text = placedTexts.first(where: { $0.id == selectedID }) {
             let textScreenRect = CGRect(
-                x: text.worldRect.origin.x * scale + offset.width,
-                y: text.worldRect.origin.y * scale + offset.height,
-                width: text.worldRect.width * scale,
-                height: text.worldRect.height * scale
+                x: text.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: text.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: text.worldRect.width * camera.scale,
+                height: text.worldRect.height * camera.scale
             )
             if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: textScreenRect),
                handle != .topCenter && handle != .bottomCenter {
@@ -823,20 +779,20 @@ struct BoardCanvasView: View {
            let selectedID = selection.selectedIDs.first,
            let item = visibleImages.first(where: { $0.id == selectedID }) {
             let itemScreenRect = CGRect(
-                x: item.worldRect.origin.x * scale + offset.width,
-                y: item.worldRect.origin.y * scale + offset.height,
-                width: item.worldRect.width * scale,
-                height: item.worldRect.height * scale
+                x: item.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: item.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: item.worldRect.width * camera.scale,
+                height: item.worldRect.height * camera.scale
             )
             if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: itemScreenRect) {
                 return .singleItem(handle: handle, item: item)
             }
         } else if selection.selectedIDs.count > 1, let bbox = groupBoundingBox() {
             let bboxScreenRect = CGRect(
-                x: bbox.origin.x * scale + offset.width,
-                y: bbox.origin.y * scale + offset.height,
-                width: bbox.width * scale,
-                height: bbox.height * scale
+                x: bbox.origin.x * camera.scale + camera.offset.width,
+                y: bbox.origin.y * camera.scale + camera.offset.height,
+                width: bbox.width * camera.scale,
+                height: bbox.height * camera.scale
             )
             if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: bboxScreenRect) {
                 return .group(handle: handle, bbox: bbox)
@@ -886,10 +842,10 @@ struct BoardCanvasView: View {
 
         for item in visibleImages {
             let screenRect = CGRect(
-                x: item.worldRect.origin.x * scale + offset.width,
-                y: item.worldRect.origin.y * scale + offset.height,
-                width: item.worldRect.width * scale,
-                height: item.worldRect.height * scale
+                x: item.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: item.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: item.worldRect.width * camera.scale,
+                height: item.worldRect.height * camera.scale
             )
             let screenMaxDimension = max(screenRect.width, screenRect.height)
             let screenArea = max(screenRect.width * screenRect.height, 0)
@@ -956,14 +912,14 @@ struct BoardCanvasView: View {
         switch mode {
         case .pan:
             guard let start = dragStartOffset else { return }
-            offset = CGSize(
+            camera.offset = CGSize(
                 width: start.width + value.translation.width,
                 height: start.height + value.translation.height
             )
             scheduleRefreshVisibleElements()
         case .moveItem:
-            let worldDX = value.translation.width / scale
-            let worldDY = value.translation.height / scale
+            let worldDX = value.translation.width / camera.scale
+            let worldDY = value.translation.height / camera.scale
             selection.dragOffset = CGSize(width: worldDX, height: worldDY)
             selection.isDragging = true
         case .resizeItem:
@@ -999,8 +955,8 @@ struct BoardCanvasView: View {
         translation: CGSize,
         minDimension: CGFloat? = nil
     ) -> CGRect? {
-        let worldDX = translation.width / scale
-        let worldDY = translation.height / scale
+        let worldDX = translation.width / camera.scale
+        let worldDY = translation.height / camera.scale
         let minDim = minDimension ?? minImageDimensionWorld
 
         let anchorPos = handle.anchorPosition
@@ -1332,7 +1288,7 @@ struct BoardCanvasView: View {
             // Reference width: existing wrapWidth if set, else current
             // measured worldRect.width (auto-width text).
             let baseWidth = startWrapWidth ?? startRect.width
-            let worldDX = translation.width / scale
+            let worldDX = translation.width / camera.scale
             let newWrap = max(minTextWrapWidth, baseWidth + worldDX)
             placedTexts[idx].wrapWidth = newWrap
             // Origin unchanged — left edge is anchor.
@@ -1340,7 +1296,7 @@ struct BoardCanvasView: View {
             // Left edge drag → set wrap width AND shift origin so the right
             // edge stays anchored (Figma convention).
             let baseWidth = startWrapWidth ?? startRect.width
-            let worldDX = translation.width / scale
+            let worldDX = translation.width / camera.scale
             let newWrap = max(minTextWrapWidth, baseWidth - worldDX)
             placedTexts[idx].wrapWidth = newWrap
             // Right edge anchored at startRect.maxX; origin = right - newWrap.
@@ -1832,8 +1788,8 @@ struct BoardCanvasView: View {
     }
 
     private func currentViewportRect() -> CMWorldRect {
-        let s = Double(scale)
-        let off = offset
+        let s = Double(camera.scale)
+        let off = camera.offset
         let worldMinX = (-off.width) / CGFloat(s)
         let worldMinY = (-off.height) / CGFloat(s)
         let worldMaxX = (canvasSize.width - off.width) / CGFloat(s)
@@ -1847,14 +1803,13 @@ struct BoardCanvasView: View {
     private func scheduleRefreshVisibleElements() {
         refreshTask?.cancel()
         refreshTask = Task { @MainActor in
-            let delay: UInt64 = isInteracting ? 80_000_000 : 40_000_000
-            try? await Task.sleep(nanoseconds: delay)
+            try? await Task.sleep(for: isInteracting ? .milliseconds(80) : .milliseconds(40))
             await refreshVisibleElements()
         }
     }
 
     private func visibleQueryMargin() -> Double {
-        let zoomAwareMargin = Double(256 * max(scale, 0.25))
+        let zoomAwareMargin = Double(256 * max(camera.scale, 0.25))
         return min(maxVisibleQueryMargin, max(minVisibleQueryMargin, zoomAwareMargin))
     }
 
@@ -1894,7 +1849,8 @@ struct BoardCanvasView: View {
     }
 
     private func screenToWorld(_ p: CGPoint) -> CGPoint {
-        CGPoint(x: (p.x - offset.width) / scale, y: (p.y - offset.height) / scale)
+        CGPoint(x: (p.x - camera.offset.width) / camera.scale,
+                y: (p.y - camera.offset.height) / camera.scale)
     }
 
     private func imagePixelSize(url: URL) -> CGSize? {
@@ -2112,6 +2068,48 @@ struct BoardCanvasView: View {
         guard let first = rects.first else { return nil }
         return rects.dropFirst().reduce(first) { partial, rect in
             partial.union(rect)
+        }
+    }
+
+    /// Current visible viewport expressed as a world-space CGRect.
+    private func viewportCGRect() -> CGRect {
+        guard camera.scale > 0, canvasSize != .zero else { return .zero }
+        let worldMinX = (-camera.offset.width) / camera.scale
+        let worldMinY = (-camera.offset.height) / camera.scale
+        return CGRect(x: worldMinX, y: worldMinY,
+                      width: canvasSize.width / camera.scale,
+                      height: canvasSize.height / camera.scale)
+    }
+
+    /// World-space rects for every element (images + texts) on the canvas.
+    private func allElementRects() -> [CGRect] {
+        var rects = placedImages.map(\.worldRect)
+        rects.append(contentsOf: placedTexts.map(\.worldRect))
+        return rects
+    }
+
+    /// Center the viewport on all canvas content. Pass `animated: false` for
+    /// instant repositioning (e.g. on board load); `true` for the home button
+    /// eased pan.
+    private func jumpToContentCenter(animated: Bool = true) {
+        guard canvasSize != .zero, camera.scale > 0 else { return }
+        let allRects = allElementRects()
+        guard let bounds = union(of: allRects) else { return }
+        let centerX = bounds.midX
+        let centerY = bounds.midY
+        let target = CGSize(
+            width: canvasSize.width / 2 - centerX * camera.scale,
+            height: canvasSize.height / 2 - centerY * camera.scale
+        )
+        if animated && !reduceMotion {
+            withAnimation(.easeInOut(duration: 0.4)) {
+                camera.offset = target
+            } completion: {
+                scheduleRefreshVisibleElements()
+            }
+        } else {
+            camera.offset = target
+            scheduleRefreshVisibleElements()
         }
     }
 

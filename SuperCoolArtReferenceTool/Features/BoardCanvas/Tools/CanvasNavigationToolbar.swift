@@ -13,10 +13,11 @@ import SwiftUI
 ///
 /// Layout:
 /// - Leading group: back chevron + board name pill (no nested glass).
-/// - Trailing: tools+add / undo-redo / settings, split by `ToolbarSpacer`
+/// - Trailing: tools+add / undo-redo / home+settings, split by `ToolbarSpacer`
 ///   so each group renders as its own glass capsule. Add lives with the
 ///   tools because it's the other put-stuff-on-the-canvas action, not a
-///   settings affordance.
+///   settings affordance. Home lives with settings because both are
+///   view-level navigation, not edit-history actions.
 /// - All buttons use `Label("Title", systemImage: …)` so the system overflow
 ///   menu can populate from titles when the bar collapses.
 struct CanvasNavigationToolbar: ToolbarContent {
@@ -25,6 +26,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
     let onBack: () -> Void
     let onUndo: () -> Void
     let onRedo: () -> Void
+    let onHome: () -> Void
     let onAddItem: () -> Void
     let onSettings: () -> Void
 
@@ -75,7 +77,8 @@ struct CanvasNavigationToolbar: ToolbarContent {
 
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
 
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("Go to Content", systemImage: "house", action: onHome)
             Button(action: onSettings) {
                 Label("Settings", systemImage: "gear")
             }

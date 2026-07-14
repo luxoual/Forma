@@ -43,10 +43,11 @@ struct ContentView: View {
     @State private var snapshotToken: UUID?
     @State private var elementsToLoad: [CMCanvasElement]?
 
-    // Undo/redo
+    // Undo/redo/home
     @State private var commandHistory = CanvasCommandHistory()
     @State private var undoTrigger: UUID?
     @State private var redoTrigger: UUID?
+    @State private var homeTrigger: UUID?
     @State private var markCleanTrigger: UUID?
 
     @State private var importerPresented = false
@@ -105,6 +106,7 @@ struct ContentView: View {
                 commandHistory: commandHistory,
                 undoTrigger: $undoTrigger,
                 redoTrigger: $redoTrigger,
+                homeTrigger: $homeTrigger,
                 markCleanTrigger: $markCleanTrigger,
                 onInsertURLs: { _ in },
                 onSnapshot: { elements, wasDirty in
@@ -125,6 +127,7 @@ struct ContentView: View {
                     onBack: handleBack,
                     onUndo: { undoTrigger = UUID() },
                     onRedo: { redoTrigger = UUID() },
+                    onHome: { homeTrigger = UUID() },
                     onAddItem: openImageImporter,
                     onSettings: { showingSettings = true }
                 )
