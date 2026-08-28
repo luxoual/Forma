@@ -102,7 +102,7 @@ Document only finalized implementations, not speculative architecture.
 
 ## Writing Style — the Feynman technique
 
-**This applies to everything written for this project:** the architecture docs, `context.md`, code comments, commit messages, PR descriptions, **and every response Claude gives in this repo.**
+**This applies to everything written for this project:** the architecture docs, `context.md`, code comments, commit messages, PR descriptions, **and any AI agent writing or responding in this repository.**
 
 The technique is simple: explain it the way you would to a smart person who doesn't know this codebase yet. If you can't say it plainly, you don't understand it well enough yet — go find out, then write.
 
