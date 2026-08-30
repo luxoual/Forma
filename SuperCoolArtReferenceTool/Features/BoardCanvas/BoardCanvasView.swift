@@ -94,7 +94,7 @@ struct BoardCanvasView: View {
 
     // Active tool from toolbar
     @Binding private var activeTool: CanvasTool
-    // Home-button trigger: fires jumpToContentCenter when set to a non-nil UUID
+    // Home-button trigger: fires zoomToFitContent when set to a non-nil UUID
     @Binding private var homeTrigger: UUID?
     // Selection state
     @State private var selection = CanvasSelectionState()
@@ -418,7 +418,7 @@ struct BoardCanvasView: View {
                 // (elementsToLoad non-nil means the deferred DispatchQueue handler
                 // will snap after it fires — gating here avoids a redundant double call).
                 if elementsToLoad == nil && (!placedImages.isEmpty || !placedTexts.isEmpty) {
-                    jumpToContentCenter(animated: false)
+                    zoomToFitContent(animated: false)
                 } else {
                     scheduleRefreshVisibleElements()
                 }
@@ -491,7 +491,7 @@ struct BoardCanvasView: View {
                     // scheduler and doesn't drain the run loop; .main.async does.
                     DispatchQueue.main.async {
                         if !els.isEmpty {
-                            jumpToContentCenter(animated: false)
+                            zoomToFitContent(animated: false)
                         }
                         elementsToLoad = nil
                     }
@@ -544,7 +544,7 @@ struct BoardCanvasView: View {
             }
             .onChange(of: homeTrigger) { _, newValue in
                 guard newValue != nil else { return }
-                jumpToContentCenter()
+                zoomToFitContent()
                 Task { @MainActor in homeTrigger = nil }
             }
             .contentShape(Rectangle())
@@ -2088,26 +2088,55 @@ struct BoardCanvasView: View {
         return rects
     }
 
-    /// Center the viewport on all canvas content. Pass `animated: false` for
-    /// instant repositioning (e.g. on board load); `true` for the home button
-    /// eased pan.
-    private func jumpToContentCenter(animated: Bool = true) {
+    /// Screen-space margin left around content when fitting, per edge. Keeps
+    /// the outermost elements clear of the toolbar and the screen edges rather
+    /// than flush against them.
+    private var fitPadding: CGFloat { 64 }
+
+    /// Zoom that fits `bounds` (world space) inside the current canvas with
+    /// `fitPadding` on every edge, clamped to the canvas zoom range.
+    ///
+    /// Capped at 1.0 so fitting only ever zooms *out*: a board holding one
+    /// small image would otherwise be magnified past its native size on every
+    /// home press, which just blurs the reference art.
+    private func fitScale(for bounds: CGRect) -> CGFloat {
+        let available = CGSize(
+            width: max(canvasSize.width - fitPadding * 2, 1),
+            height: max(canvasSize.height - fitPadding * 2, 1)
+        )
+        // A degenerate extent on one axis (zero-width/height rect) must not
+        // divide; fall back to the other axis, and to the current scale when
+        // both are degenerate.
+        var candidates: [CGFloat] = []
+        if bounds.width > 0 { candidates.append(available.width / bounds.width) }
+        if bounds.height > 0 { candidates.append(available.height / bounds.height) }
+        guard let fit = candidates.min() else { return camera.scale }
+        return clamp(min(fit, 1.0), minScale, maxScale)
+    }
+
+    /// Fit every element on the canvas into the viewport, centered. Pass
+    /// `animated: false` for instant repositioning (e.g. on board load);
+    /// `true` for the home button's eased zoom-and-pan.
+    private func zoomToFitContent(animated: Bool = true) {
         guard canvasSize != .zero, camera.scale > 0 else { return }
         let allRects = allElementRects()
         guard let bounds = union(of: allRects) else { return }
-        let centerX = bounds.midX
-        let centerY = bounds.midY
+        let targetScale = fitScale(for: bounds)
+        // Offset must be derived from the *target* scale, not the current one,
+        // or the content lands off-center by the zoom delta.
         let target = CGSize(
-            width: canvasSize.width / 2 - centerX * camera.scale,
-            height: canvasSize.height / 2 - centerY * camera.scale
+            width: canvasSize.width / 2 - bounds.midX * targetScale,
+            height: canvasSize.height / 2 - bounds.midY * targetScale
         )
         if animated && !reduceMotion {
             withAnimation(.easeInOut(duration: 0.4)) {
+                camera.scale = targetScale
                 camera.offset = target
             } completion: {
                 scheduleRefreshVisibleElements()
             }
         } else {
+            camera.scale = targetScale
             camera.offset = target
             scheduleRefreshVisibleElements()
         }

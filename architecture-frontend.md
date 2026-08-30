@@ -40,12 +40,12 @@ Camera state is encapsulated in `@Observable final class CanvasCamera` (`CanvasC
 - Bounds: `minScale = 0.05`, `maxScale = 8.0`
 - Transform: `screenPoint = worldPoint * camera.scale + camera.offset`
 
-Write sites: pinch gesture, two-finger pan, home button (`jumpToContentCenter`), board-load landing snap. All go through `camera.offset` / `camera.scale`.
+Write sites: pinch gesture, two-finger pan, home button (`zoomToFitContent`), board-load landing snap. All go through `camera.offset` / `camera.scale`. The home button and landing snap write *both* properties — they zoom to fit as well as center.
 
 **Initial View:**
 - On `.onAppear`, `camera.offset` is set to `(screenWidth/2, screenHeight/2)` to center on world origin
-- If elements are already loaded when `onAppear` fires (race with `ContentView.onAppear`), `jumpToContentCenter(animated: false)` runs immediately instead, centering on content
-- When a board with content is loaded via `elementsToLoad`, `jumpToContentCenter(animated: false)` is deferred one run-loop tick via `DispatchQueue.main.async` to guarantee `canvasSize` is set first (see "Landing Snap" under Canvas Navigation Aids below)
+- If elements are already loaded when `onAppear` fires (race with `ContentView.onAppear`), `zoomToFitContent(animated: false)` runs immediately instead, fitting the content bounding box
+- When a board with content is loaded via `elementsToLoad`, `zoomToFitContent(animated: false)` is deferred one run-loop tick via `DispatchQueue.main.async` to guarantee `canvasSize` is set first (see "Landing Snap" under Canvas Navigation Aids below)
 
 **Coordinate Conversion:**
 Implemented via `screenToWorld(_:)` helper:
@@ -133,7 +133,7 @@ Pinch and two-finger-pan fire simultaneously and both write `offset`. An earlier
 
 `viewportCGRect()` and `allElementRects()` remain on `BoardCanvasView` — they need view-local state (`canvasSize`, `placedImages`, `placedTexts`) that belongs on the view.
 
-`jumpToContentCenter` also remains on the view (needs `canvasSize`, `reduceMotion`, `scheduleRefreshVisibleElements()`), but writes to `camera.offset`.
+`zoomToFitContent` and its `fitScale(for:)` helper also remain on the view (they need `canvasSize`, `reduceMotion`, `minScale`/`maxScale`, `scheduleRefreshVisibleElements()`), but write to `camera.offset` / `camera.scale`.
 
 Next step (future PR): the UUID-trigger pattern for `homeTrigger` (and potentially `undoTrigger`/`redoTrigger`) could simplify once the camera is an environment-injected observable — the toolbar could call camera methods directly instead of firing UUID bindings through `ContentView`.
 
@@ -265,11 +265,11 @@ Native `.toolbar` gives the per-button press feedback, glass material, group cap
 
 ```
 [Leading group]                                                [Trailing items]
-< (back)  |  BoardName pill        [Pointer | Group | Text | Add] | [Undo | Redo] | [Settings]
+< (back)  |  BoardName pill   [Pointer | Group | Text | Add] | [Undo | Redo] | [Home | Settings]
 ```
 
 - **Leading `ToolbarItemGroup(.topBarLeading)`** — back chevron + board name pill share one glass capsule. Board name is a non-interactive glass button (see "Board name pill" below) inside the group, so the group's outer pill is the only glass surface — no nesting.
-- **Trailing groups + `ToolbarSpacer(.fixed)`** between them so each group renders as its own glass capsule (tools+add, history, settings). The spacer is what visually separates the capsules.
+- **Trailing groups + `ToolbarSpacer(.fixed)`** between them so each group renders as its own glass capsule (tools+add, history, home+settings). The spacer is what visually separates the capsules. Home sits with Settings rather than with Undo/Redo: both are view-level navigation affordances, not edit-history actions.
 - **Every button uses `Label("Title", systemImage:)`** so the system overflow menu can populate its dropdown with real titles when the bar collapses on narrow widths.
 
 **Tools group (active-state indicator + Add):**
@@ -328,6 +328,7 @@ NavigationStack {
                 onBack: handleBack,
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
+                onHome: { homeTrigger = UUID() },
                 onAddItem: openImageImporter,
                 onSettings: { showingSettings = true }
             )
@@ -387,16 +388,25 @@ Hidden when the canvas is empty (overlay is conditional on `!rects.isEmpty`).
 
 **File:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`, `BoardCanvasView.swift`
 
-A house icon in the undo/redo group of the toolbar that animates the camera to the bounding-box center of all canvas content.
+A house icon (title "Fit to Content") in the home+settings group of the toolbar. It animates the camera so every element on the board is visible at once, centered — a zoom-to-fit, not just a re-center.
 
-**Trigger pattern:** Same UUID-binding pattern as undo/redo. `ContentView` owns `@State private var homeTrigger: UUID?`; tapping the toolbar button sets it to `UUID()`. `BoardCanvasView` observes it via `.onChange(of: homeTrigger)` and calls `jumpToContentCenter()`, then clears the trigger.
+**Trigger pattern:** Same UUID-binding pattern as undo/redo. `ContentView` owns `@State private var homeTrigger: UUID?`; tapping the toolbar button sets it to `UUID()`. `BoardCanvasView` observes it via `.onChange(of: homeTrigger)` and calls `zoomToFitContent()`, then clears the trigger.
 
-**`jumpToContentCenter(animated: Bool = true)`** (on `BoardCanvasView`):
+**`zoomToFitContent(animated: Bool = true)`** (on `BoardCanvasView`):
 1. Guards `canvasSize != .zero, camera.scale > 0`
 2. `guard let bounds = union(of: allElementRects()) else { return }` — no-op on empty canvas
-3. Computes `target = CGSize(width: canvasSize.width/2 - bounds.midX * camera.scale, height: canvasSize.height/2 - bounds.midY * camera.scale)`
-4. If `animated && !reduceMotion`: `.easeInOut(0.4)` animation, `scheduleRefreshVisibleElements()` in the `completion:` block (deferred so images don't pop mid-animation)
-5. Otherwise: instant offset set + immediate refresh
+3. `let targetScale = fitScale(for: bounds)`
+4. Computes `target = CGSize(width: canvasSize.width/2 - bounds.midX * targetScale, height: canvasSize.height/2 - bounds.midY * targetScale)`
+5. If `animated && !reduceMotion`: `.easeInOut(0.4)` animation writing **both** `camera.scale` and `camera.offset` in one block so zoom and pan ease together; `scheduleRefreshVisibleElements()` in the `completion:` block (deferred so images don't pop mid-animation)
+6. Otherwise: instant scale + offset set, immediate refresh
+
+**Offset must be derived from `targetScale`, not `camera.scale`.** The screen-center formula multiplies the content center by the scale it will be rendered at; using the pre-zoom scale lands the content off-center by exactly the zoom delta. This is the easiest thing to get wrong when touching this function.
+
+**`fitScale(for bounds: CGRect) -> CGFloat`:**
+- Available viewport is `canvasSize` inset by `fitPadding` (64pt) per edge, so the outermost elements clear the toolbar and screen edges instead of sitting flush against them. Each axis is floored at 1 so a canvas narrower than the padding can't produce a zero or negative extent.
+- Fit is `min(availableW / bounds.width, availableH / bounds.height)`, then `clamp(min(fit, 1.0), minScale, maxScale)`.
+- **Capped at 1.0 — fit only ever zooms out.** A board holding one small image would otherwise be magnified past native size on every home press, which just blurs the reference art. (Figma/Miro do magnify past 100% on zoom-to-fit; this app deliberately doesn't, because the content is raster reference imagery.) Removing the `min(fit, 1.0)` is the one-line change if that call is ever revisited.
+- A degenerate axis (zero-width or zero-height bounding rect) is skipped rather than divided by, falling back to the other axis — and to the current `camera.scale` when both are degenerate.
 
 `@Environment(\.accessibilityReduceMotion) private var reduceMotion` is read on `BoardCanvasView` and passed into the animated path.
 
@@ -404,11 +414,11 @@ A house icon in the undo/redo group of the toolbar that animates the camera to t
 
 **Status: Implemented**
 
-When a board with content is opened, the viewport automatically centers on the content bounding box instead of defaulting to world origin.
+When a board with content is opened, the viewport automatically fits the content bounding box instead of defaulting to world origin. Shares `zoomToFitContent(animated: false)` with the home button, so opening a board and pressing Home land on the same camera — including the zoom.
 
 **Timing fix — why `DispatchQueue.main.async`:**
 
-The snap fires from `onChange(of: elementsToLoad)` after `applyElements`. The guard in `jumpToContentCenter` requires `canvasSize != .zero`, but `canvasSize` is set in `BoardCanvasView.onAppear`. In some SwiftUI lifecycle orderings, `ContentView.onAppear` (which sets `elementsToLoad`) fires before `BoardCanvasView.onAppear` — so the guard would trip. Wrapping the `jumpToContentCenter(animated: false)` call in `DispatchQueue.main.async` defers it past the current run-loop drain, guaranteeing all `onAppear` handlers have fired first.
+The snap fires from `onChange(of: elementsToLoad)` after `applyElements`. The guard in `zoomToFitContent` requires `canvasSize != .zero`, but `canvasSize` is set in `BoardCanvasView.onAppear`. In some SwiftUI lifecycle orderings, `ContentView.onAppear` (which sets `elementsToLoad`) fires before `BoardCanvasView.onAppear` — so the guard would trip. Wrapping the `zoomToFitContent(animated: false)` call in `DispatchQueue.main.async` defers it past the current run-loop drain, guaranteeing all `onAppear` handlers have fired first.
 
 `DispatchQueue.main.async` is intentional here — a bare `Task { }` uses Swift concurrency's cooperative scheduler and does not drain the run loop, so it doesn't carry the same ordering guarantee.
 
