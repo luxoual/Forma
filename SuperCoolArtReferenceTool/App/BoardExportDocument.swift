@@ -24,10 +24,16 @@ struct BoardExportDocument: FileDocument {
             .appendingPathExtension("refboard")
 
         try? fm.removeItem(at: temp)
-        // Fresh exports have no canvas color preference yet — write `nil` so
-        // the manifest omits the field, and the canvas falls back to the
-        // system background when the board is first opened.
-        let packageURL = try BoardArchiver.export(elements: elements, canvasColorHex: nil, to: temp)
+        // Fresh exports have no color preferences yet — write `nil` for both
+        // so the manifest omits the fields. On first open the canvas falls
+        // back to the system background, and new text to whichever of
+        // near-black / white that background can show.
+        let packageURL = try BoardArchiver.export(
+            elements: elements,
+            canvasColorHex: nil,
+            lastTextColorHex: nil,
+            to: temp
+        )
         let wrapper = try FileWrapper(url: packageURL, options: .immediate)
         try? fm.removeItem(at: packageURL)
         return wrapper
