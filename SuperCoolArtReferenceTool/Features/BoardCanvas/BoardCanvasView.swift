@@ -42,7 +42,7 @@ struct BoardCanvasView: View {
     /// for the same id can't push duplicate `.insert` commands.
     @State private var pendingTextInserts: Set<UUID> = []
     /// One-shot guard: when `insertText` auto-swaps the active tool back to
-    /// the default (Figma convention — keep editing the just-placed text but
+    /// `.group` (the default; Figma convention — keep editing the just-placed text but
     /// stop routing subsequent canvas taps through the text tool), the
     /// resulting `onChange(of: activeTool)` would otherwise commit the
     /// brand-new draft.
