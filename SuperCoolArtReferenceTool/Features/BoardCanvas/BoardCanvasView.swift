@@ -93,10 +93,12 @@ struct BoardCanvasView: View {
     private let defaultTextFontSize: CGFloat = 24
     private let defaultTextFontName: String = "system"
 
-    /// Recently-used text colors, newest first, comma-joined `#RRGGBB`.
-    /// Drives both the action bar's swatch row and the starting color of
-    /// newly-inserted text.
-    @AppStorage(TextColorMemory.storageKey) private var recentTextColorsRaw: String = ""
+    /// Last text color picked on *this board*, as `#RRGGBB`, or nil when
+    /// nothing has been picked yet. Owned by `ContentView` (which persists it
+    /// to the manifest) so it travels with the board rather than the app:
+    /// a dark board and a light board want different text, and picking on one
+    /// shouldn't change the other.
+    @Binding private var lastTextColorHex: String?
 
     /// Original per-element colors captured when a color edit begins, held
     /// until the edit coalesces into a single history command. Nil when no
@@ -137,13 +139,14 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
         self._externalInsertURLs = externalInsertURLs
         self._showGrid = showGrid
         self._canvasColor = canvasColor
+        self._lastTextColorHex = lastTextColorHex
         self.commandHistory = commandHistory
         self._undoTrigger = undoTrigger
         self._redoTrigger = redoTrigger
@@ -1680,7 +1683,7 @@ struct BoardCanvasView: View {
         }
         guard let toHex = changed.first?.colorHex else { return }
 
-        recentTextColorsRaw = TextColorMemory.recording(toHex, into: recentTextColorsRaw)
+        lastTextColorHex = TextColorMemory.recording(toHex, into: lastTextColorHex)
 
         let fromHexes = changed.reduce(into: [UUID: String]()) { acc, placed in
             acc[placed.id] = originals[placed.id]
@@ -2332,7 +2335,7 @@ struct BoardCanvasView: View {
             // for every element. Before anything has been picked, it starts
             // in whichever of near-black / white the canvas can actually show.
             colorHex: TextColorMemory.currentHex(
-                from: recentTextColorsRaw,
+                lastTextColorHex,
                 onCanvas: canvasColor.resolve(in: environment)
             )
         )
