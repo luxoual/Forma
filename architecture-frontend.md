@@ -500,8 +500,7 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 
 **Default tool: `.group` (marquee).** Set in `ContentView`'s `activeTool` state, and what `insertText` swaps back to after placing text. Opening a board is more often followed by selecting and arranging existing content than by dragging the canvas, and a drag on empty space marquee-selecting is what Figma and Freeform do with their default tool. Canvas navigation is unaffected — two-finger pan is installed at the canvas level and stays live regardless of the active tool (see "Two-Finger Pan").
 
-Worth knowing when reading the group behavior above: tapping an item under this tool *extends* the selection rather than replacing it, so consecutive taps accumulate. Tapping empty canvas is what clears. That's the group tool's defining semantic, and it's now what an untouched board starts in.
-
+Worth knowing when reading the group behavior above: tapping an item under this tool toggles selection membership (tap adds, tap again removes) rather than replacing the selection. Tapping empty canvas clears. That's the group tool's defining semantic, and it's now what an untouched board starts in.
 **Adding New Tools:**
 1. Add case to `CanvasTool` enum
 2. Create a struct conforming to `CanvasToolBehavior`
