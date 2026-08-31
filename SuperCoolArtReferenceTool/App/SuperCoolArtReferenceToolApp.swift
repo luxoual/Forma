@@ -22,9 +22,10 @@ struct SuperCoolArtReferenceToolApp: App {
                         do {
                             let imported = try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                             await MainActor.run {
-                                // Set color *first* so the `onChange(of: importedElements)`
+                                // Set colors *first* so the `onChange(of: importedElements)`
                                 // observer in RootView sees a fully-populated handler.
                                 openHandler.importedCanvasColorHex = imported.canvasColorHex
+                                openHandler.importedLastTextColorHex = imported.lastTextColorHex
                                 openHandler.importedElements = imported.elements
                             }
                         } catch {

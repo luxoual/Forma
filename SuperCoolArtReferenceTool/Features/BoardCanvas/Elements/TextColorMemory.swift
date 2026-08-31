@@ -1,25 +1,26 @@
 import SwiftUI
 
-/// The last text color the user picked, as a `#RRGGBB` string.
+/// Rules for "what color should the next text element start in?", operating on
+/// the board's stored last-picked color.
 ///
 /// This is the one piece of color state we keep ourselves. Everything else —
 /// the picker UI, and the favorites row inside it — is the system's:
 /// `UIColorPickerViewController` already carries a saved-swatch row, so we
 /// don't draw our own recents. But that row is *manually curated* (the user
 /// taps "+" to add to it), shared system-wide rather than scoped to this app,
-/// and exposes no API to read or seed. It therefore can't answer the one
-/// question we need answered: "what color should the next text element start
-/// in?" Hence this variable.
+/// and exposes no API to read or seed. It can't answer the question above.
 ///
-/// Stored app-wide rather than per-board: "the color I'm writing in" is a tool
-/// setting, like a brush color, not board content. Until something *has* been
-/// picked there's nothing to remember, so the starting color comes from the
-/// canvas instead — see `defaultHex(onCanvas:)`.
+/// The value itself lives on the **board**, not the app: it's carried in the
+/// manifest (`BoardArchiver`), owned by `ContentView`, and bound into
+/// `BoardCanvasView`. Per-board because a dark board and a light board want
+/// different text, and picking a color on one shouldn't silently change what
+/// happens on the other. Until something *has* been picked there's nothing to
+/// remember, so the starting color comes from the canvas — see
+/// `defaultHex(onCanvas:)`.
+///
+/// Stateless by design: every function is pure, so the storage decision stays
+/// entirely with the caller.
 enum TextColorMemory {
-    /// `@AppStorage` key. Shared by the action bar and `BoardCanvasView` so
-    /// both observe the same defaults value.
-    nonisolated static let storageKey = "canvas.text.lastColorHex"
-
     /// The two candidates for an unset default — the palette's near-black and
     /// its white. Text picks whichever the canvas can actually show.
     nonisolated static let darkHex = "#191919"
@@ -42,18 +43,19 @@ enum TextColorMemory {
         return luminance > 0.179 ? darkHex : lightHex
     }
 
-    /// Hex the next new text element should use. Falls back to the
-    /// canvas-derived default when nothing has been stored yet or the stored
-    /// value is malformed, so neither a fresh install nor a corrupt defaults
-    /// entry can produce text the user can't see.
-    nonisolated static func currentHex(from raw: String, onCanvas background: Color.Resolved) -> String {
-        normalized(raw) ?? defaultHex(onCanvas: background)
+    /// Hex the next new text element should use, given the board's stored
+    /// pick. Falls back to the canvas-derived default when the board has no
+    /// stored color (new board, or a `.refboard` written before the field
+    /// existed) or when the stored value is malformed — so neither a fresh
+    /// board nor a corrupt manifest can produce text the user can't see.
+    nonisolated static func currentHex(_ stored: String?, onCanvas background: Color.Resolved) -> String {
+        stored.flatMap(normalized) ?? defaultHex(onCanvas: background)
     }
 
-    /// Value to write back after the user picks `hex`, or `raw` unchanged if
+    /// Value to store after the user picks `hex`, or `stored` unchanged if
     /// `hex` is malformed.
-    nonisolated static func recording(_ hex: String, into raw: String) -> String {
-        normalized(hex) ?? raw
+    nonisolated static func recording(_ hex: String, into stored: String?) -> String? {
+        normalized(hex) ?? stored
     }
 
     /// Uppercase `#RRGGBB`, or nil if the input isn't an opaque 6-digit hex.
