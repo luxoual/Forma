@@ -21,6 +21,10 @@ struct BoardCanvasView: View {
     @State private var gridSpacingWorld: CGFloat = 128.0
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Whole environment, needed to resolve `canvasColor` to concrete RGB —
+    /// it can be an adaptive color, and the starting color for new text is
+    /// derived from how light or dark the canvas actually renders.
+    @Environment(\.self) private var environment
 
     // Placed images (source-of-truth for interactions)
     @State private var placedImages: [PlacedImage] = []
@@ -2325,8 +2329,12 @@ struct BoardCanvasView: View {
             fontSize: defaultTextFontSize,
             // New text picks up the last color the user chose, so setting a
             // color once carries forward instead of having to be re-picked
-            // for every element.
-            colorHex: TextColorMemory.currentHex(from: recentTextColorsRaw)
+            // for every element. Before anything has been picked, it starts
+            // in whichever of near-black / white the canvas can actually show.
+            colorHex: TextColorMemory.currentHex(
+                from: recentTextColorsRaw,
+                onCanvas: canvasColor.resolve(in: environment)
+            )
         )
         placedTexts.append(text)
         nextZIndex += 1
