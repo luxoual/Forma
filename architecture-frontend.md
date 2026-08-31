@@ -270,7 +270,7 @@ Native `.toolbar` gives the per-button press feedback, glass material, group cap
 
 - **Leading `ToolbarItemGroup(.topBarLeading)`** — back chevron + board name pill share one glass capsule. Board name is a non-interactive glass button (see "Board name pill" below) inside the group, so the group's outer pill is the only glass surface — no nesting.
 - **Trailing groups + `ToolbarSpacer(.fixed)`** between them so each group renders as its own glass capsule (tools+add, history, home+settings). The spacer is what visually separates the capsules. Home sits with Settings rather than with Undo/Redo: both are view-level navigation affordances, not edit-history actions.
-- **Every button uses `Label("Title", systemImage:)`** so the system overflow menu can populate its dropdown with real titles when the bar collapses on narrow widths.
+- **Every button provides a title (via `Label("Title", systemImage:)` or `Button("Title", systemImage:action:)`)** so the system overflow menu can populate its dropdown with real titles when the bar collapses on narrow widths.
 
 **Tools group (active-state indicator + Add):**
 
