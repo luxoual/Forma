@@ -42,9 +42,10 @@ struct BoardCanvasView: View {
     /// for the same id can't push duplicate `.insert` commands.
     @State private var pendingTextInserts: Set<UUID> = []
     /// One-shot guard: when `insertText` auto-swaps the active tool back to
-    /// `.pointer` (Figma convention — keep editing the just-placed text but
-    /// route subsequent canvas taps through pointer), the resulting
-    /// `onChange(of: activeTool)` would otherwise commit the brand-new draft.
+    /// the default (Figma convention — keep editing the just-placed text but
+    /// stop routing subsequent canvas taps through the text tool), the
+    /// resulting `onChange(of: activeTool)` would otherwise commit the
+    /// brand-new draft.
     /// Set right before the programmatic write, consumed on the next firing.
     @State private var skipNextToolChangeCommit: Bool = false
     /// Snapshot of the text content captured at the moment a re-edit begins.
@@ -139,7 +140,7 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.group), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -531,8 +532,8 @@ struct BoardCanvasView: View {
                 // tapping another toolbar button mid-type.
                 //
                 // Skip the auto-swap fired by `insertText` itself, which
-                // flips activeTool to `.pointer` while keeping focus on the
-                // just-placed draft.
+                // flips activeTool back to the default tool while keeping
+                // focus on the just-placed draft.
                 if skipNextToolChangeCommit {
                     skipNextToolChangeCommit = false
                     return
@@ -2344,12 +2345,12 @@ struct BoardCanvasView: View {
         pendingTextInserts.insert(id)
         selection.clearSelection()
         editingTextID = id
-        // Auto-swap back to pointer so the next canvas tap doesn't try to
-        // place yet another draft on top of the one we just created. The
-        // skip flag stops the activeTool onChange from committing the new
-        // draft we're still editing.
+        // Auto-swap back to the default tool so the next canvas tap doesn't
+        // try to place yet another draft on top of the one we just created.
+        // The skip flag stops the activeTool onChange from committing the
+        // new draft we're still editing.
         skipNextToolChangeCommit = true
-        activeTool = .pointer
+        activeTool = .group
     }
 
     /// Commits the active text edit for `id`. Handles two paths:

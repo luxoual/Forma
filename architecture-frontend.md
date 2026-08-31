@@ -494,9 +494,13 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 - Drag on item → select it, enter `.moveItem` mode (same as pointer)
 - Drag on empty canvas → `.pan` mode
 - Tap on item → select it (delegates to pointer-style selection)
-- Tap on empty → handled by `BoardCanvasView`'s tap handler, NOT by `tappedEmpty`. The behavior's `tappedEmpty` only clears the selection (so the new placement becomes the active focus); the actual `insertText(at:)` placement happens at the canvas level because the world point lives in the view's coordinate space, not in the protocol's interface. After placement, `insertText` programmatically auto-swaps `activeTool = .pointer` (Figma convention) so subsequent canvas taps don't keep dropping new drafts.
+- Tap on empty → handled by `BoardCanvasView`'s tap handler, NOT by `tappedEmpty`. The behavior's `tappedEmpty` only clears the selection (so the new placement becomes the active focus); the actual `insertText(at:)` placement happens at the canvas level because the world point lives in the view's coordinate space, not in the protocol's interface. After placement, `insertText` programmatically auto-swaps `activeTool` back to the default tool, `.group` (Figma convention), so subsequent canvas taps don't keep dropping new drafts.
 
 **Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior` maps enum to concrete behavior.
+
+**Default tool: `.group` (marquee).** Set in `ContentView`'s `activeTool` state, and what `insertText` swaps back to after placing text. Opening a board is more often followed by selecting and arranging existing content than by dragging the canvas, and a drag on empty space marquee-selecting is what Figma and Freeform do with their default tool. Canvas navigation is unaffected — two-finger pan is installed at the canvas level and stays live regardless of the active tool (see "Two-Finger Pan").
+
+Worth knowing when reading the group behavior above: tapping an item under this tool *extends* the selection rather than replacing it, so consecutive taps accumulate. Tapping empty canvas is what clears. That's the group tool's defining semantic, and it's now what an untouched board starts in.
 
 **Adding New Tools:**
 1. Add case to `CanvasTool` enum
@@ -839,9 +843,10 @@ private func insertText(at worldPoint: CGPoint) {
     selection.clearSelection()
     editingTextID = id
     skipNextToolChangeCommit = true
-    activeTool = .pointer    // Figma auto-swap; the skip flag stops the
-                             // resulting onChange(of: activeTool) from
-                             // committing the just-placed draft
+    activeTool = .group      // Figma auto-swap back to the default tool;
+                             // the skip flag stops the resulting
+                             // onChange(of: activeTool) from committing
+                             // the just-placed draft
 }
 ```
 
