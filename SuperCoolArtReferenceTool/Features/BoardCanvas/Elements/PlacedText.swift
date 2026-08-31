@@ -11,9 +11,20 @@ struct PlacedText: Identifiable {
     var worldRect: CGRect
     var zIndex: Int
     var fontSize: CGFloat
-    var color: Color
+    /// Authoritative color state, stored as `#RRGGBB` rather than a `Color`
+    /// so it round-trips through `CMCanvasElementPayload.text` and can be
+    /// snapshotted for undo without needing an `EnvironmentValues` to
+    /// resolve. Views read the derived `color` below.
+    var colorHex: String
     /// Nil = auto-width (grow horizontally with content). Non-nil =
     /// fixed wrap width in world units (text reflows inside this box,
     /// height stays content-derived). Set by side-handle drag.
     var wrapWidth: CGFloat? = nil
+
+    /// Render color derived from `colorHex`. Falls back to the palette's
+    /// primary when the stored hex is malformed (e.g. a manifest written by
+    /// an older/other build).
+    var color: Color {
+        Color(hex: colorHex) ?? DesignSystem.Colors.primary
+    }
 }
