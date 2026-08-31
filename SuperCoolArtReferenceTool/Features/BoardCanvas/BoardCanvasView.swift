@@ -82,11 +82,26 @@ struct BoardCanvasView: View {
     // and shrinks with canvas zoom (Figma/Miro convention). The base
     // unit choice is deliberate: layout (especially wrap-locked text)
     // happens once and stays invariant under zoom.
-    // Color hex is round-tripped through CMCanvasElementPayload.text but in v1
-    // the read path always falls back to DesignSystem.Colors.primary.
+    // Color hex round-trips through CMCanvasElementPayload.text: it is
+    // written from `PlacedText.colorHex` and read back into it, with
+    // `PlacedText.color` deriving the render color (see TextColorMemory for
+    // where the default for *new* text comes from).
     private let defaultTextFontSize: CGFloat = 24
     private let defaultTextFontName: String = "system"
-    private let defaultTextColorHex: String = "#191919"
+
+    /// Recently-used text colors, newest first, comma-joined `#RRGGBB`.
+    /// Drives both the action bar's swatch row and the starting color of
+    /// newly-inserted text.
+    @AppStorage(TextColorMemory.storageKey) private var recentTextColorsRaw: String = ""
+
+    /// Original per-element colors captured when a color edit begins, held
+    /// until the edit coalesces into a single history command. Nil when no
+    /// edit is in flight.
+    @State private var textColorEditOriginals: [UUID: String]? = nil
+    /// Debounce for the above. The system `ColorPicker` publishes a new
+    /// color on every frame of a spectrum drag; without coalescing, one
+    /// visit to the picker would push dozens of undo steps.
+    @State private var textColorCommitTask: Task<Void, Never>? = nil
 
     // Zoom bounds
     private let minScale: CGFloat = 0.05
@@ -363,6 +378,8 @@ struct BoardCanvasView: View {
                         || selection.isResizing
                         || selection.isGroupResizing
                         || selection.isMarqueeing,
+                    textColorHex: selectionTextColorHex(),
+                    onPickTextColor: applyTextColor(hex:),
                     onDelete: deleteSelection
                 )
                 .zIndex(Double(Int.max))
@@ -457,6 +474,10 @@ struct BoardCanvasView: View {
                 if let editing = editingTextID {
                     commitTextEdit(id: editing)
                 }
+                // Same reasoning for a color pick still inside its coalescing
+                // window — flush it so the store write happens before, not
+                // after, the snapshot reads the store.
+                commitTextColorEdit()
                 let pendingMutation = storeMutationTask
                 Task {
                     // Wait for any in-flight store mutation (especially
@@ -1394,6 +1415,9 @@ struct BoardCanvasView: View {
     // MARK: - Undo / Redo
 
     func performUndo() {
+        // Land any in-flight color pick as its own step first, so undo
+        // reverses it rather than racing the debounce.
+        commitTextColorEdit()
         guard let command = commandHistory.popUndo() else { return }
         switch command {
         case .move(let ids, let delta):
@@ -1415,10 +1439,13 @@ struct BoardCanvasView: View {
                 wrapWidth: fromWrapWidth,
                 origin: fromOrigin
             )
+        case .setTextColor(let fromHexes, _):
+            applyTextColors(fromHexes)
         }
     }
 
     func performRedo() {
+        commitTextColorEdit()
         guard let command = commandHistory.popRedo() else { return }
         switch command {
         case .move(let ids, let delta):
@@ -1440,6 +1467,10 @@ struct BoardCanvasView: View {
                 wrapWidth: toWrapWidth,
                 origin: toOrigin
             )
+        case .setTextColor(let fromHexes, let toHex):
+            applyTextColors(fromHexes.keys.reduce(into: [UUID: String]()) { acc, id in
+                acc[id] = toHex
+            })
         }
     }
 
@@ -1578,6 +1609,104 @@ struct BoardCanvasView: View {
         }
     }
 
+    // MARK: - Text Color
+
+    /// Text elements in the current selection, in `placedTexts` order.
+    private func selectedTexts() -> [PlacedText] {
+        placedTexts.filter { selection.selectedIDs.contains($0.id) }
+    }
+
+    /// Color to show in the action bar's color controls, or nil when the
+    /// selection holds no text (which hides them). A mixed-color multi-select
+    /// reports the first element's color — the picker paints uniformly, so
+    /// there's nothing better to show, and the swap is what the user asked for.
+    private func selectionTextColorHex() -> String? {
+        selectedTexts().first?.colorHex
+    }
+
+    /// Apply `hex` to every selected text element and schedule a coalesced
+    /// history entry.
+    ///
+    /// Called straight from the picker binding, so it can fire many times a
+    /// second while the user drags in the system color picker. The canvas
+    /// updates live on every call (that's the point — you want to see the
+    /// color you're scrubbing through), but the store write and the undo
+    /// command are deferred to `commitTextColorEdit` once the picking stops.
+    private func applyTextColor(hex: String) {
+        let targets = selectedTexts()
+        guard !targets.isEmpty else { return }
+
+        // Capture the pre-edit colors on the first call of an edit only, so a
+        // whole picker session undoes back to where it started rather than to
+        // the previous frame's color.
+        if textColorEditOriginals == nil {
+            textColorEditOriginals = Dictionary(
+                uniqueKeysWithValues: targets.map { ($0.id, $0.colorHex) }
+            )
+        }
+
+        let ids = Set(targets.map(\.id))
+        for idx in placedTexts.indices where ids.contains(placedTexts[idx].id) {
+            placedTexts[idx].colorHex = hex
+        }
+
+        textColorCommitTask?.cancel()
+        textColorCommitTask = Task { @MainActor in
+            // Long enough to swallow a continuous spectrum drag, short enough
+            // that a deliberate second pick reads as its own undo step.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            commitTextColorEdit()
+        }
+    }
+
+    /// Close out a color edit: record the color as most-recently-used, push a
+    /// single undo command covering the whole picker session, and sync the
+    /// affected elements to the store. No-ops when nothing actually changed
+    /// (e.g. the user re-picked the color already applied).
+    private func commitTextColorEdit() {
+        textColorCommitTask?.cancel()
+        textColorCommitTask = nil
+        guard let originals = textColorEditOriginals else { return }
+        textColorEditOriginals = nil
+
+        let changed = placedTexts.filter { placed in
+            guard let original = originals[placed.id] else { return false }
+            return original != placed.colorHex
+        }
+        guard let toHex = changed.first?.colorHex else { return }
+
+        recentTextColorsRaw = TextColorMemory.recording(toHex, into: recentTextColorsRaw)
+
+        let fromHexes = changed.reduce(into: [UUID: String]()) { acc, placed in
+            acc[placed.id] = originals[placed.id]
+        }
+        commandHistory.push(.setTextColor(fromHexes: fromHexes, toHex: toHex))
+
+        let elements = changed.map(fallbackTextElement(for:))
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
+        }
+    }
+
+    /// Restore per-element text colors (used by undo/redo of `.setTextColor`).
+    /// Takes a hex per element because undo of a mixed-color selection has to
+    /// put each element back to its own original.
+    private func applyTextColors(_ hexes: [UUID: String]) {
+        var touched: [PlacedText] = []
+        for idx in placedTexts.indices {
+            guard let hex = hexes[placedTexts[idx].id] else { continue }
+            placedTexts[idx].colorHex = hex
+            touched.append(placedTexts[idx])
+        }
+        guard !touched.isEmpty else { return }
+
+        let elements = touched.map(fallbackTextElement(for:))
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
+        }
+    }
+
     private func addElements(snapshots: [PlacedElementSnapshot]) {
         for snap in snapshots {
             switch snap.element.payload {
@@ -1588,14 +1717,14 @@ struct BoardCanvasView: View {
                         worldRect: snap.worldRect, zIndex: snap.zIndex
                     ))
                 }
-            case .text(let content, _, let fontSize, _, let wrapWidth):
+            case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
                 placedTexts.append(PlacedText(
                     id: snap.id,
                     content: content,
                     worldRect: snap.worldRect,
                     zIndex: snap.zIndex,
                     fontSize: CGFloat(fontSize),
-                    color: DesignSystem.Colors.primary,
+                    colorHex: colorHex,
                     wrapWidth: wrapWidth.map { CGFloat($0) }
                 ))
             default:
@@ -1725,7 +1854,7 @@ struct BoardCanvasView: View {
             content: placed.content,
             fontName: defaultTextFontName,
             fontSize: Double(placed.fontSize),
-            color: defaultTextColorHex,
+            color: placed.colorHex,
             wrapWidth: placed.wrapWidth.map { Double($0) }
         )
         return CMCanvasElement(header: header, payload: payload)
@@ -1766,14 +1895,14 @@ struct BoardCanvasView: View {
             case .image(let url, _):
                 placedImages.append(PlacedImage(id: el.id, url: url, worldRect: rect, zIndex: z))
                 nextZIndex = max(nextZIndex, z + 1)
-            case .text(let content, _, let fontSize, _, let wrapWidth):
+            case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
                 placedTexts.append(PlacedText(
                     id: el.id,
                     content: content,
                     worldRect: rect,
                     zIndex: z,
                     fontSize: CGFloat(fontSize),
-                    color: DesignSystem.Colors.primary,
+                    colorHex: colorHex,
                     wrapWidth: wrapWidth.map { CGFloat($0) }
                 ))
                 nextZIndex = max(nextZIndex, z + 1)
@@ -2194,7 +2323,10 @@ struct BoardCanvasView: View {
             worldRect: CGRect(origin: worldPoint, size: .zero),
             zIndex: nextZIndex,
             fontSize: defaultTextFontSize,
-            color: DesignSystem.Colors.primary
+            // New text picks up the last color the user chose, so setting a
+            // color once carries forward instead of having to be re-picked
+            // for every element.
+            colorHex: TextColorMemory.currentHex(from: recentTextColorsRaw)
         )
         placedTexts.append(text)
         nextZIndex += 1

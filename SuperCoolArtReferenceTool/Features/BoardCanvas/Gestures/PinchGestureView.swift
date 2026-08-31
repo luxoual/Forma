@@ -4,8 +4,10 @@ import UIKit
 /// Installs a UIPinchGestureRecognizer on the nearest ancestor UIView in the
 /// SwiftUI host hierarchy. Unlike SwiftUI's MagnificationGesture, this exposes
 /// the pinch centroid so the canvas can zoom around the user's fingers rather
-/// than the view center. Touches are observed without being consumed, so the
-/// existing two-finger pan and single-finger drag gestures keep working.
+/// than the view center. Recognition is simultaneous with the existing
+/// two-finger pan and single-finger drag gestures, so those keep working;
+/// touches delivered to *views* are cancelled once the pinch takes over (see
+/// `cancelsTouchesInView` below).
 ///
 /// See `GestureInstallerView` for the responder-chain host-finding logic.
 struct PinchGestureView: UIViewRepresentable {
@@ -49,7 +51,23 @@ struct PinchGestureView: UIViewRepresentable {
             self.onPinch = onPinch
             self.recognizer = UIPinchGestureRecognizer()
             super.init()
-            recognizer.cancelsTouchesInView = false
+            // Cancel in-flight view touches once the pinch is recognized.
+            //
+            // A pinch that starts over the selection action bar would
+            // otherwise put a finger down on a button, hold it through the
+            // whole zoom, and fire its action on lift — accidentally deleting
+            // the element the user was zooming in on. The bar's own
+            // `allowsHitTesting(false)` doesn't save us: it blocks *new* hit
+            // tests, but a touch the button is already tracking keeps being
+            // delivered. And the bar can't hide any earlier than it does,
+            // because `isInteracting` is driven by `.began`, which UIKit
+            // won't reach until two touches have moved far enough to
+            // recognize.
+            //
+            // Only touch delivery to *views* is cancelled — other recognizers
+            // (`TwoFingerPanView`) still receive the touches, so simultaneous
+            // pan + zoom is unaffected.
+            recognizer.cancelsTouchesInView = true
             recognizer.delaysTouchesBegan = false
             recognizer.delaysTouchesEnded = false
             recognizer.delegate = self
