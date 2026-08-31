@@ -102,4 +102,4 @@ Document only finalized implementations, not speculative architecture.
 
 ## Known Issues
 
-- Pointer and group tools in toolbar are not yet connected to canvas behavior.
+_None currently tracked here — see the GitHub issue tracker._
