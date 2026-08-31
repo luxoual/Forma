@@ -12,21 +12,42 @@ import SwiftUI
 /// in?" Hence this variable.
 ///
 /// Stored app-wide rather than per-board: "the color I'm writing in" is a tool
-/// setting, like a brush color, not board content.
+/// setting, like a brush color, not board content. Until something *has* been
+/// picked there's nothing to remember, so the starting color comes from the
+/// canvas instead — see `defaultHex(onCanvas:)`.
 enum TextColorMemory {
     /// `@AppStorage` key. Shared by the action bar and `BoardCanvasView` so
     /// both observe the same defaults value.
     nonisolated static let storageKey = "canvas.text.lastColorHex"
 
-    /// Color new text starts with before anything has been picked. Matches
-    /// the palette primary that text was hard-coded to before it was settable.
-    nonisolated static let defaultHex = "#191919"
+    /// The two candidates for an unset default — the palette's near-black and
+    /// its white. Text picks whichever the canvas can actually show.
+    nonisolated static let darkHex = "#191919"
+    nonisolated static let lightHex = "#FFFFFF"
 
-    /// Hex the next new text element should use. Falls back to `defaultHex`
-    /// when nothing has been stored yet or the stored value is malformed, so
-    /// a corrupt defaults entry can't produce invisible text.
-    nonisolated static func currentHex(from raw: String) -> String {
-        normalized(raw) ?? defaultHex
+    /// Default color for new text on a canvas of `background`: whichever of
+    /// `darkHex` / `lightHex` contrasts better against it.
+    ///
+    /// Keyed to the canvas color rather than the color scheme, because the
+    /// canvas color is user-settable in board settings — a board with a light
+    /// canvas still wants dark text on a device in dark mode, and a board
+    /// whose canvas the user painted black wants light text in either.
+    nonisolated static func defaultHex(onCanvas background: Color.Resolved) -> String {
+        // W3C relative luminance. 0.179 is where the contrast ratio against
+        // white and the ratio against black are equal, so it's the crossover
+        // point for "which of the two is more readable here".
+        let luminance = 0.2126 * Double(background.linearRed)
+            + 0.7152 * Double(background.linearGreen)
+            + 0.0722 * Double(background.linearBlue)
+        return luminance > 0.179 ? darkHex : lightHex
+    }
+
+    /// Hex the next new text element should use. Falls back to the
+    /// canvas-derived default when nothing has been stored yet or the stored
+    /// value is malformed, so neither a fresh install nor a corrupt defaults
+    /// entry can produce text the user can't see.
+    nonisolated static func currentHex(from raw: String, onCanvas background: Color.Resolved) -> String {
+        normalized(raw) ?? defaultHex(onCanvas: background)
     }
 
     /// Value to write back after the user picks `hex`, or `raw` unchanged if
