@@ -19,6 +19,10 @@ struct BoardCanvasView: View {
     @Binding private var showGrid: Bool
     @Binding private var canvasColor: Color
     @State private var gridSpacingWorld: CGFloat = 128.0
+    /// Hardware Shift state at touch-down, for shift-tap-to-extend. Stays
+    /// false on a device with no keyboard, which is the touch-only path.
+    @State private var keyModifiers = KeyModifierMonitor()
+
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Whole environment, needed to resolve `canvasColor` to concrete RGB —
@@ -42,9 +46,10 @@ struct BoardCanvasView: View {
     /// for the same id can't push duplicate `.insert` commands.
     @State private var pendingTextInserts: Set<UUID> = []
     /// One-shot guard: when `insertText` auto-swaps the active tool back to
-    /// `.pointer` (Figma convention — keep editing the just-placed text but
-    /// route subsequent canvas taps through pointer), the resulting
-    /// `onChange(of: activeTool)` would otherwise commit the brand-new draft.
+    /// `.group` (the default; Figma convention — keep editing the just-placed text but
+    /// stop routing subsequent canvas taps through the text tool), the
+    /// resulting `onChange(of: activeTool)` would otherwise commit the
+    /// brand-new draft.
     /// Set right before the programmatic write, consumed on the next firing.
     @State private var skipNextToolChangeCommit: Bool = false
     /// Snapshot of the text content captured at the moment a re-edit begins.
@@ -139,7 +144,7 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.group), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -246,8 +251,9 @@ struct BoardCanvasView: View {
                             let store = canvasStore
                             let sel = selection
                             let id = item.id
+                            let extending = keyModifiers.isShiftDown
                             Task {
-                                await behavior.tappedItem(id: id, store: store, selection: sel)
+                                await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
                                 await refreshVisibleElements()
                             }
                         }
@@ -288,10 +294,10 @@ struct BoardCanvasView: View {
                     )
                     .onTapGesture {
                         // Tap-on-sole-selected text → re-enter edit mode.
-                        // Standard across pointer/group/text tools since all
-                        // three can produce a single-text selection. Clearing
-                        // selection first hides the action bar / chrome so
-                        // they don't sit on top of the focused TextField.
+                        // Standard across both tools since either can produce
+                        // a single-text selection. Clearing selection first
+                        // hides the action bar / chrome so they don't sit on
+                        // top of the focused TextField.
                         if selection.selectedIDs.count == 1
                             && selection.selectedIDs.contains(id) {
                             selection.clearSelection()
@@ -304,8 +310,9 @@ struct BoardCanvasView: View {
                         let behavior = toolBehavior(for: activeTool)
                         let store = canvasStore
                         let sel = selection
+                        let extending = keyModifiers.isShiftDown
                         Task {
-                            await behavior.tappedItem(id: id, store: store, selection: sel)
+                            await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
                         }
                     }
                     .accessibilityAddTraits(.isButton)
@@ -531,8 +538,8 @@ struct BoardCanvasView: View {
                 // tapping another toolbar button mid-type.
                 //
                 // Skip the auto-swap fired by `insertText` itself, which
-                // flips activeTool to `.pointer` while keeping focus on the
-                // just-placed draft.
+                // flips activeTool back to the default tool while keeping
+                // focus on the just-placed draft.
                 if skipNextToolChangeCommit {
                     skipNextToolChangeCommit = false
                     return
@@ -702,6 +709,7 @@ struct BoardCanvasView: View {
                         endInteraction()
                     }
             )
+            .background(KeyModifierObserverView(monitor: keyModifiers))
             .background(TwoFingerPanView(onPan: handleTwoFingerPan))
             .background(PinchGestureView(onPinch: handlePinch))
         }
@@ -2344,12 +2352,12 @@ struct BoardCanvasView: View {
         pendingTextInserts.insert(id)
         selection.clearSelection()
         editingTextID = id
-        // Auto-swap back to pointer so the next canvas tap doesn't try to
-        // place yet another draft on top of the one we just created. The
-        // skip flag stops the activeTool onChange from committing the new
-        // draft we're still editing.
+        // Auto-swap back to the default tool so the next canvas tap doesn't
+        // try to place yet another draft on top of the one we just created.
+        // The skip flag stops the activeTool onChange from committing the
+        // new draft we're still editing.
         skipNextToolChangeCommit = true
-        activeTool = .pointer
+        activeTool = .group
     }
 
     /// Commits the active text edit for `id`. Handles two paths:

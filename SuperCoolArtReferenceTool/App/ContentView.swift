@@ -34,7 +34,10 @@ struct ContentView: View {
     let initialLastTextColorHex: String?
     var onBack: () -> Void = {}
 
-    @State private var activeTool: CanvasTool = .pointer
+    /// `.group` is the only general-purpose selection tool — see `CanvasTool`.
+    /// Boards open in it; the text tool is a momentary mode that swaps back
+    /// here after a placement.
+    @State private var activeTool: CanvasTool = .group
     @State private var showingSettings = false
     @State private var urlsToInsert: [URL]?
 
