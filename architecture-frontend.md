@@ -266,7 +266,7 @@ Native `.toolbar` gives the per-button press feedback, glass material, group cap
 
 ```
 [Leading group]                                                [Trailing items]
-< (back)  |  BoardName pill   [Pointer | Group | Text | Add] | [Undo | Redo] | [Home | Settings]
+< (back)  |  BoardName pill   [Select | Text | Add] | [Undo | Redo] | [Home | Settings]
 ```
 
 - **Leading `ToolbarItemGroup(.topBarLeading)`** — back chevron + board name pill share one glass capsule. Board name is a non-interactive glass button (see "Board name pill" below) inside the group, so the group's outer pill is the only glass surface — no nesting.
@@ -277,7 +277,6 @@ Native `.toolbar` gives the per-button press feedback, glass material, group cap
 
 ```swift
 ToolbarItemGroup(placement: .topBarTrailing) {
-    toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
     toolButton(.group,   label: "Group",   icon: "rectangle.dashed")
     toolButton(.text,    label: "Text",    icon: "textformat")
     Button("Add", systemImage: "plus", action: onAddItem)
@@ -442,8 +441,7 @@ CanvasTool (enum)              -- toolbar identity, UI selection
     |
     v
 CanvasToolBehavior (protocol)  -- gesture interpretation per tool
-    ├── PointerToolBehavior    -- tap=select, drag-on-item=move, drag-on-empty=pan
-    ├── GroupToolBehavior      -- tap=toggle selection, drag-on-item=group move, drag-on-empty=marquee select
+    ├── GroupToolBehavior      -- tap=select one (shift-tap=toggle), drag-on-item=move, drag-on-empty=marquee
     └── TextToolBehavior       -- tap-empty=place text (canvas owns this), tap-item=select, drag-on-item=move, drag-on-empty=pan
 ```
 
@@ -477,30 +475,28 @@ A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the
 3. Subsequent `.onChanged`: `applyDrag()` routes to pan, move, resize, or marquee based on cached mode
 4. `.onEnded`: commits the appropriate action (move, resize, group resize, or marquee select)
 
-**Pointer Tool Behavior:**
-- Drag on item → select it, bring to top, enter `.moveItem` mode
-- Drag on empty canvas → `.pan` mode (normal canvas pan)
-- Tap on item → select it
-- Tap on empty → clear selection
-
-**Group Tool Behavior:**
+**Group Tool Behavior** — the only general-purpose selection tool; there is no pointer tool:
+- Tap on item → select just that item (replaces), then bring it to the top
+- Shift-tap on item → toggle it in/out of the selection, and *don't* promote z-order
+- Drag on empty canvas → `.marqueeSelect` mode (draws selection rectangle)
 - Drag on selected item → `.moveItem` mode (group move)
 - Drag on unselected item → add to selection via `extending: true`, `.moveItem` mode
-- Drag on empty canvas → `.marqueeSelect` mode (draws selection rectangle)
-- Tap on item → toggle selection membership (`extending: true`)
 - Tap on empty → clear selection
 
+Marquee commit always **replaces**: `commitMarqueeSelect` assigns `selection.selectedIDs = ids` outright. It is not additive under Shift or otherwise.
+
+**Why Shift for additive selection.** On a tablet there's no persistent modifier for touch, so the touch-only path to multi-select is the marquee, and tap stays unambiguous. Where a hardware keyboard *is* attached, Shift-tap gives the desktop convention for free. SwiftUI's `.onTapGesture` reports no modifier state on iOS (`Gesture.modifiers(_:)` is macOS-only), so `KeyModifierMonitor` bridges it: a passive `UIGestureRecognizer` reads `modifierFlags` (iPadOS 13.4+) on `touchesBegan` and immediately sets `state = .failed`, so it observes without ever claiming a touch. UIKit delivers `touchesBegan` to the hit-chain's recognizers before SwiftUI resolves a tap on touch-up, so the flag is current when the handler reads it. `BoardCanvasView` reads the monitor at the call site and passes `extending:` into `tappedItem` — the behaviors stay pure functions of their inputs.
+
 **Text Tool Behavior:**
-- Drag on item → select it, enter `.moveItem` mode (same as pointer)
+- Drag on item → select it, enter `.moveItem` mode
 - Drag on empty canvas → `.pan` mode
-- Tap on item → select it (delegates to pointer-style selection)
+- Tap on item → select it (single-select, or toggle under Shift)
 - Tap on empty → handled by `BoardCanvasView`'s tap handler, NOT by `tappedEmpty`. The behavior's `tappedEmpty` only clears the selection (so the new placement becomes the active focus); the actual `insertText(at:)` placement happens at the canvas level because the world point lives in the view's coordinate space, not in the protocol's interface. After placement, `insertText` programmatically auto-swaps `activeTool` back to the default tool, `.group` (Figma convention), so subsequent canvas taps don't keep dropping new drafts.
 
 **Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior` maps enum to concrete behavior.
 
-**Default tool: `.group` (marquee).** Set in `ContentView`'s `activeTool` state, and what `insertText` swaps back to after placing text. Opening a board is more often followed by selecting and arranging existing content than by dragging the canvas, and a drag on empty space marquee-selecting is what Figma and Freeform do with their default tool. Canvas navigation is unaffected — two-finger pan is installed at the canvas level and stays live regardless of the active tool (see "Two-Finger Pan").
+**`CanvasTool` has two cases, `.group` and `.text`.** `.group` is where boards open and what `insertText` swaps back to after a placement; `.text` is a momentary mode. The pointer tool was removed rather than demoted — its tap-to-select-one semantics moved into `GroupToolBehavior`, so there was nothing left to distinguish the two beyond drag-on-empty, and carrying a second tool for that was not worth the mode switch. Canvas navigation is unaffected by any of this: two-finger pan is installed at the canvas level and stays live regardless of the active tool (see "Two-Finger Pan").
 
-Worth knowing when reading the group behavior above: tapping an item under this tool toggles selection membership (tap adds, tap again removes) rather than replacing the selection. Tapping empty canvas clears. That's the group tool's defining semantic, and it's now what an untouched board starts in.
 **Adding New Tools:**
 1. Add case to `CanvasTool` enum
 2. Create a struct conforming to `CanvasToolBehavior`
@@ -863,7 +859,7 @@ Re-edit (tap-once-selects, tap-twice-edits):
 }
 ```
 
-Standard across pointer/group/text tools because all three can produce a single-text selection.
+Standard across both tools because either can produce a single-text selection.
 
 `commitTextEdit(id:)` is the shared commit point. Idempotent for newly-placed ids via `pendingTextInserts.remove(id)`. For re-edits, scoped to `editingTextID == id` so a re-fire (selection-change commit followed by focus-loss) sees a nil original on the second pass and skips a duplicate command push.
 
@@ -1285,7 +1281,7 @@ Because "New Board" requires choosing a save location up front, `currentBoardURL
 
 1. **Tool Behavior:**
    - ~~Connect `activeTool` state to actual canvas interactions~~ ✅ Done
-   - ~~Implement selection via pointer tool~~ ✅ Done
+   - ~~Implement selection via the select tool~~ ✅ Done
    - ~~Implement selection rectangles / marquee select for group tool~~ ✅ Done
    - ~~Implement group move/resize behavior for group tool~~ ✅ Done
 

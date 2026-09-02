@@ -34,12 +34,9 @@ struct ContentView: View {
     let initialLastTextColorHex: String?
     var onBack: () -> Void = {}
 
-    /// Marquee (group) rather than pointer: opening a board is far more often
-    /// followed by selecting and arranging what's already there than by
-    /// dragging the canvas around, and a one-finger drag on empty space
-    /// marquee-selecting matches what Figma/Freeform do with their default
-    /// tool. Canvas panning is unaffected — two-finger pan is always live
-    /// regardless of tool.
+    /// `.group` is the only general-purpose selection tool — see `CanvasTool`.
+    /// Boards open in it; the text tool is a momentary mode that swaps back
+    /// here after a placement.
     @State private var activeTool: CanvasTool = .group
     @State private var showingSettings = false
     @State private var urlsToInsert: [URL]?

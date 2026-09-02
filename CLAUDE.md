@@ -72,7 +72,7 @@ SuperCoolArtReferenceTool/
 | `Persistence/LocalCanvasService.swift` | Service layer wrapping LocalBoardStore |
 | `App/BoardArchiver.swift` | Import/export `.refboard` packages (JSON manifest + assets/) |
 | `App/ContentView.swift` | Main canvas container with native `.toolbar` chrome (back/board name + tools + history + add/settings) |
-| `Features/BoardCanvas/Tools/CanvasTool.swift` | Tool enum (`pointer`, `group`, `text`); `CanvasToolBehavior.swift` defines per-tool tap/drag semantics |
+| `Features/BoardCanvas/Tools/CanvasTool.swift` | Tool enum (`group`, `text`); `CanvasToolBehavior.swift` defines per-tool tap/drag semantics |
 | `Features/FilePicker/FilePickerView.swift` | Landing screen with drag-and-drop/browse for initial file import |
 | `DesignSystem/Colors.swift` | Color palette: primary (#191919), secondary (#535353), tertiary (#3977F8), text (#FFFFFF) |
 
