@@ -19,6 +19,10 @@ struct BoardCanvasView: View {
     @Binding private var showGrid: Bool
     @Binding private var canvasColor: Color
     @State private var gridSpacingWorld: CGFloat = 128.0
+    /// Hardware Shift state at touch-down, for shift-tap-to-extend. Stays
+    /// false on a device with no keyboard, which is the touch-only path.
+    @State private var keyModifiers = KeyModifierMonitor()
+
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Whole environment, needed to resolve `canvasColor` to concrete RGB —
@@ -247,8 +251,9 @@ struct BoardCanvasView: View {
                             let store = canvasStore
                             let sel = selection
                             let id = item.id
+                            let extending = keyModifiers.isShiftDown
                             Task {
-                                await behavior.tappedItem(id: id, store: store, selection: sel)
+                                await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
                                 await refreshVisibleElements()
                             }
                         }
@@ -289,10 +294,10 @@ struct BoardCanvasView: View {
                     )
                     .onTapGesture {
                         // Tap-on-sole-selected text → re-enter edit mode.
-                        // Standard across pointer/group/text tools since all
-                        // three can produce a single-text selection. Clearing
-                        // selection first hides the action bar / chrome so
-                        // they don't sit on top of the focused TextField.
+                        // Standard across both tools since either can produce
+                        // a single-text selection. Clearing selection first
+                        // hides the action bar / chrome so they don't sit on
+                        // top of the focused TextField.
                         if selection.selectedIDs.count == 1
                             && selection.selectedIDs.contains(id) {
                             selection.clearSelection()
@@ -305,8 +310,9 @@ struct BoardCanvasView: View {
                         let behavior = toolBehavior(for: activeTool)
                         let store = canvasStore
                         let sel = selection
+                        let extending = keyModifiers.isShiftDown
                         Task {
-                            await behavior.tappedItem(id: id, store: store, selection: sel)
+                            await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
                         }
                     }
                     .accessibilityAddTraits(.isButton)
@@ -703,6 +709,7 @@ struct BoardCanvasView: View {
                         endInteraction()
                     }
             )
+            .background(KeyModifierObserverView(monitor: keyModifiers))
             .background(TwoFingerPanView(onPan: handleTwoFingerPan))
             .background(PinchGestureView(onPinch: handlePinch))
         }

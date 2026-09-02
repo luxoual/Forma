@@ -58,8 +58,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
         // here because it's the same kind of "put stuff on the canvas"
         // action as the tools next to it.
         ToolbarItemGroup(placement: .topBarTrailing) {
-            toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
-            toolButton(.group, label: "Group", icon: "rectangle.dashed")
+            toolButton(.group, label: "Select", icon: "rectangle.dashed")
             toolButton(.text, label: "Text", icon: "textformat")
             Button("Add", systemImage: "plus", action: onAddItem)
         }
