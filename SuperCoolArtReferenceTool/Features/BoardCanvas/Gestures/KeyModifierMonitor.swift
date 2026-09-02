@@ -66,7 +66,7 @@ struct KeyModifierObserverView: UIViewRepresentable {
             recognizer.delegate = self
             recognizer.onTouchesBegan = { [weak self] flags in
                 guard let self else { return }
-                MainActor.assumeIsolated { self.monitor.update(with: flags) }
+                self.monitor.update(with: flags)
             }
         }
 
@@ -88,7 +88,7 @@ struct KeyModifierObserverView: UIViewRepresentable {
 /// `.began`/`.changed` and therefore can never steal a touch from the
 /// recognizers that do real work.
 final class ModifierObservingGestureRecognizer: UIGestureRecognizer {
-    var onTouchesBegan: ((UIKeyModifierFlags) -> Void)?
+    var onTouchesBegan: (@MainActor (UIKeyModifierFlags) -> Void)?
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
