@@ -27,6 +27,11 @@ struct ContentView: View {
     /// canvas adapts to the user's preference until they pick something
     /// explicit in Settings.
     let initialCanvasColorHex: String?
+    /// `#RRGGBB` of the last text color picked on this board, or `nil` when
+    /// the board predates the field or nothing has been picked. Kept per
+    /// board rather than app-wide: a dark board and a light board want
+    /// different text, and one shouldn't overwrite the other's choice.
+    let initialLastTextColorHex: String?
     var onBack: () -> Void = {}
 
     @State private var activeTool: CanvasTool = .pointer
@@ -72,6 +77,16 @@ struct ContentView: View {
     /// time the user moves anything.
     @State private var savedCanvasColorHex: String?
 
+    /// Last text color picked on this board, written to the manifest on save.
+    /// Bound into `BoardCanvasView`, which reads it to seed new text and
+    /// writes it back whenever the user picks. `nil` until the first pick.
+    @State private var lastTextColorHex: String?
+    /// Same role as `canvasColorDirty`: a color-only change doesn't touch the
+    /// element store, so `wasDirty` would come back false and `saveInPlace`
+    /// would bail without persisting the pick. Cleared alongside
+    /// `markCleanTrigger` after a successful save.
+    @State private var lastTextColorDirty = false
+
     /// Custom init so `canvasColor` can default to either the manifest's saved
     /// hex (when reopening a board) or the system background (new boards,
     /// legacy v1 files). The remaining stored / @State properties keep their
@@ -81,17 +96,20 @@ struct ContentView: View {
         initialElements: [CMCanvasElement]?,
         initialBoardURL: URL?,
         initialCanvasColorHex: String? = nil,
+        initialLastTextColorHex: String? = nil,
         onBack: @escaping () -> Void = {}
     ) {
         self.initialURLs = initialURLs
         self.initialElements = initialElements
         self.initialBoardURL = initialBoardURL
         self.initialCanvasColorHex = initialCanvasColorHex
+        self.initialLastTextColorHex = initialLastTextColorHex
         self.onBack = onBack
         let initial = initialCanvasColorHex.flatMap(Color.init(hex:))
             ?? Color(uiColor: .systemBackground)
         _canvasColor = State(initialValue: initial)
         _savedCanvasColorHex = State(initialValue: initialCanvasColorHex)
+        _lastTextColorHex = State(initialValue: initialLastTextColorHex)
     }
 
     var body: some View {
@@ -101,6 +119,7 @@ struct ContentView: View {
                 externalInsertURLs: $urlsToInsert,
                 showGrid: $showGrid,
                 canvasColor: $canvasColor,
+                lastTextColorHex: $lastTextColorHex,
                 snapshotTrigger: $snapshotToken,
                 loadElements: $elementsToLoad,
                 commandHistory: commandHistory,
@@ -161,6 +180,14 @@ struct ContentView: View {
         .onChange(of: canvasColor) { _, newValue in
             savedCanvasColorHex = canvasColorHexString(from: newValue.resolve(in: environment))
             canvasColorDirty = true
+        }
+        // Already a concrete hex by the time the canvas writes it back, so
+        // unlike `canvasColor` there's nothing to resolve here — this exists
+        // purely to mark the board dirty, since picking a text color may not
+        // touch the element store at all (e.g. picking with nothing selected
+        // is a no-op on elements but still changes what new text will use).
+        .onChange(of: lastTextColorHex) { _, _ in
+            lastTextColorDirty = true
         }
         .alert("Save Failed", isPresented: $showSaveError) {
             Button("Discard & Leave", role: .destructive) { onBack() }
@@ -223,37 +250,51 @@ struct ContentView: View {
     /// Off-main would be smoother for active use, but nothing calls this during active use —
     /// `.inactive` means the user is already out of the canvas view.
     private func saveInPlace(elements: [CMCanvasElement], wasDirty: Bool) {
-        // The board needs persisting if either the element store changed or
-        // the user picked a new canvas color since open.
-        guard wasDirty || canvasColorDirty, let url = currentBoardURL else { return }
+        // The board needs persisting if the element store changed or the user
+        // picked a new canvas / text color since open.
+        guard wasDirty || canvasColorDirty || lastTextColorDirty,
+              let url = currentBoardURL else { return }
         let startedAt = Date()
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         do {
-            _ = try BoardArchiver.export(elements: elements, canvasColorHex: savedCanvasColorHex, to: url)
+            _ = try BoardArchiver.export(
+                elements: elements,
+                canvasColorHex: savedCanvasColorHex,
+                lastTextColorHex: lastTextColorHex,
+                to: url
+            )
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
             Logger.save.logSaveSuccess(elements: elements.count, url: url, durationMs: ms)
             markCleanTrigger = UUID()
             canvasColorDirty = false
+            lastTextColorDirty = false
         } catch {
             Logger.save.logSaveFailure(url: url, error: error)
         }
     }
 
     private func saveAndGoBack(elements: [CMCanvasElement], wasDirty: Bool) {
-        guard wasDirty || canvasColorDirty, let url = currentBoardURL else {
+        guard wasDirty || canvasColorDirty || lastTextColorDirty,
+              let url = currentBoardURL else {
             onBack()
             return
         }
-        // `savedCanvasColorHex` is a plain `String?`, already Sendable — no
-        // env resolution needed at the actor boundary.
+        // Both are plain `String?`, already Sendable — no env resolution
+        // needed at the actor boundary.
         let colorHex = savedCanvasColorHex
+        let textColorHex = lastTextColorHex
         Task {
             let failure: Error? = await Task.detached(priority: .userInitiated) {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                 do {
-                    _ = try BoardArchiver.export(elements: elements, canvasColorHex: colorHex, to: url)
+                    _ = try BoardArchiver.export(
+                        elements: elements,
+                        canvasColorHex: colorHex,
+                        lastTextColorHex: textColorHex,
+                        to: url
+                    )
                     return nil as Error?
                 } catch {
                     return error
@@ -265,6 +306,7 @@ struct ContentView: View {
             } else {
                 markCleanTrigger = UUID()
                 canvasColorDirty = false
+                lastTextColorDirty = false
                 onBack()
             }
         }

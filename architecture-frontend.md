@@ -133,6 +133,7 @@ SwiftUI's `MagnificationGesture` only zooms around the center of the view. We wa
 - Reports the centroid in the installer's own coordinate space, not the window's, so it matches the space the canvas positions things in. Matters if the canvas ever gets inset by a toolbar or safe area
 - Attached with `.background(PinchGestureView(onPinch:))`, handled by `handlePinch(phase:scaleDelta:anchor:)`
 - The actual zoom math is a **pure function** with no view involved: `CanvasCamera.zoomAnchoredOffset(anchor:oldOffset:oldScale:newScale:)` in `CanvasCamera.swift`. It keeps `worldPoint = (anchor - offset) / scale` the same across the zoom change, which is what "the point under your fingers stays under your fingers" means mathematically. Being pure makes it testable without running a view.
+- The recognizer sets **`cancelsTouchesInView = true`**, along with `delaysTouchesBegan/Ended = false` and a delegate that returns `true` for `shouldRecognizeSimultaneouslyWith`. That first setting is the one place the two UIKit bridges disagree, and it's deliberate. Pinching over the selection action bar used to delete the very thing you were zooming in on: a finger landed on the delete button, held there through the zoom, and fired the button on lift. The bar's `allowsHitTesting(false)` can't stop that, because it blocks *new* hit tests, not a touch a button has already claimed. The bar can't hide any earlier either — `isInteracting` only flips on `.began`, and UIKit won't call `.began` until two touches have moved far enough to count as a pinch. Cancelling view touches at recognition kills the pending press. Only delivery to *views* is cancelled, so `TwoFingerPanView`'s recognizer is unaffected and pan + zoom still compose.
 
 ## Two-finger pan (bridged from UIKit)
 
@@ -643,9 +644,9 @@ ContentView                  — triggers undo/redo from toolbar
 # Selection action bar
 
 **Status: Implemented**
-**Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`
+**Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`, `TextColorWell.swift`
 
-A small floating bar that appears next to whatever you've selected. Right now it holds one button: delete.
+A small floating bar that appears next to whatever you've selected. It holds two controls: delete, which works on any selection, and a text color well that only appears when the selection contains text.
 
 We tried `.contextMenu(menuItems:preview:)` first. Its default preview couldn't lift a whole multi-selection, and a custom preview couldn't blur the items that weren't part of it. So: a floating bar.
 
@@ -660,6 +661,32 @@ Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
 ```
 
 The title still exists for VoiceOver; `.labelStyle(.iconOnly)` just hides it visually. The native glass style brings its own material, press animation, and shape, replacing hand-rolled `RoundedRectangle` + shadow code.
+
+**The text color well (`TextColorWell`):**
+
+Slotted in ahead of the delete button whenever `textColorHex != nil` — that is, whenever the selection contains text. This one *is* conditionally inserted, unlike the bar itself. The stale-glass problem described below only bites at launch, and by the time you've selected a text element the canvas composited long ago.
+
+It's the native `ColorPicker` well with `.labelsHidden()`, wrapped in glass. The well *is* the button: tapping it opens the system color picker straight away, with no popover of our own in between.
+
+```swift
+ColorPicker("Text Color", selection: pickerBinding, supportsOpacity: false)
+    .labelsHidden()
+    .frame(width: CanvasActionBarMetrics.buttonSide,
+           height: CanvasActionBarMetrics.buttonSide)
+    .glassEffect(.regular.interactive(), in: .circle)
+```
+
+**Why `CanvasActionBarMetrics.buttonSide = 52`.** `ColorPicker` sizes its own well and ignores `controlSize`, so left alone it won't line up with the `.controlSize(.large)` glass button beside it. 52pt is the documented iOS button height for the large control size: the HIG's button-shape table lists mini 28 / small 32 / regular 44 / **large 52** / extra large 64, and those names map one-to-one onto SwiftUI's `ControlSize`. Every control in the bar takes that frame explicitly — including the ones `.controlSize(.large)` would already size correctly — so the constant is the single source of truth instead of one control quietly measuring another. Icon-only controls at that size are circular per the same table, which is why it's `in: .circle`.
+
+**The swatch row is the system's; the default color is ours.** We don't draw a recents row. `UIColorPickerViewController` already has a saved-swatch row, and drawing a second one would make this the odd control out on the platform. That row has limits — you curate it by hand with "+", it's shared system-wide rather than scoped to this app, and there's no API to read or seed it. So we keep exactly one value of our own: the last hex picked, which `insertText` hands to every new text element. Pick a color once and it stays the default until you pick another.
+
+**That value belongs to the board, not the app.** It rides in the manifest as `lastTextColor` (schema v3 — see `architecture-backend.md`). `ContentView` owns it as `@State lastTextColorHex` and binds it into `BoardCanvasView`, which seeds new text from it and writes back through the binding on every commit. A dark board and a light board want different text colors, and picking on one shouldn't quietly change the other. `ContentView` also carries a `lastTextColorDirty` flag next to `canvasColorDirty`, for the same reason that one exists: picking a color might not touch the element store at all, so `wasDirty` on its own would let `saveInPlace` conclude there was nothing to save.
+
+`TextColorMemory` (`Features/BoardCanvas/Elements/TextColorMemory.swift`) holds only the *rules* — hex normalization, and the fallback below. It's stateless, so where the value actually lives stays the caller's decision.
+
+**Before you've picked anything** there's nothing to remember, so `defaultHex(onCanvas:)` works the starting color out from the canvas. It takes the W3C relative luminance of the resolved `canvasColor` and returns the palette's near-black above the 0.179 crossover, its white below. It keys off the canvas rather than `colorScheme` because `canvasColor` is user-settable in board settings — a light board still wants dark text even on a device in dark mode. Without this, `ContentView`'s `Color(uiColor: .systemBackground)` default put `#191919` text on a black canvas in dark mode, which is to say invisible text.
+
+**Coalescing a picker drag into one undo step.** The system picker publishes a new color on every frame while you drag across the spectrum. `BoardCanvasView.applyTextColor(hex:)` repaints the canvas immediately but holds the store write and the history push back by 400 ms (`textColorCommitTask`), and snapshots the per-element originals only on the first call. So one visit to the picker costs one undo step, not hundreds. `commitTextColorEdit()` is flushed at the top of `performUndo` / `performRedo` and in the snapshot trigger, so a pending pick can't land after a save or an undo has already gone through.
 
 **Positioning — and why the bar is always mounted**
 
@@ -720,10 +747,14 @@ private struct PlacedText: Identifiable {
     var worldRect: CGRect         // origin = anchor; size derives from rendered geometry
     var zIndex: Int
     var fontSize: CGFloat         // base/world units, NOT pre-scaled by canvas zoom
-    var color: Color
+    var colorHex: String          // authoritative "#RRGGBB"; `color` is derived
     var wrapWidth: CGFloat?       // nil = auto-width; set = fixed wrap width (Figma convention)
+
+    var color: Color { Color(hex: colorHex) ?? DesignSystem.Colors.primary }
 }
 ```
+
+Color is stored as a hex string rather than as a `Color` for two reasons. It round-trips through `CMCanvasElementPayload.text` unchanged, and it can be snapshotted for undo without needing an `EnvironmentValues` to resolve an adaptive `Color` down to real channel values. A malformed hex — a manifest written by some other build, say — falls back to the palette primary.
 
 `fontSize` is the one true source of text size. Corner-drag resize, group resize, and any future font-size picker all change this same field. `worldRect.size` is *measured from what actually rendered* — never assigned directly, except for `worldRect.origin`.
 
@@ -944,7 +975,7 @@ Now the snapshot includes everything typed, no matter how fast you hit back.
 
 ## Persistence
 
-`CMCanvasElementPayload.text` and `BoardArchiver.ManifestPayload.text` mirror `PlacedText`'s fields (content, fontName, fontSize, color, wrapWidth). `wrapWidth` uses `encodeIfPresent` / `decodeIfPresent`, so older `.refboard` files that predate the field load fine with `wrapWidth = nil` (auto-width). See `architecture-backend.md` for how the file format evolves.
+`CMCanvasElementPayload.text` and `BoardArchiver.ManifestPayload.text` mirror `PlacedText`'s fields (content, fontName, fontSize, color, wrapWidth). The `color` field is genuinely read and written now. Both load paths used to throw it away and substitute a hard-coded palette primary; that stopped once `PlacedText.colorHex` became the authoritative value. `wrapWidth` uses `encodeIfPresent` / `decodeIfPresent`, so older `.refboard` files that predate the field load fine with `wrapWidth = nil` (auto-width). See `architecture-backend.md` for how the file format evolves.
 
 ## Which text actions are undoable
 
@@ -954,6 +985,7 @@ Now the snapshot includes everything typed, no matter how fast you hit back.
 | Re-edit content | `.editTextContent(from, to)` | Only when the content actually changed |
 | Re-edit cleared everything | `.delete` | Snapshot rebuilds from original content, so undo restores the text |
 | Move text | `.move` | Same command as images; `applyMoveDelta` walks both arrays |
+| Change text color | `.setTextColor(fromHexes, toHex)` | `fromHexes` is per-element, since a multi-text selection can start out mixed; `toHex` is shared. Debounced, so a picker drag is one step |
 | Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin |
 | Group resize including text | `.groupResize` | Extended with text-state dictionaries |
 | Delete via action bar | `.delete` | `deleteSelection` snapshots both kinds; `applyResizeRects` filters out text ids defensively |
