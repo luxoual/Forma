@@ -78,7 +78,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
 
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button("Go to Content", systemImage: "house", action: onHome)
+            Button("Fit to Content", systemImage: "house", action: onHome)
             Button(action: onSettings) {
                 Label("Settings", systemImage: "gear")
             }
