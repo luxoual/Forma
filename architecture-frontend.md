@@ -1,54 +1,77 @@
-# Frontend Architecture Documentation (Dev A)
+# Frontend Architecture (Dev A)
 
 ⚠️ This document is maintained by **Dev A (Frontend/Canvas)**.
 
-The purpose of this file is to document **UI, canvas interaction, and visual component architecture** as they become stable during development.
+It describes the UI and canvas code **as actually built** — not plans, not ideas. If something here isn't in the code, it shouldn't be here.
 
-This file should reflect the **actual implemented system**, not speculative designs.
-
----
-
-# Current Status
-
-Frontend architecture is **actively developing** with core canvas and UI systems implemented.
+**How this doc is written:** plain language first, precise names second. Every section starts with what the thing does in ordinary words, then gets specific. Exact names (`BoardCanvasView`, `camera.scale`), file paths, and numbers are kept literal so you can search for them. See `context.md` → "How to write documentation" for the full rule.
 
 ---
 
-# System Areas
+## Words we use a lot
 
-## Infinite Canvas System
+Read this once and the rest of the doc gets easier.
 
-Decision Status: **Implemented (MVP)**
+| Word | What it actually means |
+|---|---|
+| **World space** | The imaginary sheet of paper that goes on forever. Every item's real position lives here. It doesn't move when you pan. |
+| **Screen space** | Where things land on the actual iPad glass, measured in points from the top-left corner. |
+| **The camera** | Where you're currently looking, and how far zoomed in. Panning and zooming move the camera, not the items. |
+| **Viewport** | The rectangle of world space you can see right now. Basically "what the camera is pointed at." |
+| **Culling** | Skipping work for things you can't see. We don't build views for off-screen images at all. |
+| **Hit-testing** | Working out which item is under your finger. |
+| **Element / item** | One thing on the canvas: an image or a text note. |
+| **Commit** | Saving a change for real, after the gesture ends. During the gesture we only *show* the change. |
+| **Store** | `LocalBoardStore`, the backend's memory of what's on the board. The canvas keeps its own faster copy and syncs to the store. |
 
-### Core Architecture
+**The one formula everything rests on:**
 
+```
+screenPoint = worldPoint * camera.scale + camera.offset
+```
+
+Read backwards, that's how a tap becomes a world position. Both directions matter, and both live in `screenToWorld(_:)`.
+
+---
+
+## Current status
+
+Core canvas and UI are built and working. Active development continues.
+
+---
+
+# The infinite canvas
+
+**Status: Implemented (MVP)**
 **File:** `BoardCanvasView.swift`
 
-The canvas system is implemented as a standalone, reusable SwiftUI component that provides pan/zoom navigation and image placement on an infinite 2D plane.
+A self-contained SwiftUI view that lets you pan, zoom, and place images on an endless flat surface.
 
-**World Coordinate System:**
-- World space uses `CGFloat` coordinates with origin at (0, 0)
-- Items are positioned using world coordinates independent of screen/viewport
-- World units are arbitrary but consistent (currently ~1 unit per screen point at 1.0 scale)
+## How position works
 
-**Camera/Transform Model:**
+Nothing on the canvas ever "moves" when you pan. Items sit at fixed world coordinates forever. What changes is where the camera is pointed. This is the single most important idea in the file — if you're ever confused about a coordinate bug, start by asking whether you're in world space or screen space.
 
-Camera state is encapsulated in `@Observable final class CanvasCamera` (`CanvasCamera.swift`), owned as `@State private var camera = CanvasCamera()` inside `BoardCanvasView`.
+- World space uses `CGFloat` with origin at (0, 0)
+- World units are arbitrary but consistent — roughly 1 unit per screen point when zoom is 1.0
 
-- `camera.offset: CGSize` — Translation from world origin to screen space (in screen points)
-- `camera.scale: CGFloat` — Uniform scale factor (zoom level)
-- Bounds: `minScale = 0.05`, `maxScale = 8.0`
-- Transform: `screenPoint = worldPoint * camera.scale + camera.offset`
+## The camera
 
-Write sites: pinch gesture, two-finger pan, home button (`jumpToContentCenter`), board-load landing snap. All go through `camera.offset` / `camera.scale`.
+Camera state lives in `@Observable final class CanvasCamera` (`CanvasCamera.swift`), owned by `BoardCanvasView` as `@State private var camera = CanvasCamera()`.
 
-**Initial View:**
-- On `.onAppear`, `camera.offset` is set to `(screenWidth/2, screenHeight/2)` to center on world origin
-- If elements are already loaded when `onAppear` fires (race with `ContentView.onAppear`), `jumpToContentCenter(animated: false)` runs immediately instead, centering on content
-- When a board with content is loaded via `elementsToLoad`, `jumpToContentCenter(animated: false)` is deferred one run-loop tick via `DispatchQueue.main.async` to guarantee `canvasSize` is set first (see "Landing Snap" under Canvas Navigation Aids below)
+- `camera.offset: CGSize` — how far the world has been shifted, in screen points
+- `camera.scale: CGFloat` — zoom level
+- Limits: `minScale = 0.05`, `maxScale = 8.0`
 
-**Coordinate Conversion:**
-Implemented via `screenToWorld(_:)` helper:
+Four things write to the camera: pinch, two-finger pan, the home button (`jumpToContentCenter`), and the landing snap when a board loads. All of them go through `camera.offset` / `camera.scale` — there's no second path.
+
+**Where the camera points on open:**
+
+- Normally, `.onAppear` sets `camera.offset` to `(screenWidth/2, screenHeight/2)`, putting world origin in the middle of the screen
+- If elements happened to load before `onAppear` ran, it calls `jumpToContentCenter(animated: false)` instead, so you land on your content
+- When a board loads through `elementsToLoad`, that same snap is delayed by one run-loop tick (see "Landing snap" below for why)
+
+**Converting a tap to a world position:**
+
 ```swift
 func screenToWorld(_ p: CGPoint) -> CGPoint {
     CGPoint(x: (p.x - offset.width) / scale, 
@@ -56,113 +79,120 @@ func screenToWorld(_ p: CGPoint) -> CGPoint {
 }
 ```
 
-**Rendering Strategy:**
-- Canvas rendered using SwiftUI `Canvas` for grid background
-- Items rendered as SwiftUI views in a `ZStack` with `.zIndex()` for layering
-- Transform applied via `.position()` and `.frame()` modifiers
-- Viewport culling via `visibleImages` (tile-indexed spatial query against `LocalBoardStore`); images outside the viewport are not rendered
+## How things get drawn
 
-**Grid Visualization:**
-- World-aligned grid with configurable spacing (`gridSpacingWorld = 128.0`)
-- Grid lines drawn at world coordinates, transformed to screen space
-- Grid can be toggled via `showGrid` state
-- Red origin crosshair removed (was causing render timing issues)
+- The grid background is a SwiftUI `Canvas`
+- Items are real SwiftUI views in a `ZStack`, layered with `.zIndex()`
+- Each item is placed with `.position()` and sized with `.frame()`
+- Off-screen images are never built. `visibleImages` asks the store which images touch the viewport, and only those become views
 
-**Empty Canvas State:**
-- When `placedImages` is empty, a centered overlay shows a `photo.on.rectangle.angled` SF Symbol (80pt) and the text "Drag and drop an image here"
-- Both elements are styled with `DesignSystem.Colors.secondary`, `compositingGroup()`, and `.blendMode(.difference)` so they remain visible regardless of canvas background color
-- The overlay is hidden automatically as soon as the first image is placed
+**The grid:**
+
+- Lines every 128 world units (`gridSpacingWorld = 128.0`)
+- Drawn in world coordinates, then converted to screen positions
+- Toggled by `showGrid`
+- There used to be a red crosshair at the origin. It caused render timing problems and was removed.
+
+**Empty canvas:**
+
+When `placedImages` is empty, a centered `photo.on.rectangle.angled` symbol (80pt) appears with "Drag and drop an image here". It uses `DesignSystem.Colors.secondary` with `compositingGroup()` and `.blendMode(.difference)`, which is a trick to make it readable on *any* canvas color — difference blending inverts against whatever is behind it. It disappears as soon as the first image lands.
 
 ---
 
-### Gesture System
+# Gestures
 
-Three simultaneous gestures are attached to the canvas ZStack:
+Three gestures run at the same time on the canvas ZStack.
 
-**Drag Gesture (Tool-Routed):**
-- `DragGesture(minimumDistance: 8)` — routed through the active `CanvasToolBehavior`
-- On first `.onChanged`: async hit-test via tool behavior determines `DragMode` (`.pan`, `.moveItem`, `.none`)
-- Mode is cached in `currentDragMode` for the gesture's duration
-- `.pan` mode: updates `offset` by accumulating translation (canvas panning)
-- `.moveItem` mode: updates `selection.dragOffset` in world space (item move with live visual feedback)
-- On `.onEnded`: if `.moveItem`, calls `commitMove()` to persist positions; resets all drag state
+## Drag — routed through the active tool
 
-**Tap Routing (Native Hit-Testing):**
-- Taps are routed via per-view `.onTapGesture`, not a parent `SpatialTapGesture`:
-  - Each `FileImageView` has `.onTapGesture { ... tappedItem(id:) }` attached **before** `.position(...)` so the tappable frame tracks the item
-  - The background `Canvas` grid has `.onTapGesture { ... tappedEmpty() }`
-- This lets SwiftUI's native hit-testing arbitrate taps — the topmost child wins and no parent gesture fires alongside. Prior architecture used `.simultaneousGesture(SpatialTapGesture())` on the outer ZStack, which caused tap-passthrough (e.g. tapping the trash button in the selection action bar also tapped the image beneath it). SwiftUI has no `stopPropagation` equivalent for simultaneous gestures; moving tap routing onto the children is the idiomatic fix.
-- The `DragGesture(minimumDistance: 8)` on the ZStack still handles drag-mode routing; taps (< 8pt movement) never fire it, so the two systems don't overlap.
+`DragGesture(minimumDistance: 8)`. The active tool decides what a drag means.
 
-**Pinch Zoom (UIKit Bridge):**
+1. On the first `.onChanged`, the tool hit-tests and picks a `DragMode`: `.pan`, `.moveItem`, or `.none`
+2. That decision is cached in `currentDragMode` and reused for the whole gesture — we don't re-decide mid-drag
+3. `.pan` adds the movement to `offset`. `.moveItem` updates `selection.dragOffset` in world space, which makes the item follow your finger without touching the store
+4. On `.onEnded`, a `.moveItem` drag calls `commitMove()` to save positions, then all drag state resets
+
+## Taps — each view handles its own
+
+Taps are attached to individual views, not to one big parent gesture:
+
+- Each `FileImageView` has `.onTapGesture { ... tappedItem(id:) }`, attached **before** `.position(...)` so the tappable area follows the item
+- The background grid `Canvas` has `.onTapGesture { ... tappedEmpty() }`
+
+**Why it's built this way:** we used to put one `.simultaneousGesture(SpatialTapGesture())` on the outer ZStack. That caused taps to go through two things at once — tapping the trash button in the selection bar *also* tapped the image behind it. SwiftUI has no "stop here, don't pass this tap along" for simultaneous gestures. Letting each child own its tap lets SwiftUI's normal hit-testing pick a single winner: the topmost view. That's the idiomatic fix.
+
+The 8pt minimum on the drag gesture keeps the two systems apart — a tap moves less than 8pt, so it never starts a drag.
+
+## Pinch zoom (bridged from UIKit)
 
 **File:** `PinchGestureView.swift`
 
-- Replaces the earlier `MagnificationGesture` approach, which only zoomed around view center. Exposes the pinch centroid so zoom pivots where the fingers are (matches Apple Freeform).
-- `UIViewRepresentable` wrapping a `UIPinchGestureRecognizer`; installed on the hosting ancestor via the shared `GestureInstallerView` (see below).
-- Emits **per-tick scale deltas** (not cumulative) plus the **live centroid** in installer-local coordinates. `.began`/`.ended` emit delta = 1.0; only `.changed` emits real deltas.
-- Centroid is reported in the installer's coordinate space (not `recognizer.view` / window space) so it matches the canvas's `.position(...)` space — important if the canvas is ever inset by a toolbar or safe area.
-- Attached via `.background(PinchGestureView(onPinch:))` on the canvas ZStack; routed through `handlePinch(phase:scaleDelta:anchor:)`.
-- Zoom math is extracted into a **pure static function**, `CanvasCamera.zoomAnchoredOffset(anchor:oldOffset:oldScale:newScale:)` (lives in `CanvasCamera.swift`), which preserves `worldPoint = (anchor - offset) / scale` across the scale change. Testable without a live view.
+SwiftUI's `MagnificationGesture` only zooms around the center of the view. We want zoom to pivot on your fingers, like Apple Freeform. That needs the pinch centroid, which SwiftUI doesn't expose — so we wrap `UIPinchGestureRecognizer` in a `UIViewRepresentable`.
 
-**Two-Finger Pan (UIKit Bridge):**
+- Reports **per-tick scale changes**, not a running total. `.began` and `.ended` report 1.0; only `.changed` reports real values
+- Reports the centroid in the installer's own coordinate space, not the window's, so it matches the space the canvas positions things in. Matters if the canvas ever gets inset by a toolbar or safe area
+- Attached with `.background(PinchGestureView(onPinch:))`, handled by `handlePinch(phase:scaleDelta:anchor:)`
+- The actual zoom math is a **pure function** with no view involved: `CanvasCamera.zoomAnchoredOffset(anchor:oldOffset:oldScale:newScale:)` in `CanvasCamera.swift`. It keeps `worldPoint = (anchor - offset) / scale` the same across the zoom change, which is what "the point under your fingers stays under your fingers" means mathematically. Being pure makes it testable without running a view.
+
+## Two-finger pan (bridged from UIKit)
 
 **File:** `TwoFingerPanView.swift`
 
-- Provides always-available two-finger panning regardless of active tool so Group-tool marquee doesn't block canvas navigation.
-- `UIViewRepresentable` wrapping a `UIPanGestureRecognizer` (min/max touches = 2); installed on the hosting ancestor via the shared `GestureInstallerView`.
-- Emits **per-tick translation deltas** (not cumulative + baseline); `handleTwoFingerPan(phase:delta:)` just adds the delta to current `offset`.
-- Recognizer config: `cancelsTouchesInView = false`, `delaysTouchesBegan/Ended = false`, delegate returns `true` for `shouldRecognizeSimultaneouslyWith` so SwiftUI gestures still observe touches.
+Two fingers always pan, no matter which tool is active. Without this, the Group tool's marquee would trap you — you'd have no way to move around while it's selected.
 
-**Delta-Based Composition (why both bridges emit deltas):**
+- Wraps `UIPanGestureRecognizer` with min and max touches set to 2
+- Reports **per-tick movement**, and `handleTwoFingerPan(phase:delta:)` just adds it to `offset`
+- Configured with `cancelsTouchesInView = false`, `delaysTouchesBegan/Ended = false`, and a delegate returning `true` from `shouldRecognizeSimultaneouslyWith`, so SwiftUI's own gestures still see the touches
 
-Pinch and two-finger-pan fire simultaneously and both write `offset`. An earlier cumulative-plus-frozen-baseline design had a race: whichever handler ran second read a stale baseline captured before the other handler's writes. Switching both bridges to emit per-tick deltas and having each handler read/write current `offset`/`scale` every frame eliminates the race — there's no baseline to clobber. Partial ends (pinch ends before pan, or vice versa) are free for the same reason.
+## Why both bridges report changes instead of totals
 
-**Shared Gesture Installer:**
+Pinch and two-finger pan fire at the same time and both write `offset`.
+
+The old design had each one capture a starting value, then report "start value plus everything since." That broke: whichever handler ran second in a frame had captured its starting value *before* the first handler's writes, so it overwrote them with stale math.
+
+Reporting per-tick changes fixes it completely. Each handler reads the current `offset`/`scale`, adds its change, writes back. There's no stored starting value to go stale. As a bonus, one gesture ending before the other needs no special handling.
+
+## Shared gesture installer
 
 **File:** `GestureInstallerView.swift`
 
-- `GestureInstallerView` + `GestureInstallerCoordinator` protocol — shared infrastructure for any `UIViewRepresentable` gesture bridge that needs to install a recognizer on the SwiftUI hosting ancestor.
-- Responsibilities: walks the responder chain (`responder.next`) to find the first `UIViewController.view`, installs the coordinator's recognizer there on `didMoveToWindow`/`didMoveToSuperview`, relocates on re-parenting, and guarantees `isUserInteractionEnabled = false` on the installer itself so it never shadows hit-testing.
-- Consumers (pinch + two-finger pan today) conform their `Coordinator` to `GestureInstallerCoordinator` and expose their recognizer via `installedRecognizer`.
-- Teardown: each bridge's `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()`, which removes the recognizer from its host view, clears target/delegate, and replaces the event closure with a no-op — prevents duplicate recognizers and retention cycles if the canvas remounts (e.g. `RootView` toggling `showCanvas`).
+Both UIKit bridges need to attach their recognizer to the SwiftUI hosting view above them. That's fiddly, so it's written once.
 
-**Camera model — implemented:**
+`GestureInstallerView` + the `GestureInstallerCoordinator` protocol handle:
+- Walking up the responder chain (`responder.next`) to find the first `UIViewController.view`
+- Installing the recognizer there when the view enters the window or changes superview
+- Re-installing if the view gets re-parented
+- Forcing `isUserInteractionEnabled = false` on itself, so the installer never accidentally swallows touches
 
-`offset` and `scale` have been lifted into `@Observable final class CanvasCamera` (`CanvasCamera.swift`). `BoardCanvasView` owns it as `@State private var camera = CanvasCamera()`. `zoomAnchoredOffset` is a static method on `CanvasCamera`.
+Cleanup matters here. Each bridge's `dismantleUIView(_:coordinator:)` calls `Coordinator.detach()`, which removes the recognizer, clears its target and delegate, and swaps the callback for a no-op. Without this, remounting the canvas (like `RootView` toggling `showCanvas`) would leave duplicate recognizers behind and leak memory through retain cycles.
 
-`viewportCGRect()` and `allElementRects()` remain on `BoardCanvasView` — they need view-local state (`canvasSize`, `placedImages`, `placedTexts`) that belongs on the view.
+## Camera extraction — done, with one thing left
 
-`jumpToContentCenter` also remains on the view (needs `canvasSize`, `reduceMotion`, `scheduleRefreshVisibleElements()`), but writes to `camera.offset`.
+`offset` and `scale` now live in `CanvasCamera`. `zoomAnchoredOffset` is a static method on it.
 
-Next step (future PR): the UUID-trigger pattern for `homeTrigger` (and potentially `undoTrigger`/`redoTrigger`) could simplify once the camera is an environment-injected observable — the toolbar could call camera methods directly instead of firing UUID bindings through `ContentView`.
+Three functions stayed on `BoardCanvasView` because they need view-local state the camera doesn't have:
+- `viewportCGRect()` and `allElementRects()` need `canvasSize`, `placedImages`, `placedTexts`
+- `jumpToContentCenter` needs `canvasSize`, `reduceMotion`, and `scheduleRefreshVisibleElements()` — it writes to `camera.offset` but lives on the view
 
-Related coordinate-space subtlety to watch: `PinchGestureView` reports its centroid in installer-local coordinates; `TwoFingerPanView` uses `recognizer.view` (the hosting ancestor). These coincide today because the installer is mounted as a `.background` of the canvas ZStack, but would drift if the canvas becomes inset. Prefer installer-local coordinates for any new recognizer that reports points.
+**Possible next step:** if the camera became an environment-injected observable, the toolbar could call camera methods directly, and the UUID-trigger pattern for `homeTrigger` (maybe `undoTrigger`/`redoTrigger` too) could go away.
+
+**One subtlety to watch:** `PinchGestureView` reports its centroid in installer-local coordinates; `TwoFingerPanView` uses `recognizer.view`. These are the same space today only because the installer sits as a `.background` of the canvas ZStack. Inset the canvas and they'd drift apart. For any new recognizer that reports points, use installer-local coordinates.
 
 ---
 
-### Image Placement System
+# Placing images
 
-**Placement Logic:**
+Images go in through `insertImages(atScreenPoint:urls:)`:
 
-Images are placed via `insertImages(atScreenPoint:urls:)`:
+1. **Get a safe copy.** Files are copied into `Application Support/ImportedImages/` by `makeSandboxCopyIfNeeded(from:)`, because the app can't rely on keeping access to the original location. This happens once, inside `insertImages`, so callers just pass raw URLs
+2. **Pick a size.** Pixel dimensions come from `CGImageSource`, then get scaled into world units with the aspect ratio preserved. Capped at 512 world units, floored at 64
+3. **Avoid stacking.** `firstNonOverlappingRect(near:size:)` nudges the image diagonally if it would land on something (up to 64 tries, 24pt per nudge)
+4. **Put it on top.** `nextZIndex` auto-increments so new items land above old ones
 
-1. **File Security:** Files are copied to `Application Support/ImportedImages/` via `makeSandboxCopyIfNeeded(from:)` to ensure sandbox access. This is called once inside `insertImages(atScreenPoint:urls:)` — callers pass raw URLs
-2. **Size Calculation:** 
-   - Pixel dimensions read via `CGImageSource` 
-   - Scaled to world units preserving aspect ratio
-   - Max dimension: 512 world units, min: 64 world units
-3. **Anti-Overlap:** `firstNonOverlappingRect(near:size:)` nudges placement diagonally if overlapping existing items (max 64 attempts, 24pt nudge)
-4. **Z-Ordering:** Auto-incrementing `nextZIndex` ensures new items appear on top
+**Three ways images arrive:** dropping files on the canvas, the toolbar's "Add Item" file picker, and the `@Binding var externalInsertURLs: [URL]?` binding.
 
-**Placement Sources:**
-- Drop gesture (drag files onto canvas)
-- File picker via toolbar "Add Item" button
-- External binding: `@Binding var externalInsertURLs: [URL]?`
+**The model:**
 
-**Data Model:**
-
-Private `PlacedImage` struct within `BoardCanvasView`:
 ```swift
 struct PlacedImage: Identifiable {
     let id: UUID
@@ -172,107 +202,91 @@ struct PlacedImage: Identifiable {
 }
 ```
 
-**Image Rendering:**
-- `FileImageView` (private nested view) loads images asynchronously from file URLs
-- Uses `.resizable()`, `.scaledToFill()` with `.clipped()`
-- Shows `ProgressView` placeholder during load
-- Transform applied: frame size scaled by `scale`, position calculated from world center
+**Drawing an image:** `FileImageView` loads from the file URL asynchronously, uses `.resizable()` + `.scaledToFill()` + `.clipped()`, and shows a `ProgressView` while loading. Its frame is the world size times `scale`, positioned from the world center.
 
 ---
 
-### Drop Handling
+# Handling drops
 
-**Supported Types:**
-- `UTType.image` (PNG, JPEG, etc.)
-- `UTType.gif`
+**Accepts:** `UTType.image` (PNG, JPEG, and friends) and `UTType.gif`.
 
-**Implementation:**
-- `CanvasDropDelegate` (file-scope struct) conforms to `DropDelegate`
-- Validates providers have allowed types
-- Loads file URLs asynchronously via `loadURLsFromProviders`
-- Handles both file representations and data→temp file fallback
+`CanvasDropDelegate` (a file-scope struct) conforms to `DropDelegate`. It checks the dropped providers carry a type we accept, then loads file URLs asynchronously. Some sources hand over a file URL directly; others only give raw data, so there's a fallback that writes the data to a temp file.
 
-**File Loading:**
-
-Shared file-loading helpers live in `Features/BoardCanvas/Import/ItemProviderHelpers.swift` — `loadURLsFromProviders(_:preferredTypes:)` plus `NSItemProvider` extensions (`loadFileURLCompat(for:)`, `loadDataAsTempFileCompat(for:)`). Both `BoardCanvasView` (drop handler) and `FilePickerView` (landing drop zone) call into this shared helper. The earlier duplicate copy in `InsertFileControl.swift` was deleted along with that unused control.
+**Shared loading code:** `Features/BoardCanvas/Import/ItemProviderHelpers.swift` holds `loadURLsFromProviders(_:preferredTypes:)` and the `NSItemProvider` extensions (`loadFileURLCompat(for:)`, `loadDataAsTempFileCompat(for:)`). Both the canvas drop handler and `FilePickerView`'s landing drop zone call it. A duplicate copy used to live in `InsertFileControl.swift`; that file was deleted along with the unused control.
 
 ---
 
-### Integration Points
+# How the canvas connects to the rest of the app
 
-**RootView (App Router):**
+## RootView — the router
 
 **File:** `RootView.swift`
 
-Lightweight root view that routes between the landing screen and the canvas.
+A small view that decides whether you see the landing screen or the canvas.
 
-- Shows `FilePickerView` on launch; transitions to `ContentView` once files are selected
-- Uses `@State private var showCanvas: Bool` to control which screen is displayed
-- Observes `openHandler.importedElements` via `onChange(of:)` so `.refboard` cold launches navigate directly to canvas
-- `ContentView` receives selected URLs as a `let initialURLs: [URL]` (not a binding)
+- Shows `FilePickerView` at launch, switches to `ContentView` once files are chosen
+- `@State private var showCanvas: Bool` is the switch
+- Watches `openHandler.importedElements` with `onChange(of:)`, so opening a `.refboard` from outside the app goes straight to the canvas
+- `ContentView` gets the chosen URLs as a plain `let initialURLs: [URL]`, not a binding
 
-**Observable App Open Handler:**
+## AppOpenHandler
 
-- `AppOpenHandler` is an `@Observable @MainActor final class` (migrated from `ObservableObject` + `@Published`)
-- Injected through the environment at the app root via `.environment(openHandler)` and read via `@Environment(AppOpenHandler.self)` in `RootView` / `ContentView`
+An `@Observable @MainActor final class` (previously `ObservableObject` + `@Published`). Injected at the app root via `.environment(openHandler)` and read with `@Environment(AppOpenHandler.self)` in `RootView` and `ContentView`.
 
-**ContentView:**
-- Wraps `BoardCanvasView` in a `NavigationStack` and attaches `CanvasNavigationToolbar` via `.toolbar { ... }`. The nav bar renders translucent Liquid Glass over the canvas, which extends edge-to-edge underneath.
-- Manages `@State private var urlsToInsert: [URL]?` binding for file picker integration
-- On `.onAppear`, forwards `initialURLs` to `urlsToInsert` for the canvas to consume
-- Presents `.fileImporter` when the toolbar's add button is tapped
-- Presents `.sheet` with `CanvasSettingsView` when the toolbar's settings button is tapped
+## ContentView
 
-**File Picker Integration:**
-- Toolbar's `onAddItem` callback sets `importerPresented = true`
-- `.fileImporter` presentation is driven by `@State private var importerPresented: Bool`
-- `.fileImporter` allows multiple selection of `.image` and `.gif` types
-- Selected URLs are passed to `BoardCanvasView` via `externalInsertURLs` binding
-- `BoardCanvasView` watches binding with `.onChange`, calls `insertImagesAtCenter()`
-- Binding is cleared after processing to reset state
+- Wraps `BoardCanvasView` in a `NavigationStack` and attaches `CanvasNavigationToolbar` through `.toolbar { ... }`. The nav bar is translucent Liquid Glass, and the canvas runs edge-to-edge underneath it
+- Holds `@State private var urlsToInsert: [URL]?` for file-picker handoff
+- On `.onAppear`, passes `initialURLs` into `urlsToInsert` for the canvas to pick up
+- Presents `.fileImporter` when the toolbar's add button fires
+- Presents the `CanvasSettingsView` sheet when the gear fires
 
----
+## File picker handoff
 
-### Performance Considerations
-
-**Current Approach:**
-- `visibleImages: [PlacedImage]` is a culled subset of `placedImages` — only images whose world rects intersect the current viewport are rendered as `FileImageView` instances
-- `imageRenderPlan()` splits `visibleImages` into `detailItems` (full image) and `overviewItems` (low-detail placeholder rect) based on screen size and LOD thresholds
-- `scheduleRefreshVisibleElements()` re-queries `LocalBoardStore.imagePlacements(in:viewport:)` after a 40ms debounce (80ms during active interaction)
-- Texts (`placedTexts`) are not culled — they are lightweight SwiftUI views with no image-loading cost
-
-**Future Optimization Paths:**
-- Cull text elements by viewport (low priority — texts are cheap)
-- Consider Metal-based rendering for extremely large boards (1000+ images)
+1. The toolbar's `onAddItem` sets `importerPresented = true`
+2. `.fileImporter` opens, allowing multiple `.image` and `.gif` files
+3. Chosen URLs go to `BoardCanvasView` through the `externalInsertURLs` binding
+4. `BoardCanvasView` sees the change via `.onChange` and calls `insertImagesAtCenter()`
+5. The binding is cleared so the same URLs don't fire twice
 
 ---
 
-## Canvas Chrome (Native `.toolbar`)
+# Keeping it fast
 
-Decision Status: **Implemented (native iPadOS 26 Liquid Glass)**
+**What we do now:**
 
-### Canvas Navigation Toolbar
+- `visibleImages` is the subset of `placedImages` that actually touches the viewport. Only those become `FileImageView` instances
+- `imageRenderPlan()` splits `visibleImages` into `detailItems` (the real image) and `overviewItems` (a cheap placeholder rectangle), based on on-screen size and level-of-detail thresholds
+- `scheduleRefreshVisibleElements()` re-asks the store which images are visible, but waits 40ms first (80ms while you're actively panning or zooming) so a burst of movement causes one query, not fifty
+- Text elements aren't culled. They're cheap SwiftUI views with no image decoding behind them, so filtering them would cost more than it saves
 
-**Status: Implemented**
+**Later, if needed:**
+- Cull text by viewport (low priority — see above)
+- Metal rendering for very large boards (1000+ images)
 
+---
+
+# Canvas chrome (the native toolbar)
+
+**Status: Implemented (native iPadOS 26 Liquid Glass)**
 **File:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`
 
-All canvas chrome (back, board name, tools, history, add, settings) now lives in a single native SwiftUI `.toolbar` attached to a `NavigationStack` wrapping `BoardCanvasView`. The earlier floating overlay system (`CanvasOverlayLayout` + `CanvasToolbar` + `CanvasStatusBar` + `CanvasSettingsButton`) has been removed.
+Everything around the canvas — back, board name, tools, undo/redo, add, settings — is one native SwiftUI `.toolbar` on the `NavigationStack` wrapping `BoardCanvasView`.
 
-Native `.toolbar` gives the per-button press feedback, glass material, group capsules via `ToolbarItemGroup`, separation via `ToolbarSpacer`, and automatic overflow into a `•••` menu when the bar narrows — all behaviors we were previously hand-rolling.
+We used to hand-build this as floating overlays (`CanvasOverlayLayout` + `CanvasToolbar` + `CanvasStatusBar` + `CanvasSettingsButton`). All of that is deleted. The native toolbar gives us press feedback, the glass material, grouped capsules via `ToolbarItemGroup`, separation via `ToolbarSpacer`, and automatic overflow into a `•••` menu on narrow screens — every one of which we were previously writing ourselves, worse.
 
-**Structure (`CanvasNavigationToolbar: ToolbarContent`):**
+**Layout:**
 
 ```
 [Leading group]                                                [Trailing items]
 < (back)  |  BoardName pill        [Pointer | Group | Text | Add] | [Undo | Redo] | [Settings]
 ```
 
-- **Leading `ToolbarItemGroup(.topBarLeading)`** — back chevron + board name pill share one glass capsule. Board name is a non-interactive glass button (see "Board name pill" below) inside the group, so the group's outer pill is the only glass surface — no nesting.
-- **Trailing groups + `ToolbarSpacer(.fixed)`** between them so each group renders as its own glass capsule (tools+add, history, settings). The spacer is what visually separates the capsules.
-- **Every button uses `Label("Title", systemImage:)`** so the system overflow menu can populate its dropdown with real titles when the bar collapses on narrow widths.
+- The **leading group** puts the back chevron and board name in one glass capsule. The name is a non-interactive glass button inside the group, so only the group's outer pill is glass — glass inside glass looks wrong
+- **Trailing groups** are separated by `ToolbarSpacer(.fixed)`. That spacer is what makes each group render as its own capsule
+- **Every button uses `Label("Title", systemImage:)`** so the overflow menu has real text to show when the bar runs out of room
 
-**Tools group (active-state indicator + Add):**
+**Tools group:**
 
 ```swift
 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -292,13 +306,15 @@ private func toolButton(_ tool: CanvasTool, label: String, icon: String) -> some
 }
 ```
 
-Active state is communicated via tertiary `.tint` *and* the `.isSelected` accessibility trait. Color-only would leave VoiceOver users without an indicator. No `matchedGeometryEffect` — the system handles all transitions natively, and discrete buttons participate in the system overflow menu (a segmented `Picker` does not).
+The active tool is shown two ways: a blue tint *and* the `.isSelected` accessibility trait. Color alone would tell VoiceOver users nothing.
 
-Add sits inside the same `ToolbarItemGroup` as the mode tools because it's the other put-stuff-on-the-canvas action — it shares the glass capsule but is not a mode toggle, so it carries no tint and no `.isSelected` trait. Previously it lived next to Settings, which read like a settings affordance.
+No `matchedGeometryEffect` — the system animates this itself. And separate buttons work in the overflow menu, where a segmented `Picker` wouldn't.
 
-**Board name pill — disabled-button trick:**
+Add lives with the tools because it's the other "put something on the canvas" action. It's not a mode, so it gets no tint and no `.isSelected`. It used to sit next to Settings, where it read like a settings control.
 
-A bare `Text(boardName).glassEffect()` placed in a leading toolbar slot is squeezed by the system to roughly chevron width — it doesn't respect `frame(maxWidth:)` for raw text views. Wrapping the text in a non-interactive glass button makes the system treat it as a real toolbar control, which honors the size:
+**The board name pill, and the disabled-button trick:**
+
+A bare `Text(boardName).glassEffect()` in a leading toolbar slot gets squeezed to about chevron width — the system doesn't honor `frame(maxWidth:)` on raw text there. Wrapping the text in a button that can't be tapped makes the system treat it as a real control, and real controls get their requested size:
 
 ```swift
 Button { } label: {
@@ -313,9 +329,7 @@ Button { } label: {
 .accessibilityRemoveTraits(.isButton) // VoiceOver reads it as a label
 ```
 
-Pre-PR this pill lived in a separate floating `CanvasStatusBar` overlay (now removed).
-
-**Integration (`ContentView`):**
+**How ContentView wires it up:**
 
 ```swift
 NavigationStack {
@@ -335,23 +349,20 @@ NavigationStack {
 }
 ```
 
-`ContentView` no longer hosts a custom overlay layer; the nav bar renders translucent glass over `BoardCanvasView`, which extends edge-to-edge underneath.
-
-**Settings sheet** is still presented from `ContentView` via `.sheet(isPresented: $showingSettings)` when the gear toolbar item fires. See "Canvas Settings Sheet" below.
+The settings sheet is still presented from `ContentView` via `.sheet(isPresented: $showingSettings)`.
 
 ---
 
-## Canvas Navigation Aids
+# Finding your way around
 
-### Minimap
+## Minimap
 
 **Status: Implemented**
-
 **File:** `Features/BoardCanvas/CanvasMinimapView.swift`
 
-A 160×100pt semi-transparent overlay in the bottom-right corner of the canvas that shows where content is relative to the current viewport.
+A 160×100pt see-through panel in the bottom-right corner showing where your content sits and where you're currently looking.
 
-**Architecture:** Pure stateless view — takes `elementRects: [CGRect]` and `viewportRect: CGRect`, recomputed on every body pass.
+It's a **pure view** — it takes two inputs and holds no state of its own:
 
 ```swift
 struct CanvasMinimapView: View {
@@ -360,7 +371,8 @@ struct CanvasMinimapView: View {
 }
 ```
 
-`BoardCanvasView` feeds it via:
+`BoardCanvasView` feeds it:
+
 ```swift
 .overlay(alignment: .bottomTrailing) {
     let rects = allElementRects()   // placedImages + placedTexts worldRects
@@ -371,60 +383,76 @@ struct CanvasMinimapView: View {
 }
 ```
 
-Hidden when the canvas is empty (overlay is conditional on `!rects.isEmpty`).
+It hides itself on an empty canvas, because the overlay is conditional on `!rects.isEmpty`.
 
-**Rendering (SwiftUI `Canvas`):**
-- `worldExtents()` computes the union of all element rects + viewport, expanded by 12% padding — this is the minimap's world frame
-- `project(_:world:into:)` scales any world-space `CGRect` into the minimap's pixel space
-- Element rects rendered as white rounded rectangles (min 2×2pt so tiny elements remain visible)
-- Viewport rendered as a filled `.white.opacity(0.08)` rect + `DesignSystem.Colors.tertiary` stroke
-- `.allowsHitTesting(false)` — decorative only
-- `.accessibilityHidden(true)` — no semantic content for VoiceOver
+**How it draws, step by step:**
 
-### Home Button
+1. `worldExtents()` takes every element rect plus the viewport, finds the box containing all of them, and pads it by 12%
+2. `aspectCorrected(_:toMatch:)` grows that box outward from its center until its shape matches the minimap panel's shape
+3. `project(_:world:into:)` converts any world rectangle into a position inside the panel
+4. Elements draw as white rounded rectangles, never smaller than 2×2pt so tiny items stay visible
+5. The **viewport indicator** draws as a `.white.opacity(0.08)` fill with a `DesignSystem.Colors.tertiary` outline
+
+Plus `.allowsHitTesting(false)` (it's decoration, not a control) and `.accessibilityHidden(true)` (nothing meaningful to announce).
+
+**Why step 2 exists:**
+
+`project` works out its horizontal and vertical scale separately. Feed it a box whose shape doesn't match the panel and it squashes everything to fit — like stretching a photo to fill a differently-shaped frame.
+
+That box's shape isn't fixed. As you pan away from your content, `worldExtents()` grows along the direction you panned, so its shape keeps changing. The result was a viewport indicator that changed shape depending on how far you'd wandered, which is misleading: the indicator represents your iPad screen, and your iPad screen doesn't change shape.
+
+`aspectCorrected` fixes it by making the box match the panel before anything is drawn. Then horizontal and vertical scale come out equal, and every rectangle keeps its true proportions — the viewport indicator and the image thumbnails alike.
+
+It only ever grows the box, never trims it, so nothing can get pushed outside the panel. `viewportCGRect()` is `canvasSize / scale`, meaning it already carries the device's true shape; the minimap's job is just to not throw that away.
+
+The panel itself stays 160×100 in any orientation. The indicator's shape inside it is what tracks the device.
+
+## Home button
+
+**Status: Implemented**
+**Files:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`, `BoardCanvasView.swift`
+
+A house icon in the undo/redo group that flies the camera back to the middle of your content.
+
+**How the button reaches the canvas:** the same UUID trick as undo/redo. `ContentView` owns `@State private var homeTrigger: UUID?`. Tapping sets it to a fresh `UUID()`. `BoardCanvasView` watches it with `.onChange(of: homeTrigger)`, calls `jumpToContentCenter()`, and clears it. The point of a UUID rather than a `Bool` is that every tap is a distinct value, so two taps in a row both register.
+
+**`jumpToContentCenter(animated: Bool = true)`:**
+
+1. Bails unless `canvasSize != .zero` and `camera.scale > 0`
+2. `guard let bounds = union(of: allElementRects()) else { return }` — nothing to center on if the board is empty
+3. Works out the offset that puts the content's middle at the screen's middle:
+   `target = CGSize(width: canvasSize.width/2 - bounds.midX * camera.scale, height: canvasSize.height/2 - bounds.midY * camera.scale)`
+4. If animating and Reduce Motion is off: `.easeInOut(0.4)`, with `scheduleRefreshVisibleElements()` in the `completion:` block so images don't pop in mid-flight
+5. Otherwise: set the offset instantly and refresh immediately
+
+`@Environment(\.accessibilityReduceMotion) private var reduceMotion` is read on `BoardCanvasView` and respected on the animated path.
+
+## Landing snap
 
 **Status: Implemented**
 
-**File:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`, `BoardCanvasView.swift`
+Open a board with content and you land looking at that content, not at empty space near the world origin.
 
-A house icon in the undo/redo group of the toolbar that animates the camera to the bounding-box center of all canvas content.
+**Why it needs `DispatchQueue.main.async`:**
 
-**Trigger pattern:** Same UUID-binding pattern as undo/redo. `ContentView` owns `@State private var homeTrigger: UUID?`; tapping the toolbar button sets it to `UUID()`. `BoardCanvasView` observes it via `.onChange(of: homeTrigger)` and calls `jumpToContentCenter()`, then clears the trigger.
+The snap fires from `onChange(of: elementsToLoad)`, right after `applyElements`. But `jumpToContentCenter` refuses to run unless `canvasSize != .zero`, and `canvasSize` is only set in `BoardCanvasView.onAppear`.
 
-**`jumpToContentCenter(animated: Bool = true)`** (on `BoardCanvasView`):
-1. Guards `canvasSize != .zero, camera.scale > 0`
-2. `guard let bounds = union(of: allElementRects()) else { return }` — no-op on empty canvas
-3. Computes `target = CGSize(width: canvasSize.width/2 - bounds.midX * camera.scale, height: canvasSize.height/2 - bounds.midY * camera.scale)`
-4. If `animated && !reduceMotion`: `.easeInOut(0.4)` animation, `scheduleRefreshVisibleElements()` in the `completion:` block (deferred so images don't pop mid-animation)
-5. Otherwise: instant offset set + immediate refresh
+SwiftUI doesn't guarantee which `onAppear` runs first. Sometimes `ContentView.onAppear` (which sets `elementsToLoad`) fires *before* `BoardCanvasView.onAppear`, so `canvasSize` is still zero and the snap silently gives up.
 
-`@Environment(\.accessibilityReduceMotion) private var reduceMotion` is read on `BoardCanvasView` and passed into the animated path.
+Wrapping the call in `DispatchQueue.main.async` pushes it past the end of the current run-loop pass, by which point every `onAppear` has definitely run.
 
-### Landing Snap
+**This one is not interchangeable with `Task { }`.** A bare `Task` uses Swift concurrency's cooperative scheduler, which doesn't drain the run loop, so it doesn't give the ordering guarantee we're relying on. Everywhere else in this file, prefer `Task { @MainActor in ... }`; here, don't.
 
-**Status: Implemented**
-
-When a board with content is opened, the viewport automatically centers on the content bounding box instead of defaulting to world origin.
-
-**Timing fix — why `DispatchQueue.main.async`:**
-
-The snap fires from `onChange(of: elementsToLoad)` after `applyElements`. The guard in `jumpToContentCenter` requires `canvasSize != .zero`, but `canvasSize` is set in `BoardCanvasView.onAppear`. In some SwiftUI lifecycle orderings, `ContentView.onAppear` (which sets `elementsToLoad`) fires before `BoardCanvasView.onAppear` — so the guard would trip. Wrapping the `jumpToContentCenter(animated: false)` call in `DispatchQueue.main.async` defers it past the current run-loop drain, guaranteeing all `onAppear` handlers have fired first.
-
-`DispatchQueue.main.async` is intentional here — a bare `Task { }` uses Swift concurrency's cooperative scheduler and does not drain the run loop, so it doesn't carry the same ordering guarantee.
-
-An additional fallback in `onAppear` itself: if elements were already applied before `canvasSize` was available (the inverse race), the snap fires there instead.
+There's also a fallback in `onAppear` itself for the opposite race: if elements were already applied before `canvasSize` existed, the snap fires there instead.
 
 ---
 
-### Tool Behavior System
+# Tools
 
 **Status: Implemented**
-
 **File:** `CanvasToolBehavior.swift`
 
-A protocol-based abstraction that lets each toolbar tool define its own gesture handling.
-
-**Architecture:**
+Each toolbar tool decides for itself what a tap or drag means. That decision lives behind a protocol, so adding a tool doesn't mean editing a giant switch statement in the view.
 
 ```
 CanvasTool (enum)              -- toolbar identity, UI selection
@@ -436,7 +464,7 @@ CanvasToolBehavior (protocol)  -- gesture interpretation per tool
     └── TextToolBehavior       -- tap-empty=place text (canvas owns this), tap-item=select, drag-on-item=move, drag-on-empty=pan
 ```
 
-**Protocol:**
+**The protocol:**
 
 ```swift
 struct HitTestItem { let id: UUID; let worldRect: CGRect; let zIndex: Int }
@@ -452,153 +480,123 @@ protocol CanvasToolBehavior {
 }
 ```
 
-Tap methods are split so the view layer can call the right one based on which `.onTapGesture` fired. `tappedItem` receives the `UUID` directly (hit-testing already done by SwiftUI) instead of doing a world-point lookup. Both tap methods are `@MainActor` so implementations can mutate `CanvasSelectionState` directly without `MainActor.run` trampolines.
+Taps are split into two methods so the view can call the right one based on which `.onTapGesture` fired. `tappedItem` gets the `UUID` directly — SwiftUI already figured out what was tapped, so there's no reason to look it up again by position. Both are `@MainActor` so they can change `CanvasSelectionState` directly instead of hopping through `MainActor.run`.
 
-`dragBegan` is **synchronous** — it hit-tests against in-memory `placedImages` (mapped to `HitTestItem`) instead of querying the async store. This eliminates a race where quick drags could end before the async mode decision completed. The `moveToTop` z-order persistence is fired as a non-blocking side effect after mode is set.
+**`dragBegan` is deliberately synchronous.** It hit-tests against the in-memory `placedImages` (converted to `HitTestItem`) rather than asking the store, which would be `async`. When it was async, a quick flick could finish before the mode decision came back, and the drag did nothing. The `moveToTop` z-order write still happens, but it's fired off afterward as a side effect that nobody waits on.
 
-**DragMode enum:** `.pan`, `.moveItem`, `.resizeItem`, `.marqueeSelect`, `.none`
+**`DragMode`:** `.pan`, `.moveItem`, `.resizeItem`, `.marqueeSelect`, `.none`
 
-**Gesture Routing:**
+**How a drag flows:**
 
-A single `DragGesture(minimumDistance: 8)` on the canvas ZStack delegates to the active tool's behavior:
-1. On first `.onChanged` event: handle hit-test first (resize), then tool behavior → cache `DragMode` for gesture duration
-2. Mode decision is synchronous — no async gap between first event and mode being set
-3. Subsequent `.onChanged`: `applyDrag()` routes to pan, move, resize, or marquee based on cached mode
-4. `.onEnded`: commits the appropriate action (move, resize, group resize, or marquee select)
+1. First `.onChanged`: check for a resize handle hit first, then ask the tool → cache the `DragMode`
+2. That decision is synchronous, so there's no window where the drag is live but undecided
+3. Later `.onChanged` events: `applyDrag()` sends them to pan, move, resize, or marquee based on the cached mode
+4. `.onEnded`: commit whichever action was running
 
-**Pointer Tool Behavior:**
-- Drag on item → select it, bring to top, enter `.moveItem` mode
-- Drag on empty canvas → `.pan` mode (normal canvas pan)
-- Tap on item → select it
-- Tap on empty → clear selection
+**Pointer:** drag an item to select it, raise it, and move it. Drag empty space to pan. Tap an item to select. Tap empty to deselect.
 
-**Group Tool Behavior:**
-- Drag on selected item → `.moveItem` mode (group move)
-- Drag on unselected item → add to selection via `extending: true`, `.moveItem` mode
-- Drag on empty canvas → `.marqueeSelect` mode (draws selection rectangle)
-- Tap on item → toggle selection membership (`extending: true`)
-- Tap on empty → clear selection
+**Group:** drag a selected item to move the whole group. Drag an unselected item to add it (`extending: true`) and move. Drag empty space to draw a marquee. Tap an item to toggle its membership. Tap empty to clear.
 
-**Text Tool Behavior:**
-- Drag on item → select it, enter `.moveItem` mode (same as pointer)
-- Drag on empty canvas → `.pan` mode
-- Tap on item → select it (delegates to pointer-style selection)
-- Tap on empty → handled by `BoardCanvasView`'s tap handler, NOT by `tappedEmpty`. The behavior's `tappedEmpty` only clears the selection (so the new placement becomes the active focus); the actual `insertText(at:)` placement happens at the canvas level because the world point lives in the view's coordinate space, not in the protocol's interface. After placement, `insertText` programmatically auto-swaps `activeTool = .pointer` (Figma convention) so subsequent canvas taps don't keep dropping new drafts.
+**Text:** drag an item to select and move it (same as pointer). Drag empty space to pan. Tap an item to select it. Tap empty space is special — see below.
 
-**Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior` maps enum to concrete behavior.
+**Why text's empty-tap is handled by the canvas, not the tool:** placing text needs the world coordinate of the tap, and that lives in the view's coordinate space, which the protocol doesn't expose. So `TextToolBehavior.tappedEmpty` only clears the selection, and `BoardCanvasView` does the actual `insertText(at:)`. After placing, `insertText` switches `activeTool = .pointer` automatically (the Figma convention), so you don't leave a trail of empty text boxes with every tap.
 
-**Adding New Tools:**
-1. Add case to `CanvasTool` enum
-2. Create a struct conforming to `CanvasToolBehavior`
-3. Add mapping in `toolBehavior(for:)` factory
+**Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior`.
+
+**To add a tool:** add a case to `CanvasTool`, write a struct conforming to `CanvasToolBehavior`, add it to the factory.
 
 ---
 
-### Selection & Move System
+# Selection and moving
 
 **Status: Implemented**
-
 **Files:** `CanvasSelectionState.swift`, `HandlePosition.swift`, `SelectionOverlay.swift`, `MarqueeOverlayView.swift`, `BoardCanvasView.swift`
 
-**Selection State:**
+## Selection state
 
 `CanvasSelectionState` is an `@Observable` class owned as `@State` in `BoardCanvasView`:
-- `selectedIDs: Set<UUID>` — currently selected element IDs
-- `dragOffset: CGSize` — world-space offset during active drag-move
-- `isDragging: Bool` — whether a move drag is in progress
-- `select(_:extending:)` — select an item (`extending: true` toggles membership for multi-select)
-- `clearSelection()` — deselect all
 
-**Marquee State** (in `CanvasSelectionState`):
-- `marqueeStartWorld: CGPoint?` — world-space anchor of the marquee drag
-- `marqueeCurrentWorld: CGPoint?` — world-space current corner
-- `marqueeWorldRect: CGRect?` — computed normalized rect
+- `selectedIDs: Set<UUID>` — what's selected
+- `dragOffset: CGSize` — how far the current drag has moved, in world space
+- `isDragging: Bool` — is a move in progress
+- `select(_:extending:)` — select something; `extending: true` toggles it for multi-select
+- `clearSelection()` — deselect everything
+
+**Marquee state** (same class):
+- `marqueeStartWorld: CGPoint?` — where the marquee drag began
+- `marqueeCurrentWorld: CGPoint?` — where it is now
+- `marqueeWorldRect: CGRect?` — those two as a normalized rectangle
 - `isMarqueeing: Bool` — computed from `marqueeStartWorld != nil`
-- `clearMarquee()` — resets marquee state
+- `clearMarquee()`
 
-**Visual Indicators:**
+## What selection looks like
 
-**Files:** `SelectionOverlay.swift` (views), `HandlePosition.swift` (data model)
+**Files:** `SelectionOverlay.swift` (views), `HandlePosition.swift` (model)
 
-- `ResizeHandleView` — shared 10×10pt rounded rectangle handle with white fill and tertiary border, used by both overlay types
-- `SelectionOverlay` — solid 2pt tertiary border + 8 handles, shown on single-selected items
-- `GroupSelectionOverlay` — solid 2pt tertiary border + 8 handles, shown on the group bounding box when multiple items are selected. Same line weight as `SelectionOverlay` so multi-select reads as the same affordance as single-select rather than a different visual language. (Previously dashed; converted to solid as part of the selection-chrome polish pass.)
-- When multi-selected, individual items show a light semi-transparent border instead of full handles
-- `MarqueeOverlayView` — solid 1.5pt tertiary rectangle with 8%-opacity tertiary fill, shown during marquee drag. (Previously dashed.)
+- `ResizeHandleView` — one shared 10×10pt rounded square, white fill, blue border. Used by both overlay types
+- `SelectionOverlay` — solid 2pt blue border + 8 handles, for a single selected item
+- `GroupSelectionOverlay` — solid 2pt blue border + 8 handles around the group's bounding box. Same weight as the single version on purpose, so multi-select doesn't look like a different feature. (It used to be dashed.)
+- Individually selected items inside a group show a faint border instead of full handles
+- `MarqueeOverlayView` — solid 1.5pt blue rectangle with an 8%-opacity blue fill. (Also used to be dashed.)
 
-**Hide-inactive-handles during resize:**
+**Handles hide while you're dragging one:**
 
-Both `SelectionOverlay` and `GroupSelectionOverlay` take an `activeHandle: HandlePosition?` parameter. While the user is dragging one handle, the other seven hide so they don't visually compete with the active gesture; the border stays visible. `CanvasSelectionState.resizeHandle` is the unified "which handle is live" state across single-image, single-text, and group resize alike — the three call sites in `BoardCanvasView` all pass `selection.resizeHandle` through. `nil` means "not resizing" and every handle in the overlay's `handles` set renders.
+Both overlays take an `activeHandle: HandlePosition?`. While you drag one handle, the other seven disappear so they don't compete with what you're doing; the border stays. `CanvasSelectionState.resizeHandle` is the one source of "which handle is live" across single-image, single-text, and group resize — all three call sites in `BoardCanvasView` pass `selection.resizeHandle`. `nil` means "not resizing" and everything renders.
 
-- `HandlePosition` enum (in `HandlePosition.swift`) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`
-- Extracted to its own file to avoid coupling `CanvasSelectionState` to the view layer
-- Each handle has helper properties: `anchorPosition` (opposite handle), `isCorner`, `isLeftSide`, `isTopSide`
+`HandlePosition` (in its own file, to keep `CanvasSelectionState` free of view concerns) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`, plus helpers: `anchorPosition` (the opposite handle), `isCorner`, `isLeftSide`, `isTopSide`.
 
-**Move Interaction:**
+## Moving
 
-1. User drags a selected item → `applyDrag()` sets `selection.dragOffset` in world space
-2. During drag, selected items render with a live offset: `position + (dragOffset * scale)` — no store updates per frame
-3. On drag end, `commitMove()` pushes a `.move` command to history, then applies via `applyMoveDelta()`
+1. You drag a selected item → `applyDrag()` sets `selection.dragOffset` in world space
+2. While dragging, selected items render at `position + (dragOffset * scale)`. The store is never touched — that's what keeps dragging smooth
+3. On release, `commitMove()` records a `.move` command for undo, then applies it through `applyMoveDelta()`
 
-**Resize Interaction:**
+## Resizing
 
 **Status: Implemented (single + group)**
 
-`hitTestHandle(screenPoint:)` is a pure query returning a `HandleHitResult` enum (`.singleItem` or `.group`). The call site in the gesture handler sets up the appropriate resize state based on the result.
+`hitTestHandle(screenPoint:)` is a pure question with no side effects. It returns a `HandleHitResult` (`.singleItem` or `.group`), and the caller sets up whichever resize state that implies.
 
-**Single-item resize** (1 item selected):
-1. `hitTestHandle` checks screen-space distance to 8 handles on the item (hit radius: 30pt)
-2. If hit → `.resizeItem` drag mode, populates single resize state
-3. During drag, `applyResize(translation:)` delegates to `computeResizedRect()` (shared pure function)
-4. Live rect stored in `selection.resizeCurrentRect`
-5. `commitResize()` skips no-op resizes, pushes `.resize` command
+**One item selected:**
+1. `hitTestHandle` measures screen distance to the item's 8 handles (30pt hit radius — generous, because fingers are)
+2. A hit means `.resizeItem` mode and single-resize state
+3. `applyResize(translation:)` calls the shared `computeResizedRect()`
+4. The live rectangle lives in `selection.resizeCurrentRect`
+5. `commitResize()` ignores no-op resizes and records a `.resize` command
 
-**Group resize** (2+ items selected):
-1. `hitTestHandle` checks handles on the group bounding box
-2. If hit → `.resizeItem` drag mode, snapshots all selected items' rects into `groupResizeStartRects`
-3. During drag, `applyGroupResize(translation:)` delegates to `computeResizedRect()` on the group bbox
-4. Each item's live rect is computed via `scaledRect(original:bboxStart:bboxCurrent:)`:
+**Two or more selected:**
+1. `hitTestHandle` checks the handles on the group's bounding box
+2. A hit means `.resizeItem` mode, and every selected item's rectangle is snapshotted into `groupResizeStartRects`
+3. `applyGroupResize(translation:)` runs `computeResizedRect()` on the bounding box
+4. Each item's new rectangle comes from `scaledRect(original:bboxStart:bboxCurrent:)`, which scales position and size relative to the box's origin:
    - `scaleX = bboxCurrent.width / bboxStart.width`
    - `scaleY = bboxCurrent.height / bboxStart.height`
-   - Position and size scaled relative to bbox origin
-5. `commitGroupResize()` pushes `.groupResize(fromRects:toRects:)` command, applies all rects in a single batch via `applyResizeRects(_:)`
+5. `commitGroupResize()` records one `.groupResize(fromRects:toRects:)` command and applies everything in a single batch via `applyResizeRects(_:)`
 
-**Shared resize math:** `computeResizedRect(handle:startRect:translation:) -> CGRect?`
-- Corner handles: aspect-ratio-locked resize, opposite corner pinned
-- Edge handles: single-axis stretch, opposite edge pinned
-- Minimum dimension enforced (`minImageDimensionWorld = 64`)
-- Used by both single and group resize paths
+**Shared math:** `computeResizedRect(handle:startRect:translation:) -> CGRect?`
+- Corner handles keep the aspect ratio and pin the opposite corner
+- Edge handles stretch one axis and pin the opposite edge
+- Nothing shrinks below `minImageDimensionWorld = 64`
+- Both single and group paths use it, so they can't drift apart
 
-**Single Resize State** (in `CanvasSelectionState`):
-- `resizeHandle: HandlePosition?` — which handle is being dragged (shared with group resize)
-- `resizeStartRect: CGRect?` — element's world rect at drag start
-- `resizeCurrentRect: CGRect?` — live rect during drag
-- `resizeElementID: UUID?` — element being resized
-- `isResizing: Bool` — computed from `resizeHandle != nil`
-- `clearResize()` — resets all single resize state
+**Single resize state** (in `CanvasSelectionState`): `resizeHandle`, `resizeStartRect`, `resizeCurrentRect`, `resizeElementID`, `isResizing` (computed from `resizeHandle != nil`), `clearResize()`.
 
-**Group Resize State** (in `CanvasSelectionState`):
-- `groupResizeStartRects: [UUID: CGRect]?` — original rects of all selected items
-- `groupResizeBBoxStart: CGRect?` — group bounding box at resize start
-- `groupResizeBBoxCurrent: CGRect?` — live bounding box during resize
-- `isGroupResizing: Bool` — computed from `groupResizeStartRects != nil`
-- `clearGroupResize()` — resets all group resize state
+**Group resize state:** `groupResizeStartRects: [UUID: CGRect]?`, `groupResizeBBoxStart`, `groupResizeBBoxCurrent`, `isGroupResizing` (computed from `groupResizeStartRects != nil`), `clearGroupResize()`.
 
-**Performance:**
+## Keeping store writes orderly
 
-Store updates are serialized via `enqueueStoreMutation()` — each mutation cancels any in-flight task and awaits its completion before running. This prevents stale writes from rapid undo/redo or overlapping operations. Each mutation uses batched `elements(for:)` + `upsert(elements:)` calls (2 actor round-trips, not 2N).
+All store changes go through `enqueueStoreMutation()`. Each new one cancels whatever is in flight and waits for it to finish before starting. This stops an older, slower write from landing after a newer one and undoing it — which is easy to trigger by mashing undo/redo.
+
+Each change uses batched `elements(for:)` + `upsert(elements:)`: two round-trips to the actor, not two per element.
 
 ---
 
-### Command History (Undo/Redo)
+# Undo and redo
 
 **Status: Implemented**
-
 **Files:** `CanvasCommandHistory.swift`, `BoardCanvasView.swift`, `ContentView.swift`
 
-A command pattern for reversible canvas operations. Each user action (move, resize, insert) is recorded as a lightweight command that can be undone and redone.
-
-**Architecture:**
+Every reversible action is recorded as a small description of what changed and what it changed from — enough to play it backwards or forwards, without storing whole board snapshots.
 
 ```
 CanvasCommand (enum)         — describes a reversible operation
@@ -607,9 +605,7 @@ BoardCanvasView              — executes commands via helper methods
 ContentView                  — triggers undo/redo from toolbar
 ```
 
-**Command Types:**
-
-| Command | Data Stored | Undo | Redo |
+| Command | Data stored | Undo | Redo |
 |---------|-------------|------|------|
 | `.move` | `elementIDs: Set<UUID>`, `delta: CGSize` | Move by -delta | Move by +delta |
 | `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Restore fromRect | Restore toRect |
@@ -617,39 +613,32 @@ ContentView                  — triggers undo/redo from toolbar
 | `.insert` | `snapshots: [PlacedElementSnapshot]` | Remove elements | Re-add elements |
 | `.delete` | `snapshots: [PlacedElementSnapshot]` | Re-add elements | Remove elements |
 
-`PlacedElementSnapshot` captures everything needed to fully add/remove an element: `id`, `url`, `worldRect`, `zIndex`, and the full `CMCanvasElement`.
+`PlacedElementSnapshot` holds everything needed to fully recreate an element: `id`, `url`, `worldRect`, `zIndex`, and the complete `CMCanvasElement`.
 
-**History Management:**
+**Managing history:**
 
-- `CanvasCommandHistory` is an `@Observable @MainActor` class owned as `@State` in `ContentView` and passed to `BoardCanvasView` (required init parameter, no default)
-- `push(_:)` — appends to undo stack, clears redo stack
-- `popUndo()` / `popRedo()` — moves commands between stacks
-- `canUndo` / `canRedo` — computed properties for UI state
-- `clear()` — wipes both undo and redo stacks; called after a board import so stale commands from the previous board can't resurrect removed assets via redo
+- `CanvasCommandHistory` is `@Observable @MainActor`, owned as `@State` in `ContentView` and handed to `BoardCanvasView` as a required init parameter (no default — an accidental second history would silently split the undo stack)
+- `push(_:)` adds to undo and clears redo
+- `popUndo()` / `popRedo()` move commands between the stacks
+- `canUndo` / `canRedo` drive button state
+- `clear()` wipes both. Called after importing a board, so undo can't reach back into the previous board and try to resurrect assets that no longer exist
 
-**Integration:**
+**Wiring:** toolbar buttons fire the `undoTrigger` / `redoTrigger` UUID bindings. `BoardCanvasView` watches them and calls `performUndo()` / `performRedo()`, which pop a command and dispatch to shared helpers: `applyMoveDelta()`, `applyResizeRect()`, `applyResizeRects(_:)`, `addElements()`, `removeElements()`.
 
-- Toolbar undo/redo buttons fire UUID trigger bindings (`undoTrigger`, `redoTrigger`)
-- `BoardCanvasView` observes triggers via `.onChange` and calls `performUndo()` / `performRedo()`
-- Each method pops a command and dispatches to shared helpers: `applyMoveDelta()`, `applyResizeRect()`, `applyResizeRects(_:)` (batched group resize), `addElements()`, `removeElements()`
-
-**Adding New Undoable Operations:**
-
-1. Add a case to `CanvasCommand` enum
-2. Push the command in the action's commit function
-3. Add undo/redo handling in `performUndo()` / `performRedo()`
+**To make a new action undoable:** add a case to `CanvasCommand`, push it in that action's commit function, handle it in `performUndo()` / `performRedo()`.
 
 ---
 
-### Selection Action Bar
+# Selection action bar
 
 **Status: Implemented**
-
 **Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`
 
-Floating action bar that appears next to the current canvas selection, hosting selection-scoped actions (currently: delete). Chosen over a context menu after trials with `.contextMenu(menuItems:preview:)` — the default preview couldn't elevate the whole group, and a custom preview couldn't blur non-source items.
+A small floating bar that appears next to whatever you've selected. Right now it holds one button: delete.
 
-**Visual Design (`CanvasSelectionActionBar`):**
+We tried `.contextMenu(menuItems:preview:)` first. Its default preview couldn't lift a whole multi-selection, and a custom preview couldn't blur the items that weren't part of it. So: a floating bar.
+
+**The button:**
 
 ```swift
 Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
@@ -659,19 +648,22 @@ Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
     .controlSize(.large)
 ```
 
-Title is preserved for VoiceOver but hidden visually via `.labelStyle(.iconOnly)`. The native glass button supplies its own material, press animation, and shape — none of the previous hand-rolled `RoundedRectangle` + shadow chrome.
+The title still exists for VoiceOver; `.labelStyle(.iconOnly)` just hides it visually. The native glass style brings its own material, press animation, and shape, replacing hand-rolled `RoundedRectangle` + shadow code.
 
-**Positioning — `SelectionActionBarLayer` (persistent + animated):**
+**Positioning — and why the bar is always mounted**
 
-The bar is **permanently mounted** in `BoardCanvasView`'s ZStack via `SelectionActionBarLayer`, not conditionally inserted. Reason: a Liquid Glass backdrop filter on a freshly inserted, top-`zIndex`, `.position()`-ed view captures its backdrop *before* the canvas beneath it has settled in that compositing pass — caches the wrong light/dark variant until an unrelated re-composite forces a re-sample. The "tap again to fix it" behavior. A persistent view with stable identity never takes that bad first sample.
+`SelectionActionBarLayer` keeps the bar in `BoardCanvasView`'s ZStack permanently. It's never conditionally inserted, even though it's usually invisible.
 
-Layer responsibilities:
-- **Show/hide** — opacity 1/0 driven by `isVisible = boundingBox != nil && !isInteracting`, where `isInteracting = isDragging || isResizing || isGroupResizing || isMarqueeing`.
-- **Position** — `displayCenter = isVisible ? liveCenter : lastCenter`. Parking at `lastCenter` while interacting prevents re-publishing a moving position every gesture frame, which would otherwise spawn a fresh `.snappy` animation per frame on the (invisible) bar — invisible but real frame-budget cost that showed up as text-resize jitter.
-- **Position tracking** — `@State private var lastCenter` is updated via `.onChange(of: liveCenter)`, guarded by `isVisible` so it doesn't drift during interactions. Live center comes from `boundingBox.midX/maxY * scale + offset (+ 32pt gap)`.
-- **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar snaps to/from hidden instantly at drag start/end instead of animating opacity + position for 0.2s on top of the gesture (the source of "first ~0.2s of every drag is jittery" before this fix).
+The reason is a Liquid Glass quirk. A glass view that's freshly inserted at the top `zIndex` and positioned with `.position()` samples what's behind it *before* the canvas underneath has settled in that compositing pass. It caches the wrong light/dark appearance and keeps it until something unrelated forces a re-sample. That's the "tap it again and it looks right" bug. A view that's always mounted, with stable identity, never takes that bad first sample.
 
-Host wiring (`BoardCanvasView`):
+So the layer's job is to show, hide, and move a view that already exists:
+
+- **Show/hide** — opacity 1 or 0, driven by `isVisible = boundingBox != nil && !isInteracting`, where `isInteracting = isDragging || isResizing || isGroupResizing || isMarqueeing`
+- **Position** — `displayCenter = isVisible ? liveCenter : lastCenter`. Parking at `lastCenter` during interaction matters: publishing a moving position every frame would start a fresh `.snappy` animation every frame on an invisible view. Invisible, but still spending real frame budget — it showed up as jitter while resizing text
+- **Position tracking** — `@State private var lastCenter` updates via `.onChange(of: liveCenter)`, guarded by `isVisible` so it doesn't drift during interactions. Live center is `boundingBox.midX/maxY * scale + offset`, plus a 32pt gap
+- **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar appears and disappears instantly at drag start and end. Animating opacity and position for 0.2s on top of a starting gesture was the cause of "the first fraction of every drag feels rough"
+
+**Host wiring:**
 
 ```swift
 SelectionActionBarLayer(
@@ -687,27 +679,28 @@ SelectionActionBarLayer(
 .zIndex(Double(Int.max))
 ```
 
-**Delete Flow:**
-- `deleteSelection()` fetches authoritative `CMCanvasElement`s from `LocalBoardStore` via `elements(for:)` before snapshotting — avoids fabricating elements from the view's `placedImages` cache, which could be stale
-- Snapshots feed a `.delete(snapshots:)` command pushed onto `CanvasCommandHistory`, then `removeElements()` applies the change
-- Fallback paths: `fallbackImageElement(for:)` and `fallbackTextElement(for:)` handle rare view/store desync (image and text branches)
+**Deleting:**
+
+- `deleteSelection()` fetches the real `CMCanvasElement`s from `LocalBoardStore` via `elements(for:)` before snapshotting. Building them from the view's `placedImages` cache would risk snapshotting stale data, and undo would then restore something subtly wrong
+- Those snapshots become a `.delete(snapshots:)` command, then `removeElements()` applies the change
+- `fallbackImageElement(for:)` and `fallbackTextElement(for:)` cover the rare case where the view and store disagree
 
 ---
 
-### Text Elements
+# Text elements
 
 **Status: Implemented**
 
 **Files:**
-- `BoardCanvasView.swift` (`PlacedText` struct, `TextElementView` nested struct, `insertText`/`commitTextEdit`, resize state, render path)
-- `Features/BoardCanvas/CanvasTextField.swift` (UIKit-backed editing input)
+- `BoardCanvasView.swift` (`PlacedText`, `TextElementView`, `insertText`/`commitTextEdit`, resize state, render path)
+- `Features/BoardCanvas/CanvasTextField.swift` (the UIKit editing field)
 - `Features/BoardCanvas/CanvasToolBehavior.swift` (`TextToolBehavior`)
-- `Features/BoardCanvas/CanvasCommandHistory.swift` (`.editTextContent`, `.resizeText`, augmented `.groupResize`)
+- `Features/BoardCanvas/CanvasCommandHistory.swift` (`.editTextContent`, `.resizeText`, extended `.groupResize`)
 - `Persistence/CanvasModels.swift` (`CMCanvasElementPayload.text` + `wrapWidth`)
 
-Text lives alongside images as a parallel `placedTexts: [PlacedText]` array on `BoardCanvasView`, not unified into a single `PlacedItem` enum yet. Unification was deferred until a third element type appears — until then, two arrays + branched paths are simpler than a protocol abstraction.
+Text lives in its own `placedTexts: [PlacedText]` array beside `placedImages`, rather than both being unified behind one `PlacedItem` type. Two arrays with a few branched code paths is genuinely simpler than a protocol abstraction until a third element type shows up. When one does, that's the moment to unify.
 
-**Data model — `PlacedText`:**
+**The model:**
 
 ```swift
 private struct PlacedText: Identifiable {
@@ -721,13 +714,15 @@ private struct PlacedText: Identifiable {
 }
 ```
 
-`fontSize` is the single authoritative typographic state — corner-drag resize, the future font-size picker, and group resize all mutate this same field. `worldRect.size` is downstream-derived from the rendered geometry (see "scaleEffect rendering" below) — never written to directly except for `worldRect.origin`.
+`fontSize` is the one true source of text size. Corner-drag resize, group resize, and any future font-size picker all change this same field. `worldRect.size` is *measured from what actually rendered* — never assigned directly, except for `worldRect.origin`.
 
-**scaleEffect rendering — why text uses a different visual-scale strategy than images:**
+## Why text scales differently than images
 
-Images render at `worldRect.size * scale` (frame and position both pre-scaled by canvas zoom). Trying the same approach for text caused a sub-pixel layout drift bug: a wrap-locked string that fit on one line at zoom 1 wrapped to two lines at zoom 0.2 because CoreText's hinting at small fonts makes glyphs slightly wider than a linear scale predicts. Layout decisions weren't invariant under zoom.
+Images render at `worldRect.size * scale` — frame and position both multiplied by zoom up front.
 
-Fix: text renders at **base/world units** (no `* scale` on font, frame, or wrap width) and then has `.scaleEffect(scale, anchor: .center)` applied at the end. Layout happens once at base scale; scaleEffect only visually scales the result. Wrapping decisions become invariant — the same string fits the same way at every zoom level.
+Doing that to text broke it. A string that fit on one line at zoom 1.0 wrapped onto two lines at zoom 0.2. The cause is CoreText hinting: at small font sizes, glyphs come out slightly wider than a straight multiplication predicts. So layout decisions weren't the same at every zoom — which is unacceptable, because wrapping is a layout decision the user can see.
+
+The fix is to lay text out **once, at base size**, and scale the finished result:
 
 ```swift
 sizedContent           // base-scale layout: font, frame, wrap all in world units
@@ -744,24 +739,28 @@ sizedContent           // base-scale layout: font, frame, wrap all in world unit
     }
 ```
 
-`onGeometryChange` is the loop that keeps `worldRect.size` in sync with the actual rendered text — used by hit-testing, marquee, group bbox math.
+No `* scale` on font, frame, or wrap width. `.scaleEffect` only magnifies the finished picture, so wrapping is identical at every zoom.
 
-**Rounding inside `of:` (not the action closure):** during a resize drag, intermediate `fontSize`/`wrapWidth` values hit CoreText sub-pixel hinting, which fluctuates the measured size by fractions of a point per frame. Without filtering, every fluctuation fires `onGeometryChange` → writes the binding → re-renders → re-measures → visible jitter. Rounding inside `of:` means the observer only fires when the *rounded* value changes, so sub-pixel noise doesn't trigger the action at all. The bbox still tracks real drag-driven size changes (which are multi-point deltas).
+`onGeometryChange` is the feedback loop that keeps `worldRect.size` matching the text that actually rendered. Hit-testing, marquee selection, and group bounding boxes all depend on it.
 
-**Auto-width vs wrap-mode rendering:**
+**Why the rounding sits in `of:` and not in the action closure:** during a resize drag, in-between `fontSize`/`wrapWidth` values hit that same CoreText sub-pixel behavior, and the measured size wobbles by fractions of a point each frame. Left alone, each wobble fires `onGeometryChange` → writes the binding → re-renders → re-measures → visible jitter. Rounding inside `of:` means the observer only fires when the *rounded* number changes, so the noise never reaches the action at all. Real drag-driven changes are multiple points, so they still get through.
 
-`PlacedText.wrapWidth` toggles between two distinct render paths:
+## Two width modes
 
-- **Auto-width (`wrapWidth == nil`):** Text grows horizontally with content; only manual newlines (Enter) create line breaks. The editing TextField uses a `ZStack(alignment: .topLeading)` with a hidden sacrificial `Text(content).fixedSize(horizontal: true, vertical: true).opacity(0)` underneath that drives the ZStack's intrinsic width to the longest line. The TextField then fills that exact width and never has to auto-wrap. Without the sacrificial Text, an `axis: .vertical` TextField would wrap content into its `minWidth` while typing and then unwrap on commit when the static Text replaces it — visible jump.
-- **Wrap mode (`wrapWidth != nil`):** Explicit `.frame(width: wrapWidth, alignment: .leading)` plus `.fixedSize(horizontal: false, vertical: true)`. Text reflows inside the fixed width; height stays content-derived.
+`PlacedText.wrapWidth` picks between two different render paths:
 
-The body splits into `body` → `sizedContent` → `textOrField` so the auto-width path doesn't carry an unconditional `.frame(width:)` modifier. Earlier versions had `.frame(width: placed.wrapWidth.map { $0 * scale })` always in the chain; even when nil it interacted with the trailing `.fixedSize` to produce wrapping at small fonts.
+- **Auto-width (`wrapWidth == nil`)** — the text box grows sideways as you type; only pressing Enter breaks a line. The editing field uses a `ZStack(alignment: .topLeading)` with an invisible `Text(content).fixedSize(horizontal: true, vertical: true).opacity(0)` underneath it. That hidden copy forces the ZStack's width to match the longest line, and the TextField simply fills it. Without that trick, a vertical-axis TextField wraps to its minimum width while you type and then un-wraps when the static `Text` takes over on commit — a visible jump
+- **Wrap mode (`wrapWidth != nil`)** — an explicit `.frame(width: wrapWidth, alignment: .leading)` plus `.fixedSize(horizontal: false, vertical: true)`. Text reflows inside that width; height follows the content
 
-**`CanvasTextField` — UITextView wrapper for editing:**
+The view splits into `body` → `sizedContent` → `textOrField` specifically so the auto-width path never carries a `.frame(width:)` modifier. An earlier version always had `.frame(width: placed.wrapWidth.map { $0 * scale })` in the chain, and even with a nil width it interacted with the trailing `.fixedSize` to cause wrapping at small fonts.
 
-`File:` `CanvasTextField.swift`
+## `CanvasTextField` — why editing uses UITextView
 
-SwiftUI's `TextField` has no API to control caret thickness. The native UIKit caret is a fixed ~2pt regardless of font size, and the surrounding `.scaleEffect` shrinks it to sub-pixel at low zoom. `CanvasTextField` is a `UIViewRepresentable` wrapping `CanvasUITextView` (a `UITextView` subclass) that overrides `caretRect(for:)`:
+**File:** `CanvasTextField.swift`
+
+SwiftUI's `TextField` gives no control over caret thickness. UIKit's caret is a fixed ~2pt, and the surrounding `.scaleEffect` shrinks it to less than a pixel when you're zoomed out — the caret effectively vanishes.
+
+So `CanvasTextField` is a `UIViewRepresentable` around `CanvasUITextView`, a `UITextView` subclass that overrides the caret:
 
 ```swift
 override func caretRect(for position: UITextPosition) -> CGRect {
@@ -773,20 +772,23 @@ override func caretRect(for position: UITextPosition) -> CGRect {
 }
 ```
 
-Base thickness is `2.5 / canvasScale` so that after `scaleEffect(scale)` brings it down by `scale`, visible thickness lands at exactly 2.5pt at every zoom × font combination. Caret height continues to follow text height — only thickness is held constant.
+Drawing it at `2.5 / canvasScale` means that after `.scaleEffect(scale)` shrinks it back down, it lands at exactly 2.5pt on screen at every zoom and font size. Height still follows the text; only thickness is pinned.
 
-Other `CanvasTextField` notes:
-- `textContainerInset.right = caretThickness` reserves trailing space inside the view bounds so the caret doesn't clip at end-of-text. SwiftUI `TextField` has analogous built-in slack; `UITextView` doesn't unless asked.
-- Focus is driven from the `isEditing` flag in `updateUIView` via `becomeFirstResponder()` / `resignFirstResponder()` (guarded by `isFirstResponder` to avoid redundant calls). `@FocusState` isn't needed — the wrapper owns its first-responder lifecycle.
-- `Coordinator` implements `UITextViewDelegate.textViewDidChange` to push content into the binding, and `textViewDidEndEditing` to fire `onCommit` (which calls `commitTextEdit(id:)` in the parent).
-- `tintColor = DesignSystem.Colors.primary` so caret + selection highlight are dark, contrasting the tertiary-blue editing border (blue-on-blue would blend).
-- `textContainerInset = .zero` and `lineFragmentPadding = 0` so editing layout matches the static `Text` used post-commit (no jump).
+Other notes:
+- `textContainerInset.right = caretThickness` reserves room so the caret doesn't get clipped at the end of a line. SwiftUI's `TextField` has this slack built in; `UITextView` doesn't unless you ask
+- Focus is driven by the `isEditing` flag in `updateUIView` calling `becomeFirstResponder()` / `resignFirstResponder()`, guarded by `isFirstResponder` to skip redundant calls. No `@FocusState` needed — the wrapper owns its own first-responder lifecycle
+- `Coordinator` implements `textViewDidChange` to push text into the binding, and `textViewDidEndEditing` to fire `onCommit` (which calls the parent's `commitTextEdit(id:)`)
+- `tintColor = DesignSystem.Colors.primary` makes the caret and selection highlight dark. They'd disappear against the blue editing border otherwise
+- `textContainerInset = .zero` and `lineFragmentPadding = 0` so the editing layout matches the static `Text` shown after commit — otherwise text visibly shifts when you finish typing
 
-**Edit lifecycle:**
+## The editing lifecycle
 
-`@State private var editingTextID: UUID? = nil` on `BoardCanvasView` — the id of the text currently being edited, or nil. `@State private var pendingTextInserts: Set<UUID>` tracks newly-placed drafts. `@State private var editingTextOriginalContent: String?` snapshots content at re-edit start so undo can revert.
+Three pieces of state on `BoardCanvasView`:
+- `@State private var editingTextID: UUID?` — which text is being edited, if any
+- `@State private var pendingTextInserts: Set<UUID>` — drafts placed but not yet committed
+- `@State private var editingTextOriginalContent: String?` — what the text said before a re-edit, so undo can put it back
 
-Placement (text tool active + tap empty canvas):
+**Placing** (text tool active, tap on empty canvas):
 
 ```swift
 private func insertText(at worldPoint: CGPoint) {
@@ -804,7 +806,7 @@ private func insertText(at worldPoint: CGPoint) {
 }
 ```
 
-Re-edit (tap-once-selects, tap-twice-edits):
+**Re-editing** (tap once to select, tap again to edit):
 
 ```swift
 .onTapGesture {
@@ -818,51 +820,55 @@ Re-edit (tap-once-selects, tap-twice-edits):
 }
 ```
 
-Standard across pointer/group/text tools because all three can produce a single-text selection.
+This works the same under all three tools, since any of them can leave you with a single text selected.
 
-`commitTextEdit(id:)` is the shared commit point. Idempotent for newly-placed ids via `pendingTextInserts.remove(id)`. For re-edits, scoped to `editingTextID == id` so a re-fire (selection-change commit followed by focus-loss) sees a nil original on the second pass and skips a duplicate command push.
+**`commitTextEdit(id:)` is the one place edits are saved.** It's safe to call twice for a newly placed id because `pendingTextInserts.remove(id)` makes the second call a no-op. For re-edits it's scoped to `editingTextID == id`, so a double-fire (selection change, then focus loss) finds a nil original on the second pass and skips pushing a duplicate command.
 
-Commit branches:
-- **Newly placed, empty content** → discard silently, no history.
-- **Newly placed, non-empty** → push `.insert` command, upsert to store.
-- **Re-edit, empty content** → push `.delete` whose snapshot rebuilds the element from the *original* content (so undo restores the pre-clear text), delete from store.
-- **Re-edit, content changed** → push `.editTextContent(from, to)`, upsert. Same content as start = no command push.
-- **Re-edit, content unchanged** → upsert anyway (idempotent), no command.
+What it does depends on the situation:
 
-**Drag while editing — disabled by design:**
+| Situation | What happens |
+|---|---|
+| New, still empty | Discarded quietly. No history entry |
+| New, has content | Push `.insert`, write to store |
+| Re-edit, now empty | Push `.delete` whose snapshot rebuilds the element from the **original** content, so undo brings the text back rather than an empty box. Delete from store |
+| Re-edit, content changed | Push `.editTextContent(from, to)`, write to store |
+| Re-edit, content identical | Write to store anyway (harmless), no history entry |
 
-Drag-to-move is disabled when a text element is being edited. The drag handler's first `onChanged` event checks `editingTextID` and the world-rect of the editing text; if the drag started inside it, `currentDragMode` is set to `.none` and the gesture no-ops for the rest of its lifetime (subsequent onChanged events early-return; onEnded skips its commit dispatcher).
+## Dragging while editing is disabled on purpose
 
-This matches the convention used by Apple Notes / Pages / Keynote and by Figma / Miro: editing and moving are mutually exclusive modes. To move an editing text the user must first tap outside (which commits the edit via the existing selection-change / empty-canvas-tap paths), then drag in selection mode.
+If a text is being edited, dragging inside it does nothing. The drag handler's first `onChanged` checks `editingTextID` and that text's world rect; if the drag started inside, `currentDragMode` becomes `.none` and the gesture stays inert for its whole lifetime.
 
-The convention also sidesteps a fight between SwiftUI's `DragGesture` and UITextView's internal text-selection gestures. UITextView's recognizers grab the live touches; SwiftUI's drag only sees the start and end translations, producing a "first frame / last frame teleport" if we tried to live-track the move. Disabling the move drag while editing leaves UITextView's native text-selection behavior intact as the natural fallback for in-field drags.
+Two reasons, both good:
 
-**Commit triggers:**
+**Convention.** Apple Notes, Pages, Keynote, Figma, and Miro all treat editing and moving as separate modes. To move a text you're editing, tap outside first (which commits through the existing paths), then drag.
 
-The wrapper's `textViewDidEndEditing` fires `onCommit` when the UITextView resigns first-responder, but UITextView doesn't auto-resign when the user taps another SwiftUI view — only when explicitly told to. Three explicit commit paths cover the gaps:
+**It avoids an unwinnable fight.** UITextView's own text-selection recognizers grab the live touches. SwiftUI's `DragGesture` only ends up seeing the start and end, so live-tracking a move would look like a teleport from first frame to last. Disabling the move leaves UITextView's native text selection working normally, which is the behavior you actually want inside a text field.
 
-1. `onChange(of: selection.selectedIDs)` — tapping any other element (image or text) changes selection; the watcher calls `commitTextEdit(editing)` if `selectedIDs` now contains anything other than the editing text. Guarded with `!newIDs.isEmpty` so a `clearSelection()` (e.g. inside `insertText`) doesn't commit-and-remove the brand-new draft in the same render frame (which crashed before the guard was added).
-2. `onChange(of: activeTool)` — tapping a different toolbar button commits before swapping. The `skipNextToolChangeCommit` one-shot flag bypasses this for the auto-swap fired by `insertText` itself.
-3. Empty-canvas tap handler (`onTapGesture(coordinateSpace: .local)` on the grid Canvas) — calls `commitTextEdit` at the top before deciding whether to place a new text or run the tool's `tappedEmpty`.
+## Three ways an edit gets committed
 
-The selection-change watcher is the most common path; the other two cover edge cases (tool switch, empty-tap commit).
+`textViewDidEndEditing` fires `onCommit` when the text view gives up first-responder — but UITextView doesn't do that on its own when you tap some other SwiftUI view. It has to be told. So three explicit paths cover the gaps:
 
-**Resize semantics — corners scale font, side handles set wrap width:**
+1. **`onChange(of: selection.selectedIDs)`** — the common one. Tapping any other element changes the selection, and the watcher commits if `selectedIDs` now holds anything other than the text being edited. Guarded with `!newIDs.isEmpty` so that a `clearSelection()` — which `insertText` itself calls — doesn't commit and delete a brand-new draft in the same frame. That crashed before the guard existed
+2. **`onChange(of: activeTool)`** — switching tools commits first. The one-shot `skipNextToolChangeCommit` flag exempts the auto-swap that `insertText` performs
+3. **The empty-canvas tap handler** — `onTapGesture(coordinateSpace: .local)` on the grid `Canvas` commits before deciding whether to place new text or run the tool's `tappedEmpty`
 
-Solo-text selection shows handles at the four corners + left/right edge centers (top/bottom hidden — text height is content-derived, no meaningful axis to drag). `SelectionOverlay` accepts a `Set<HandlePosition>` parameter so text passes a restricted set; `TextElementView.textHandles` is `fileprivate` so the canvas-level external chrome can use the same set.
+## Resizing text: corners change size, sides change width
 
-`hitTestHandle` returns a new `.singleTextItem(handle, text)` case for solo-text hits and rejects top/bottom edges. Multi-element selections fall through to the existing `.group` path (now augmented to handle text).
+A single selected text shows handles at the four corners plus the left and right edge centers. Top and bottom are hidden because text height comes from its content — there's nothing meaningful to drag. `SelectionOverlay` takes a `Set<HandlePosition>` so text can pass a restricted set; `TextElementView.textHandles` is `fileprivate` so the canvas-level chrome can use the same set.
 
-`applyTextResize(translation:)` handles three handle classes:
-- **Corner drag (any of 4)** → uniform Freeform-style font scale. Reuses the aspect-locked `computeResizedRect` to derive a width ratio, multiplies the start fontSize by that ratio. If wrapWidth was set, scales it proportionally. Origin tracks the new rect (opposite corner anchored). Min font 8pt floor.
+`hitTestHandle` returns a `.singleTextItem(handle, text)` case for solo-text hits and refuses top/bottom edges. Multi-selections fall through to `.group`, which now understands text.
 
-  `computeResizedRect` accepts an optional `minDimension` parameter (default = `minImageDimensionWorld`, 64pt). The text path overrides this to `startRect.width * (minTextFontSize / startFontSize)` so the rect floor matches the text's own font-size minimum. Without the override, the rect would clamp at 64pt before fontSize hit its 8pt floor — visible "snap" when the user shrinks small text.
-- **Right-edge drag** → sets `wrapWidth`, left edge anchored. Reference width = existing wrapWidth or current `worldRect.width` (auto-width text). Min wrap width 40pt floor.
-- **Left-edge drag** → sets `wrapWidth` AND shifts `origin.x = startRect.maxX - newWrap` so the right edge stays anchored (Figma convention).
+`applyTextResize(translation:)` handles three cases:
 
-Direct mutation of `placed.fontSize` / `wrapWidth` / `origin` during drag is fine: the view re-renders, `onGeometryChange` re-derives `worldRect.size`, and undo captures the start state for reversal.
+- **Corner drag** → scales the font, Freeform-style. It reuses the aspect-locked `computeResizedRect` to get a width ratio, then multiplies the starting `fontSize` by it. If `wrapWidth` was set, it scales too. The origin follows the new rect, keeping the opposite corner pinned. Font can't go below 8pt.
 
-**`.resizeText` command:**
+  `computeResizedRect` takes an optional `minDimension` (defaulting to `minImageDimensionWorld`, 64). Text overrides it with `startRect.width * (minTextFontSize / startFontSize)` so the rectangle's floor lines up with the font's own 8pt floor. Without the override, the rectangle stops shrinking at 64pt while the font still has room to go — which feels like the text "snapping" and refusing to get smaller
+- **Right-edge drag** → sets `wrapWidth`, left edge pinned. Reference width is the existing `wrapWidth`, or the current `worldRect.width` for auto-width text. Minimum 40pt
+- **Left-edge drag** → sets `wrapWidth` *and* shifts `origin.x = startRect.maxX - newWrap`, so the right edge stays put (Figma convention)
+
+Changing `placed.fontSize` / `wrapWidth` / `origin` directly during the drag is fine here: the view re-renders, `onGeometryChange` re-derives `worldRect.size`, and undo already captured the starting state.
+
+**The command:**
 
 ```swift
 case resizeText(
@@ -873,23 +879,27 @@ case resizeText(
 )
 ```
 
-Captures every piece a single resize gesture can affect, including origin shifts from left-edge drags. `applyTextResizeState(elementID:fontSize:wrapWidth:origin:)` is the shared restore helper used by both commit and undo/redo.
+It captures everything one resize gesture can touch, including the origin shift from a left-edge drag. `applyTextResizeState(elementID:fontSize:wrapWidth:origin:)` is the shared restore helper used by commit, undo, and redo alike.
 
-**Group resize includes text:**
+## Text inside a group resize
 
-Multi-selection containing text now exposes group-resize handles (previously suppressed). Text in the selection scales uniformly with the bbox change: fontSize and wrapWidth both multiply by the **geometric mean** of the bbox width and height ratios (`sqrt(widthRatio * heightRatio)`), and origin tracks the bbox via the same `scaledRect` helper that drives image positioning. Matches Freeform's "everything in the group scales together" feel.
+A multi-selection containing text now shows group handles (it used to suppress them). Text scales with the box: `fontSize` and `wrapWidth` both multiply by the **geometric mean** of the width and height ratios — `sqrt(widthRatio * heightRatio)` — and the origin follows the box through the same `scaledRect` helper that moves images.
 
-The geometric mean is what makes text scale on top/bottom-edge group drags. A naive width-only ratio (`newBBox.width / bboxStart.width`) would be 1.0 for vertical-only resizes, leaving text size unchanged while images stretched. Geometric mean folds both axes in: corner drags (aspect-locked, widthRatio == heightRatio) collapse to either ratio, and side drags pick up the changed axis through the unchanged one's `1.0` factor.
+**Why the geometric mean:** using just the width ratio would break vertical drags. Drag the bottom edge of a group and the width ratio is exactly 1.0, so text wouldn't change size at all while the images stretched. The geometric mean folds both axes together. Corner drags are aspect-locked, so both ratios are equal and it collapses to either one. Side drags pick up the axis that changed, through the other's 1.0.
 
-`.groupResize` command is augmented with `fromTextStates` and `toTextStates` dicts of `TextResizeSnapshot` (fontSize/wrapWidth/origin) parallel to the existing `fromRects`/`toRects` for images. Pure-image groups have empty text dicts; pure-text groups have empty rect dicts. One undo press atomically reverts everything.
+The `.groupResize` command gains `fromTextStates` and `toTextStates` — dictionaries of `TextResizeSnapshot` (fontSize, wrapWidth, origin) sitting alongside the existing image rect dictionaries. An all-image group has empty text dictionaries; an all-text group has empty rect ones. Either way, one undo press reverses everything at once.
 
-Unlike images (which use `scaledRect` during render), text mutates `placedTexts[idx]` directly each frame in `applyGroupResize` because the text render path is font-size + frame, not a worldRect-driven frame. Live mutation is cheap for text; for images it's avoided to skip unnecessary re-renders of large data.
+Unlike images (which get their scaled rect at render time), text mutates `placedTexts[idx]` directly each frame in `applyGroupResize`. Text rendering is font-size-plus-frame rather than driven by `worldRect`, and live mutation is cheap for text. For images it's avoided, because re-rendering large image views every frame isn't.
 
-**`applyGroupResizeApply` batches all store writes into one mutation.** Naive separate calls to `applyResizeRects` and `applyTextResizeState` per element would each fire their own `enqueueStoreMutation`, and that helper *cancels* any in-flight mutation — so only the last enqueued upsert in the loop would actually reach the store, silently losing image-rect updates and earlier text updates. The shared restore helper does in-memory mutations synchronously, pre-builds the text `CMCanvasElement`s, then issues a single `enqueueStoreMutation` that fetches every image element + appends every text element + upserts the combined batch. Cancellation only kills work that hasn't been fully prepared yet, so undo/redo of a group resize commits all affected elements atomically.
+**`applyGroupResizeApply` writes everything in one mutation, and that's load-bearing.** The obvious implementation — call `applyResizeRects` and `applyTextResizeState` per element in a loop — silently loses data. Each call fires its own `enqueueStoreMutation`, and that helper *cancels* whatever is in flight. Only the last write in the loop would survive; every image rect and earlier text change before it would be dropped.
 
-**External selection chrome — handles + editing border render at canvas level:**
+Instead, the shared helper does all in-memory changes synchronously, pre-builds the text `CMCanvasElement`s, then fires **one** `enqueueStoreMutation` that fetches every image element, appends every text element, and upserts the whole batch. Cancellation can then only interrupt work that hasn't been prepared yet, so a group resize commits atomically.
 
-`scaleEffect` shrinks any `.overlay { ... }` inside the text element along with the text. A 10pt selection handle becomes 2pt at zoom 0.2 — invisible and untappable. To keep handles + editing border at touch-friendly screen sizes regardless of zoom, both render externally in `BoardCanvasView`'s body using world-space coordinates × scale (same pattern as image group selection):
+## Handles and the editing border draw outside the text
+
+`scaleEffect` shrinks everything inside the text view, including any `.overlay`. A 10pt handle becomes 2pt at zoom 0.2 — impossible to see and impossible to hit.
+
+So handles and the editing border are drawn at the canvas level in `BoardCanvasView`'s body, using world coordinates times scale (the same approach as image group selection):
 
 ```swift
 // Solo-text selection handles
@@ -908,46 +918,43 @@ if let editingID = editingTextID, let placed = ... {
 }
 ```
 
-The multi-select dim border for text-in-group stays inside the scaleEffect — it's a low-priority cosmetic indicator and the group bbox handles already provide the primary affordance, so the visual shrink at low zoom is acceptable.
+The faint multi-select border for text inside a group stays *inside* the scaleEffect. It's a minor cosmetic hint, the group's own handles are the real affordance, and shrinking at low zoom is acceptable for it.
 
-**Save-on-back race fix:**
+## The save-on-back race
 
-`commitTextEdit`'s store upsert runs through `enqueueStoreMutation` (async Task). Pressing the back button while editing fires the snapshot trigger, which previously read `canvasStore.allElements()` before the in-flight commit landed — manifest got written without the typed text.
+`commitTextEdit`'s store write goes through `enqueueStoreMutation`, which is async. Press back while editing and the snapshot used to read `canvasStore.allElements()` before that write landed — so the file got saved without the text you just typed.
 
 The `snapshotTrigger` handler now:
-1. Calls `commitTextEdit(editing)` synchronously to fire the store upsert.
-2. Captures `storeMutationTask` outside the Task so the closure has a stable reference.
-3. Awaits `pendingMutation?.result` before reading `allElements()`.
+1. Calls `commitTextEdit(editing)` synchronously, starting the store write
+2. Captures `storeMutationTask` outside the Task, so the closure holds a stable reference to it
+3. Awaits `pendingMutation?.result` before reading `allElements()`
 
-Result: the snapshot includes everything the user just typed, no matter how quickly they pressed back.
+Now the snapshot includes everything typed, no matter how fast you hit back.
 
-**Persistence integration:**
+## Persistence
 
-`CMCanvasElementPayload.text` and `BoardArchiver.ManifestPayload.text` mirror `PlacedText`'s fields (content, fontName, fontSize, color, wrapWidth). `wrapWidth` is encoded via `encodeIfPresent` and decoded via `decodeIfPresent` so older `.refboard` files (no `wrapWidth` key in their manifests) load cleanly with `wrapWidth = nil` (auto-width). See `architecture-backend.md` for the Codable evolution details.
+`CMCanvasElementPayload.text` and `BoardArchiver.ManifestPayload.text` mirror `PlacedText`'s fields (content, fontName, fontSize, color, wrapWidth). `wrapWidth` uses `encodeIfPresent` / `decodeIfPresent`, so older `.refboard` files that predate the field load fine with `wrapWidth = nil` (auto-width). See `architecture-backend.md` for how the file format evolves.
 
-**Per-element undo command coverage:**
+## Which text actions are undoable
 
 | Action | Command | Notes |
 |--------|---------|-------|
-| Tap-create text + commit non-empty content | `.insert` | Fired by `commitTextEdit` for `wasNewlyPlaced && !empty`. |
-| Re-edit text content | `.editTextContent(from, to)` | Only when content actually changed (no-op edits skip the push). |
-| Re-edit cleared all content | `.delete` | Snapshot's element is rebuilt from original content so undo restores text, not empty. |
-| Move text | `.move` | Same command as image move; `applyMoveDelta` walks both arrays. |
-| Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin tuple. |
-| Group resize incl. text | `.groupResize` | Augmented with text-state dicts alongside image rect dicts. |
-| Delete text via action bar | `.delete` | `deleteSelection` snapshots both image and text elements; `applyResizeRects` filters text ids defensively. |
+| Create text + commit non-empty content | `.insert` | Fired by `commitTextEdit` when newly placed and not empty |
+| Re-edit content | `.editTextContent(from, to)` | Only when the content actually changed |
+| Re-edit cleared everything | `.delete` | Snapshot rebuilds from original content, so undo restores the text |
+| Move text | `.move` | Same command as images; `applyMoveDelta` walks both arrays |
+| Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin |
+| Group resize including text | `.groupResize` | Extended with text-state dictionaries |
+| Delete via action bar | `.delete` | `deleteSelection` snapshots both kinds; `applyResizeRects` filters out text ids defensively |
 
 ---
 
-### Canvas Settings Sheet
+# Settings sheet
 
 **Status: Implemented (native Liquid Glass material)**
-
 **File:** `Features/BoardCanvas/Settings/CanvasSettingsView.swift`
 
-Settings is now a `ToolbarItem` in `CanvasNavigationToolbar` (the gear button), opening a translucent material sheet over the canvas. The standalone `CanvasSettingsButton.swift` and `CanvasOverlayLayout.swift` have been removed.
-
-**Structure:**
+The gear in `CanvasNavigationToolbar` opens a translucent sheet over the canvas. The old `CanvasSettingsButton.swift` and `CanvasOverlayLayout.swift` are gone.
 
 ```swift
 NavigationStack {
@@ -973,11 +980,11 @@ NavigationStack {
 .preferredColorScheme(canvasColorScheme)     // match canvas darkness
 ```
 
-Key decisions:
+**The decisions behind that:**
 
-- **`.presentationBackground(.thinMaterial)`** — gives the sheet a translucent frosted-glass surface that blurs the canvas behind it. A sheet sits behind a dimming scrim, so a true Liquid Glass `.glassEffect()` modifier can't sample the live canvas the way the toolbar buttons can; the material is the correct sheet-level equivalent.
-- **`.scrollContentBackground(.hidden)`** + `.listRowBackground(Color.clear)` on each section — strips `Form`'s opaque grouped background and clears row backgrounds so the presentation material shows through everywhere, not just margins.
-- **`canvasColorScheme` (light/dark from canvas luminance)** — keeps the panel's text/control color scheme matched to the canvas behind it, so opening Settings over a dark canvas doesn't flash a bright panel. Computed from `Color.Resolved` via `@Environment(\.self)` (Rec. 709 luminance, threshold 0.5):
+- **`.presentationBackground(.thinMaterial)`** gives the frosted-glass look. A real `.glassEffect()` can't be used here: sheets sit behind a dimming scrim, so glass can't sample the live canvas the way toolbar buttons can. Material is the correct sheet-level equivalent
+- **`.scrollContentBackground(.hidden)` + `.listRowBackground(Color.clear)`** strip `Form`'s opaque grouped background and row fills, so the material shows through the whole sheet instead of just the margins
+- **`canvasColorScheme`** keeps the sheet's light/dark mode matched to the canvas behind it, so opening Settings over a dark canvas doesn't flash a bright panel. It's computed from the canvas color's brightness (Rec. 709 luminance, threshold 0.5):
 
   ```swift
   private var canvasColorScheme: ColorScheme {
@@ -987,29 +994,27 @@ Key decisions:
   }
   ```
 
-- **Native color well** — replaced the previous invisible-`ColorPicker`-over-a-pill hack with the standard `ColorPicker("Canvas Color", selection:, supportsOpacity: false)`. Version row uses native `LabeledContent`.
-- **Single `.tint(DesignSystem.Colors.tertiary)`** at the `NavigationStack` propagates to the toggle, color well, and Done button — no per-element foreground/tint overrides.
+- **A real color well.** This used to be an invisible `ColorPicker` layered over a custom pill. Now it's just `ColorPicker("Canvas Color", selection:, supportsOpacity: false)`, and the version row is a native `LabeledContent`
+- **One `.tint(DesignSystem.Colors.tertiary)`** on the `NavigationStack` covers the toggle, color well, and Done button — no per-control overrides
 
-**Removed settings:**
+**Removed:** the "Toolbar Position" picker (left/right) and the `ToolbarSide` enum went away with the floating overlays. The toolbar is native and lives on top now, so side placement isn't a real choice anymore.
 
-The "Toolbar Position" picker (`left` / `right`) and the `ToolbarSide` enum were dropped along with the floating overlay system — the toolbar is now native top-bar and side-of-canvas placement isn't a meaningful knob anymore.
+**The two settings that do something:**
 
-**Functional Settings:**
-
-1. **Canvas Color** — `@Binding var canvasColor: Color`, applied via `.background(canvasColor)` on the canvas ZStack. Default `Color(uiColor: .systemBackground)` for new boards and legacy v1 files with no saved preference, so the canvas adapts to the user's light/dark mode until they pick something explicit. Saved as `#RRGGBB` in the board's manifest once picked — see "Canvas Color Persistence" below.
-2. **Show Grid** — `@Binding var showGrid: Bool`, drives the grid `Canvas` layer in `BoardCanvasView`. Default `true`.
+1. **Canvas Color** — `@Binding var canvasColor: Color`, applied as `.background(canvasColor)` on the canvas ZStack. New boards and old v1 files default to `Color(uiColor: .systemBackground)`, so the canvas follows the system light/dark setting until you pick something. Once picked, it's saved as `#RRGGBB` in the board file
+2. **Show Grid** — `@Binding var showGrid: Bool`, controls the grid layer. Defaults to `true`
 
 ---
 
-### Canvas Color Persistence
+# Saving the canvas color
 
 **Status: Implemented**
 
-**Files:** `ContentView.swift`, `RootView.swift`, `AppOpenHandler.swift`, `FilePickerView.swift`, `DesignSystem/Colors.swift` (frontend side); see `architecture-backend.md` → "Export Package" for the manifest schema.
+**Files:** `ContentView.swift`, `RootView.swift`, `AppOpenHandler.swift`, `FilePickerView.swift`, `DesignSystem/Colors.swift`. For the file-format side, see `architecture-backend.md` → "Export Package".
 
-The canvas color round-trips through the board's `.refboard` manifest. The split-of-concerns: the SwiftUI layer owns the live `Color` and hex-conversion (since resolving an adaptive `Color` to concrete RGB needs an `EnvironmentValues`), the backend layer owns the on-disk representation (`canvasColor: String?` in the manifest, see backend doc).
+The canvas color travels in and out of the board file. The split: SwiftUI owns the live `Color` and the hex conversion (turning an adaptive color into concrete RGB needs an `EnvironmentValues`, which only the view layer has). The backend owns how it's stored on disk (`canvasColor: String?` in the manifest).
 
-**Plumbing chain:**
+**How it travels:**
 
 ```
 manifest.json:canvasColor (String?)
@@ -1021,7 +1026,7 @@ manifest.json:canvasColor (String?)
     ↓ ColorPicker + .background(canvasColor) on canvas ZStack
 ```
 
-**`ContentView` state model:**
+**Three pieces of state in `ContentView`:**
 
 ```swift
 @State private var canvasColor: Color              // live, may be adaptive (system bg)
@@ -1036,10 +1041,10 @@ init(..., initialCanvasColorHex: String? = nil, ...) {
 }
 ```
 
-**Why three pieces of state instead of one:**
+Three instead of one, because each answers a different question:
 
-1. **`canvasColor`** is what the canvas + ColorPicker bind to. May be an adaptive `Color(uiColor: .systemBackground)` whose resolved RGB depends on the environment's color scheme.
-2. **`savedCanvasColorHex`** is the concrete hex that the manifest holds. Seeded from `initialCanvasColorHex` and only mutated when the user actually picks a color (resolved at pick-time, not at save-time):
+1. **`canvasColor`** — what's on screen right now. It might be an adaptive color whose real RGB depends on light or dark mode
+2. **`savedCanvasColorHex`** — the concrete hex for the file. It starts from whatever the file had, and only changes when the user actually picks a color:
 
    ```swift
    .onChange(of: canvasColor) { _, newValue in
@@ -1048,11 +1053,10 @@ init(..., initialCanvasColorHex: String? = nil, ...) {
    }
    ```
 
-   Resolving once at pick-time (vs every save) keeps "nil == follow system" stable across element-edit autosaves on boards the user hasn't touched the color on. Without this split, an element-only edit would have baked the current system background into the file, silently breaking the "no preference" contract.
+   Resolving at pick-time rather than save-time is the whole point. `nil` means "no preference, follow the system." If we resolved at save-time instead, then moving an image on a board whose color you never touched would bake the current system background into the file — silently converting "follow the system" into a fixed color the user never chose
+3. **`canvasColorDirty`** — makes the save actually happen. `BoardCanvasView`'s dirty flag only watches elements, so changing just the color would leave `wasDirty` false and `saveInPlace` would bail out. Both save paths check `wasDirty || canvasColorDirty`, and clear the flag alongside `markCleanTrigger` once a write succeeds
 
-3. **`canvasColorDirty`** flips the save gate. `BoardCanvasView`'s dirty flag only tracks the element store, so a color-only change wouldn't otherwise trigger autosave (`wasDirty` would come back `false` and `saveInPlace` would bail). Both save paths now gate on `wasDirty || canvasColorDirty` and clear `canvasColorDirty` alongside `markCleanTrigger` after a confirmed-successful write.
-
-**Hex helpers (`DesignSystem/Colors.swift`):**
+**The hex helpers (`DesignSystem/Colors.swift`):**
 
 ```swift
 extension Color {
@@ -1063,27 +1067,20 @@ extension Color {
 func canvasColorHexString(from resolved: Color.Resolved) -> String { ... }
 ```
 
-`init(hex:)` is `nonisolated` because the project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` would otherwise make the synthesized init main-actor-isolated, and `ContentView.init` runs in a non-isolated context.
+`init(hex:)` is `nonisolated` because the project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, which would otherwise pin it to the main actor — and `ContentView.init` isn't main-actor isolated.
 
-**Pick-time semantics (caveat):**
+**A known limitation:** the hex is captured the moment `.onChange(of: canvasColor)` fires, in whatever mode you're in at the time. Pick a color from the ColorPicker's "System Colors" tab while in dark mode and you save the dark-mode version of it; reopening in light mode won't adapt. The contract is "the saved color is the color you last had on screen," which is what a single stored value can honestly promise. A true "follow the system" option would be a separate toggle that keeps `savedCanvasColorHex` nil deliberately.
 
-The hex is captured at the moment the `.onChange(of: canvasColor)` fires, in whatever color scheme the env is in. If a user picks a color via `ColorPicker`'s "System Colors" tab while in dark mode, the saved hex is the dark-mode resolution of that system color — reopening the board in light mode does not adapt. The contract is "saved color = the color you last had on screen," which matches single-resolved behavior; if we ever want "follow system" as an explicit option, that'd be a separate toggle keeping `savedCanvasColorHex` nil with a sentinel.
-
-**Security-scoped access (Copilot fix):**
-
-`BoardArchiver.importElements` owns its own `startAccessingSecurityScopedResource` / stop pair. `FilePickerView.openBoard` previously wrapped its detached-task body in a second, redundant pair; that wrap has been removed so the archiver remains the single owner of the scope.
+**Security-scoped access:** `BoardArchiver.importElements` starts and stops security-scoped access itself. `FilePickerView.openBoard` used to wrap its detached task in a second, redundant pair; that's been removed so the archiver is the single owner.
 
 ---
 
-### Design System
+# Design system
 
 **Status: Implemented**
-
 **Files:** `DesignSystem.swift`, `Colors.swift`
 
-Central design token system for consistent styling across the application.
-
-**Color Palette:**
+One place for colors, so the app looks like one app.
 
 ```swift
 DesignSystem.Colors.primary     // #191919 (25, 25, 25)   - Dark gray
@@ -1093,65 +1090,55 @@ DesignSystem.Colors.text        // #FFFFFF (255, 255, 255) - White
 DesignSystem.Colors.destructive // #FE8686 (254, 134, 134) - Red
 ```
 
-**Usage:**
-- Backgrounds: `primary` (toolbars, settings, UI containers)
-- Secondary text/values: `secondary` (subtle information, picker options)
-- Interactive accents: `tertiary` (active states, toggles, buttons)
-- Primary text: `text` (main labels, readable content)
-- Destructive actions: `destructive` (delete buttons, destructive confirmations)
+| Token | Used for |
+|---|---|
+| `primary` | Backgrounds — toolbars, settings, containers |
+| `secondary` | Quieter text, values, picker options |
+| `tertiary` | Anything interactive — active states, toggles, buttons |
+| `text` | Main labels and readable content |
+| `destructive` | Delete buttons and destructive confirmations |
 
-**Usage Guidance (important):**
+## The rule: use a token, not a raw color
 
-**Always prefer a `DesignSystem.Colors` token over a hard-coded color** (`.red`, `Color(red:…)`, hex literals, system semantic colors). New UI should pull from the palette so the app stays visually coherent and themeable.
+**Always prefer a `DesignSystem.Colors` token over a hard-coded color** — no `.red`, no `Color(red:…)`, no hex literals, no system semantic colors. New UI pulls from the palette so the app stays coherent and can be themed later.
 
-If a color you need isn't in the palette:
-1. Stop — don't reach for `.red`, `.orange`, `Color(hex:)`, etc. as a shortcut.
-2. Decide whether it's a **new semantic token** (e.g. `destructive`, `warning`, `success`) or a one-off tint. Semantic tokens belong in `Colors.swift`.
-3. Pick a hue that matches the palette's saturation/lightness so it sits with the existing colors (e.g. `destructive` #FE8686 matches `tertiary`'s S/L with a red hue).
-4. Add it to `DesignSystem.Colors` with a doc comment describing intent, then consume it by name.
+If the color you need isn't there:
 
-This applies to any other design primitive that lives (or should live) in the design system — spacing, corner radii, shadows, typography. If you find yourself hard-coding the same value in two places, it's a candidate for a `DesignSystem` token.
+1. Stop. Don't reach for `.red` or `Color(hex:)` as a shortcut
+2. Decide what it is: a **new semantic token** (`destructive`, `warning`, `success`) or a genuine one-off. Semantic tokens belong in `Colors.swift`
+3. Pick a hue at the palette's saturation and lightness so it sits naturally with the rest. `destructive` (#FE8686) is `tertiary`'s saturation and lightness with a red hue — that's the method
+4. Add it to `DesignSystem.Colors` with a doc comment explaining intent, then use it by name
 
-**Color Hierarchy:**
-- **White** - Primary labels and important text for maximum readability
-- **Gray** - Secondary info, values, less prominent text
-- **Blue** - Interactive elements, active states, call-to-action buttons
-- **Dark Gray** - All backgrounds and containers
+The same goes for any other design primitive that lives (or should live) in the design system — spacing, corner radii, shadows, typography. Hard-coding the same value twice is the signal that it should be a token.
 
-**Structure:**
-- `DesignSystem` enum acts as namespace
-- `Colors` nested enum contains static color definitions
-- Extensible for future design tokens (typography, spacing, shadows, etc.)
+**Structure:** `DesignSystem` is a namespace enum, `Colors` is a nested enum of static colors, and it's built to grow (typography, spacing, shadows).
 
 ---
 
-### Other UI Components
+# Other UI
 
-**FilePickerView (Landing Page)**
+## FilePickerView — the landing screen
 
 **Status: Implemented**
-
 **Files:** `FilePickerView.swift`, `RecentBoardsList.swift`, `RecentBoardRow.swift`, `LiftPressStyle.swift`, `RecentBoardsManager.swift`
 
-The app's landing screen with three entry paths to the canvas and a recent boards section.
+Three ways into the canvas, plus a recent boards list.
 
-**Entry Paths:**
+1. **"New Board"** (main action) — `.buttonStyle(.glassProminent)` with a blue tint. Opens a `.fileExporter` for `Untitled Board.refboard`. On success you get an empty canvas whose `currentBoardURL` is already set, so the back button has somewhere to save to
+2. **"Open Board"** — `.buttonStyle(.glass)` with a blue tint. Opens a `.fileImporter` for `.refboard` files, imports through `BoardArchiver.importElements` on a detached task, records it in recents, and hands the elements and URL to `ContentView`
+3. **Drag and drop** — drop images or GIFs onto the dashed rectangle. `.contentShape(.rect)` makes the whole padded area a drop target, not just the icon and text
 
-1. **"New Board" (primary CTA)** — `.buttonStyle(.glassProminent)` + tertiary tint, presents a `.fileExporter` for `Untitled Board.refboard`. On success, an empty canvas opens with that save location as its `currentBoardURL`, so the back button can write straight to it.
-2. **"Open Board" (secondary)** — `.buttonStyle(.glass)` + tertiary tint, opens `.fileImporter` for `.refboard` files. Imports via `BoardArchiver.importElements` on a detached task, records in recents, passes elements + URL to `ContentView`
-3. **Drag-and-drop** — drop images/GIFs onto the dashed rectangle area. `.contentShape(.rect)` ensures the entire padded area is a valid drop target, not just the icon/text
+**Visual notes:**
+- The background stays flat `DesignSystem.Colors.primary`. Liquid Glass on a flat dark fill renders muted — Apple's own docs say so — and we accept that for the big surfaces (drop zone, recents), reserving glass for the CTA buttons where `.buttonStyle(.glass)` has its own fallbacks
+- A large `photo.on.rectangle.angled` icon, sized with `@ScaledMetric` for Dynamic Type, marked `.accessibilityHidden(true)`
+- The dashed border highlights while a drag is over it (`isTargeted`)
+- Both buttons sit side by side below it
+- "Recent Boards" shows up to 5 entries
+- Failed imports raise an alert (`showImportError` + `importErrorMessage`)
 
-**Visual Design:**
-- Background stays flat `DesignSystem.Colors.primary` — Liquid Glass on a flat dark fill renders muted (Apple's docs explicitly call this out), but we accept it for the larger surfaces (drop zone, recents) and reserve glass for the CTA buttons where `.buttonStyle(.glass)` has its own backdrop-independent fallbacks.
-- Large photo icon (`photo.on.rectangle.angled`, `@ScaledMetric` for Dynamic Type) with `.accessibilityHidden(true)`
-- Dashed border rectangle highlights on drag target (`isTargeted` state)
-- "New Board" and "Open Board" buttons side-by-side below as native glass buttons
-- "Recent Boards" section below buttons (up to 5 entries) — see `RecentBoardsList` / `RecentBoardRow` below
-- Error alert (`showImportError` bool + `importErrorMessage` string) for failed imports
+**The recents list:**
 
-**Recent Boards List (`RecentBoardsList` + `RecentBoardRow`):**
-
-The list is a flush stack of per-row cards rather than one shared container with hairline dividers. Each row owns its own background so a press effect (`LiftPressStyle`) scales the whole card, not just the inner content. Rows stack flush (`VStack(spacing: 0)`) with only the first row's top corners and last row's bottom corners rounded via `UnevenRoundedRectangle` — the group reads as one continuous shape while each row remains independently pressable.
+It's a stack of individual cards, not one container with dividers between rows. Each row owns its background, so the press effect (`LiftPressStyle`) can scale the whole card instead of just its contents. Rows stack flush (`VStack(spacing: 0)`), and only the first row's top corners and last row's bottom corners are rounded via `UnevenRoundedRectangle` — so the group reads as one shape while each row stays independently pressable.
 
 ```swift
 ForEach(Array(recents.enumerated()), id: \.element.id) { index, entry in
@@ -1164,9 +1151,7 @@ ForEach(Array(recents.enumerated()), id: \.element.id) { index, entry in
 }
 ```
 
-**`LiftPressStyle` (`Features/FilePicker/LiftPressStyle.swift`):**
-
-Custom `ButtonStyle` that mimics the bubble/lift of a native glass button on plain rows. Scale `1.02` + lift `−2pt y` on press, spring-released:
+**`LiftPressStyle`** (`Features/FilePicker/LiftPressStyle.swift`) mimics the lift of a native glass button on a plain row — scale to 1.02, rise 2pt, spring back:
 
 ```swift
 struct LiftPressStyle: ButtonStyle {
@@ -1180,29 +1165,22 @@ struct LiftPressStyle: ButtonStyle {
 }
 ```
 
-Used on the recents rows where we want tactile press feedback without the full Liquid Glass material (which doesn't render correctly on the flat dark background).
+It exists because we want tactile feedback on recents rows without the full glass material, which doesn't render well on the flat dark background.
 
-**Recent Boards:**
+**`RecentBoardsManager`** is `@Observable @MainActor` and stores up to 10 entries as JSON in App Support (`recent_boards.json`). Each entry has:
+- `name` — from the filename
+- `filePath` — standardized path string, used as both the stable `Identifiable.id` and the dedup key
+- `bookmarkData` — a bookmark created with `.suitableForBookmarkFile` from the URL the file importer gave us. This preserves the URL's implicit security scope on iOS. (The explicit `.withSecurityScope` option is macOS-only — don't reach for it here.) It's what lets the app reopen files across launches wherever they live
+- `lastOpened` — for sorting
 
-`RecentBoardsManager` is an `@Observable @MainActor` class that persists up to 10 recent board entries as JSON in App Support (`recent_boards.json`). Each entry stores:
-- `name` — derived from filename
-- `filePath` — standardized path string, used as stable `Identifiable.id` and dedup key
-- `bookmarkData` — bookmark `Data` created with `.suitableForBookmarkFile` from the fileImporter-vended URL, which preserves the URL's implicit security scope on iOS (the explicit `.withSecurityScope` option is macOS-only). Lets the app reopen files across launches regardless of location.
-- `lastOpened` — timestamp for sorting
+The landing page shows up to 5 valid entries with a doc icon, name, and relative date. Tapping resolves the bookmark via `resolveURL()`, starts security-scoped access, and imports.
 
-The landing page displays up to 5 valid entries (list rows with doc icon, name, and relative date). Tapping an entry resolves the bookmark via `resolveURL()`, starts security-scoped access, and imports the board.
+Entries whose `resolveURL()` returns nil are pruned on init, so `validEntries(limit:)` does no file I/O — it just slices the already-cleaned array.
 
-Pruning: invalid entries (where `resolveURL()` returns nil) are removed on init. `validEntries(limit:)` does no I/O — it just slices the already-pruned array.
-
-Injection: `RecentBoardsManager` is created as `@State` in `RootView` and injected via `.environment()` to both `FilePickerView` and `ContentView`.
-
-Recording happens on:
-- Board open (from file picker or recents) — in `FilePickerView.openBoard(at:)`
-- Board import (from canvas toolbar) — in `ContentView`
-- Board export (file exporter success) — in `ContentView`
-- Board save-on-back — in `ContentView.saveAndGoBack()`
+`RecentBoardsManager` is created as `@State` in `RootView` and injected with `.environment()` into both `FilePickerView` and `ContentView`. Entries are recorded when a board is opened (picker or recents), imported from the canvas toolbar, exported successfully, or saved on back.
 
 **Callbacks:**
+
 ```swift
 FilePickerView(
     onNewBoard: (URL) -> Void,
@@ -1214,163 +1192,149 @@ FilePickerView(
 )
 ```
 
-`onNewBoard` receives the save URL chosen in the file exporter so `ContentView` can seed `currentBoardURL` for save-on-back.
+`onNewBoard` passes back the save location chosen in the exporter, so `ContentView` can set `currentBoardURL` for save-on-back. `RootView` hosts the picker and routes to `ContentView` based on which callback fires, carrying `initialBoardURL` through so saves land in the right place.
 
-**Integration:**
-- `RootView` hosts `FilePickerView` and routes to `ContentView` based on which callback fires
-- `initialBoardURL` is tracked through `RootView` → `ContentView` so save-on-back writes to the correct location
+## Save-on-back
 
-### Save-on-Back Flow
+Back navigation runs through the leading toolbar's chevron. The old floating `CanvasStatusBar` / `CanvasBackButton` are gone.
 
-Back navigation is wired through the leading toolbar's back chevron (see "Canvas Navigation Toolbar"). Floating `CanvasStatusBar`/`CanvasBackButton` have been removed.
+1. Tapping back sets `pendingBackNavigation = true` and fires a canvas snapshot via `snapshotToken`
+2. The `onSnapshot` callback sees the flag and calls `saveAndGoBack(elements:wasDirty:)`
+3. `saveAndGoBack` writes to `currentBoardURL` through `BoardArchiver.export` on a detached task, flips `markCleanTrigger`, then calls `onBack()`, which sets `showCanvas = false` in `RootView`
+4. If the write throws, an alert offers "Discard & Leave" or "Stay". Otherwise navigation continues
 
-1. Back chevron tap sets `pendingBackNavigation = true` and triggers a canvas snapshot via `snapshotToken`
-2. `onSnapshot` callback checks the flag — if pending back, calls `saveAndGoBack(elements:wasDirty:)`
-3. `saveAndGoBack` writes to `currentBoardURL` via `BoardArchiver.export` on a detached task, flips `markCleanTrigger`, then calls `onBack()` which sets `showCanvas = false` in `RootView`
-4. If the export throws, an alert offers "Discard & Leave" or "Stay"; otherwise navigation proceeds
-
-Because "New Board" requires choosing a save location up front, `currentBoardURL` is always set by the time the canvas appears, so the back chevron always has somewhere to write to.
+Because "New Board" makes you choose a save location up front, `currentBoardURL` always exists by the time the canvas appears — the back button always has a destination.
 
 ---
 
-## Future Frontend Work
+# What's next
 
-### Planned Enhancements
+## Planned
 
-1. **Tool Behavior:**
-   - ~~Connect `activeTool` state to actual canvas interactions~~ ✅ Done
-   - ~~Implement selection via pointer tool~~ ✅ Done
-   - ~~Implement selection rectangles / marquee select for group tool~~ ✅ Done
-   - ~~Implement group move/resize behavior for group tool~~ ✅ Done
+1. **Tools**
+   - ~~Connect `activeTool` to canvas interactions~~ ✅
+   - ~~Selection via pointer tool~~ ✅
+   - ~~Marquee select for group tool~~ ✅
+   - ~~Group move/resize~~ ✅
 
-2. **Item Interaction:**
-   - ~~Select items on tap~~ ✅ Done
-   - ~~Move items by dragging~~ ✅ Done
-   - ~~Resize handle visuals~~ ✅ Done
-   - ~~Functional resize via corner and edge handle drag~~ ✅ Done
-   - ~~Undo/redo for move, resize, insert, and group resize~~ ✅ Done
-   - ~~Multi-selection via marquee and toggle-tap~~ ✅ Done
-   - ~~Group move (all selected items move together)~~ ✅ Done
-   - ~~Group resize (proportional scaling relative to group bounding box)~~ ✅ Done
-   - ~~Delete selected items (via floating selection action bar)~~ ✅ Done
+2. **Item interaction**
+   - ~~Tap to select~~ ✅
+   - ~~Drag to move~~ ✅
+   - ~~Resize handle visuals~~ ✅
+   - ~~Working resize via corner and edge handles~~ ✅
+   - ~~Undo/redo for move, resize, insert, group resize~~ ✅
+   - ~~Multi-select via marquee and toggle-tap~~ ✅
+   - ~~Group move~~ ✅
+   - ~~Group resize~~ ✅
+   - ~~Delete selected items~~ ✅
    - Rotation gestures
 
-3. **File Import Refactor:**
-   - Extract duplicate file loading code into `FileImportHelpers.swift`
-   - Consolidate loading logic between `BoardCanvasView` and `InsertFileControl`
-
-4. **Settings Implementation:**
-   - Make `CanvasSettingsView` functional
-   - Bind grid toggle to `BoardCanvasView.showGrid`
+3. **Settings**
    - Grid spacing slider
-   - Add export options
+   - Export options
 
-5. **Navigation Flow:**
-   - ~~Integrate `FilePickerView` as initial screen~~ ✅ Done
-   - ~~Transition from file picker → canvas~~ ✅ Done
-   - ~~Back navigation from canvas to landing page (with save-on-back)~~ ✅ Done
-   - ~~Recent boards list on landing page~~ ✅ Done
-   - **Save-As prompt for new boards on back:** When a user creates a new board (no `currentBoardURL`) and taps back, the app should present a file exporter (like the Export button does) so the user can name and choose a save location before navigating back. Without this, new unsaved boards are silently discarded on back navigation. The flow should be: back tap → snapshot → file exporter → on success, record in recents and navigate back; on cancel, stay on canvas.
+4. **Navigation**
+   - ~~`FilePickerView` as the first screen~~ ✅
+   - ~~Picker → canvas transition~~ ✅
+   - ~~Back navigation with save-on-back~~ ✅
+   - ~~Recent boards~~ ✅
+   - **Save-As prompt for new boards on back.** Right now, if a user somehow reaches the canvas with no `currentBoardURL` and taps back, the board is silently discarded. The flow should be: back tap → snapshot → file exporter → on success record in recents and navigate back; on cancel, stay on the canvas
 
-6. **Performance:**
-   - Implement viewport-based culling
+5. **Performance**
    - Optimize render updates
    - Image caching strategy
 
 ---
 
-## Known Refactor Opportunities
+# Known cleanup opportunities
 
-These are pre-existing trends amplified by the text-elements PR. None are correctness issues; all are scale / hygiene items worth a dedicated cleanup PR before the file becomes harder to navigate.
+None of these are bugs. They're size and hygiene items worth a dedicated pass before the file gets harder to navigate.
 
-### `BoardCanvasView.swift` is too large
+## `BoardCanvasView.swift` is too big
 
-**Status as of text-elements branch:** ~2,356 lines total, `body` ~515 lines.
+**As of the text-elements branch:** ~2,356 lines, with `body` alone around 515.
 
-The `body` property runs through several distinct render passes that are now interleaved:
+`body` now runs several distinct render passes, interleaved:
 - Background grid `Canvas`
 - Image `ForEach`
 - Text `ForEach`
-- Solo-text selection chrome (external)
-- Editing border (external)
+- Solo-text selection chrome
+- Editing border
 - Marquee overlay
 - Floating action bar
-- Group bounding box overlay
-- Drag gesture chain
-- Multiple `.onChange` handlers (snapshot, mark-clean, load, active-tool, selection-change, undo/redo triggers)
+- Group bounding box
+- The drag gesture chain
+- Many `.onChange` handlers (snapshot, mark-clean, load, active-tool, selection-change, undo/redo)
 
-Each render pass is a candidate for extraction into its own `View` struct in its own file, per `references/views.md` ("Strongly prefer to avoid breaking up view bodies using computed properties or methods that return `some View`. Extract them into separate `View` structs instead, placing each into its own file.").
+Each pass is a candidate for its own `View` struct in its own file, per `references/views.md`: *"Strongly prefer to avoid breaking up view bodies using computed properties or methods that return `some View`. Extract them into separate `View` structs instead, placing each into its own file."*
 
-**Suggested split (rough sketch — refine when actually doing the refactor):**
-- `BoardCanvasGridLayer` — the `Canvas` grid background
-- `PlacedImagesLayer` — the image `ForEach` + per-image rendering
-- `PlacedTextsLayer` — the text `ForEach` + per-text rendering
+**Rough sketch** (refine when actually doing it):
+- `BoardCanvasGridLayer` — the grid background
+- `PlacedImagesLayer` — the image `ForEach`
+- `PlacedTextsLayer` — the text `ForEach`
 - `SelectionChromeLayer` — solo-text handles, editing border, group bbox, action bar
-- `BoardCanvasView` keeps state ownership, gesture wiring, and composition.
+- `BoardCanvasView` keeps state ownership, gesture wiring, and composition
 
-### Multiple types in one file
+## Multiple types per file — resolved
 
-Resolved by the spring-cleaning extraction. `BoardCanvasView.swift` is now ~2120 lines (down from ~2470), containing only `BoardCanvasView`. The other types now live in:
+`BoardCanvasView.swift` is now ~2,120 lines (down from ~2,470) and holds only `BoardCanvasView`. The rest moved to:
 - `Features/BoardCanvas/Elements/PlacedImage.swift`
 - `Features/BoardCanvas/Elements/PlacedText.swift`
 - `Features/BoardCanvas/Elements/TextElementView.swift`
 - `Features/BoardCanvas/Elements/FileImageView.swift`
 - `Features/BoardCanvas/Elements/ImageCache.swift`
 - `Features/BoardCanvas/Import/CanvasDropDelegate.swift`
-- `Features/BoardCanvas/Import/ItemProviderHelpers.swift` (the `loadURLsFromProviders` function + `NSItemProvider` extension)
+- `Features/BoardCanvas/Import/ItemProviderHelpers.swift`
 
-The duplicate file-loading code that previously existed in `InsertFileControl.swift` is also resolved: `InsertFileControl` was deleted (it was never instantiated outside its own `#Preview`) and both the canvas drop handler and `FilePickerView` now call into `Import/ItemProviderHelpers.swift`.
+The duplicated file-loading code is also gone: `InsertFileControl` was deleted (it was never used outside its own `#Preview`), and both the drop handler and `FilePickerView` now call `ItemProviderHelpers.swift`.
 
-### Pre-existing modern-concurrency cleanup
+## Concurrency cleanup
 
-**`Task.sleep(nanoseconds:)` (`BoardCanvasView.swift` ~line 1030 in `scheduleRefreshVisibleElements`)** — `references/api.md` rule says use `.sleep(for:)` instead. Pre-existing on `main`.
+- **`Task.sleep(nanoseconds:)`** in `scheduleRefreshVisibleElements` (`BoardCanvasView.swift` ~line 1030). `references/api.md` says use `.sleep(for:)`. Pre-existing on `main`
+- **`DispatchQueue.main.async` in trigger-clear patterns.** `undoTrigger`, `redoTrigger`, `homeTrigger`, and `externalInsertURLs` clear themselves this way, and `references/swift.md` says no GCD. These can move to `Task { @MainActor in ... }`. **The `elementsToLoad` handler is the exception** — its run-loop drain guarantee is doing real work there (see "Landing snap"). Leave it alone
 
-**`DispatchQueue.main.async` in trigger-clear patterns (`BoardCanvasView.swift`)** — Several trigger bindings (`undoTrigger`, `redoTrigger`, `homeTrigger`, `externalInsertURLs`) are cleared via `DispatchQueue.main.async`. `references/swift.md` says no GCD. The `elementsToLoad` handler intentionally uses `.main.async` because its run-loop drain guarantee is load-bearing for the landing snap (see "Landing Snap" above). The others are pre-existing and can be migrated to `Task { @MainActor in ... }` in a cleanup PR.
+(The text-elements PR added one `DispatchQueue.main.async` in `CanvasTextField.swift` for `becomeFirstResponder`; it's already converted.)
 
-(The text-elements PR introduced one `DispatchQueue.main.async` in `CanvasTextField.swift` for `becomeFirstResponder` — already converted to `Task { @MainActor }` per the rule.)
+## Toolbar accessibility — resolved
 
-### Toolbar accessibility labels
+Every button in `CanvasNavigationToolbar` uses `Label("Title", systemImage:)`, which carries the title for both VoiceOver and the overflow menu. The active tool also gets `.accessibilityAddTraits(.isSelected)`, so selection isn't conveyed by color alone. The standalone `CanvasSettingsButton` and `CanvasOverlayLayout` back button are deleted.
 
-Resolved by the native-toolbar migration. Every button in `CanvasNavigationToolbar` now uses `Label("Title", systemImage:)`, which carries the title for both VoiceOver and the system overflow menu. The active tool also gets `.accessibilityAddTraits(.isSelected)` so the selection state isn't conveyed by color alone. The standalone `CanvasSettingsButton` / `CanvasOverlayLayout` back button are deleted.
+## The per-text `.onTapGesture` mixes layout with state-machine logic
 
-### `BoardCanvasView`'s per-text `.onTapGesture` mixes layout + state-machine logic
-
-The closure inside the text `ForEach`'s `.onTapGesture` handles: tap-on-sole-selected-text → re-edit; tap-on-other-text → tool-routed selection. Branches on `selection.selectedIDs` + `editingTextID` and dispatches a Task. Per `references/views.md` ("Button actions should be extracted from view bodies into separate methods"), this belongs in a method on `BoardCanvasView`. Not extracted in this PR because the focus/selection state machine was being actively iterated and behavioral risk was high.
-
----
-
-## Dev A / Dev B Integration Points
-
-**Areas where Dev A (Frontend) interfaces with Dev B (Backend):**
-
-1. **Canvas Models:**
-   - Dev A currently uses simplified `PlacedImage` struct
-   - Dev B has defined `CMCanvasElement`, `CMElementHeader`, `CMCanvasElementPayload`
-   - **Future migration:** Replace `PlacedImage` with `CMCanvasElement` for persistence integration
-
-2. **Coordinate Systems:**
-   - Dev A uses `CGFloat` and `CGPoint`/`CGRect`
-   - Dev B uses `SIMD2<Double>` and `CMWorldRect`
-   - **Integration needed:** Conversion helpers between coordinate systems
-
-3. **Persistence:**
-   - Dev A manages `placedImages` in `@State` and syncs to `LocalBoardStore` on insert, move, resize, and delete
-   - All store mutations are serialized via `enqueueStoreMutation()` — cancels previous task, awaits completion, then runs
-   - Move/resize operations use `elements(for:)` + `upsert(elements:)` for batched updates
-   - Marquee select uses `headers(in: CMWorldRect)` for spatial rectangle query
-   - Insert undo uses `delete(elementIDs:)` to remove elements from the store
-   - Hit testing uses `topmostHeader(at:)` from `LocalBoardStore`
-   - `moveToTop(elementIDs:)` used to bring selected items to front on interaction
-
-4. **Tile System:**
-   - Dev B has implemented `CMTileKey` spatial indexing
-   - Dev A uses it for viewport culling via `headers(in:viewport:margin:)` and hit testing
+That closure handles two jobs: tapping the only selected text re-enters editing, and tapping any other text routes selection through the active tool. It branches on `selection.selectedIDs` and `editingTextID` and dispatches a Task. Per `references/views.md` ("Button actions should be extracted from view bodies into separate methods"), it belongs in a method on `BoardCanvasView`. It wasn't extracted in that PR because the focus/selection state machine was being actively changed and the risk of breaking it was high.
 
 ---
 
-## Notes
+# Where frontend meets backend
 
-- Architecture reflects MVP implementation
-- Focus is on core interaction and visual polish
-- Performance optimizations deferred until item count becomes a bottleneck
-- Clean separation from backend allows independent iteration
+1. **Models**
+   - Frontend uses the simplified `PlacedImage`
+   - Backend defines `CMCanvasElement`, `CMElementHeader`, `CMCanvasElementPayload`
+   - **Future:** replace `PlacedImage` with `CMCanvasElement`
+
+2. **Coordinates**
+   - Frontend: `CGFloat`, `CGPoint`, `CGRect`
+   - Backend: `SIMD2<Double>`, `CMWorldRect`
+   - **Needed:** conversion helpers between the two
+
+3. **Persistence**
+   - Frontend keeps `placedImages` in `@State` and syncs to `LocalBoardStore` on insert, move, resize, delete
+   - All store changes are serialized through `enqueueStoreMutation()`
+   - Move/resize use `elements(for:)` + `upsert(elements:)` for batching
+   - Marquee select uses `headers(in: CMWorldRect)`
+   - Insert-undo uses `delete(elementIDs:)`
+   - Hit testing uses `topmostHeader(at:)`
+   - `moveToTop(elementIDs:)` raises selected items on interaction
+
+4. **Tiles**
+   - Backend implements `CMTileKey` spatial indexing
+   - Frontend uses it for viewport culling via `headers(in:viewport:margin:)` and for hit testing
+
+---
+
+# Notes
+
+- This reflects the MVP as built
+- Focus is core interaction and visual polish
+- Performance work is deferred until item count actually becomes the bottleneck
+- The clean split from the backend lets both sides iterate independently
