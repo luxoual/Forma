@@ -100,6 +100,29 @@ Three docs describe the system — read them before major changes:
 
 Document only finalized implementations, not speculative architecture.
 
+## Writing Style — the Feynman technique
+
+**This applies to everything written for this project:** the architecture docs, `context.md`, code comments, commit messages, PR descriptions, **and any AI agent writing or responding in this repository.**
+
+The technique is simple: explain it the way you would to a smart person who doesn't know this codebase yet. If you can't say it plainly, you don't understand it well enough yet — go find out, then write.
+
+**The test before you write a paragraph:** could a developer who knows Swift, but has never opened this project, follow this on one read?
+
+**Rules:**
+
+1. **Plain words first.** Prefer the everyday word to the technical one. "Working out which item is under your finger" beats "hit-testing." When a technical term is genuinely needed, define it the first time you use it, then use it freely.
+2. **Explain why as cause and effect.** Not "uses delta-based composition to avoid state races." Instead: what went wrong, why it went wrong, what fixed it. The story is what makes it stick.
+3. **Short sentences. Active voice.** One idea per sentence.
+4. **Concrete over abstract.** An analogy that carries real weight is worth a paragraph of theory. An analogy that only decorates is noise — cut it.
+5. **Lead with what it does, then how.** Every section opens with a plain-language sentence saying what the thing is for.
+6. **Cut hedging and filler.** "It should be noted that," "in order to," "leverage," "utilize." Say the thing.
+
+**The one hard limit: never simplify away precision.**
+
+Names of types, functions, files, and properties stay exact and literal — someone will search for them. Exact numbers (128 world units, 0.05x–8.0x, 8pt) stay exact. Code blocks stay as they are.
+
+If plain language would make something ambiguous, keep the precise version and put a plain-language sentence in front of it. Simple and wrong is worse than dense and right.
+
 ## Known Issues
 
-- Pointer and group tools in toolbar are not yet connected to canvas behavior.
+_None currently tracked._

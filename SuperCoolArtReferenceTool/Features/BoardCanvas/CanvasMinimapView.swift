@@ -10,7 +10,7 @@ struct CanvasMinimapView: View {
     var body: some View {
         Canvas { ctx, size in
             guard !elementRects.isEmpty else { return }
-            let world = worldExtents()
+            let world = aspectCorrected(worldExtents(), toMatch: size)
             guard world.width > 0.001, world.height > 0.001 else { return }
 
             for rect in elementRects {
@@ -47,6 +47,30 @@ struct CanvasMinimapView: View {
         return bounds.insetBy(dx: -padX, dy: -padY)
     }
 
+    /// Grow `world` about its center until its aspect ratio matches the minimap's,
+    /// so `project(_:world:into:)` can use one uniform scale on both axes.
+    ///
+    /// Without this the world frame (whose aspect changes as the user pans away
+    /// from content) gets stretched to fill the fixed 160×100 frame, and every
+    /// projected rect is distorted along with it — most visibly the viewport
+    /// indicator, which must always read as the device's own aspect ratio.
+    ///
+    /// Only ever grows, never crops, so all content stays inside the frame.
+    private func aspectCorrected(_ world: CGRect, toMatch size: CGSize) -> CGRect {
+        guard world.width > 0.001, world.height > 0.001,
+              size.width > 0, size.height > 0 else { return world }
+        let target = size.width / size.height
+        let current = world.width / world.height
+        if current < target {
+            return world.insetBy(dx: -(world.height * target - world.width) / 2, dy: 0)
+        } else if current > target {
+            return world.insetBy(dx: 0, dy: -(world.width / target - world.height) / 2)
+        }
+        return world
+    }
+
+    /// `world` is expected to already match `size`'s aspect ratio (see
+    /// `aspectCorrected`), so `sx` and `sy` agree and rects keep their shape.
     private func project(_ rect: CGRect, world: CGRect, into size: CGSize) -> CGRect {
         let sx = size.width / world.width
         let sy = size.height / world.height

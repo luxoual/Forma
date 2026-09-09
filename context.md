@@ -363,6 +363,58 @@ Instead:
 
 ---
 
+# How to Write Documentation (Feynman Technique)
+
+This applies to all three docs, to code comments, to commit messages and PR descriptions, and to any AI agent writing or responding in this repository.
+
+## The idea
+
+Explain it the way you would to a smart person who has never seen this codebase. If you can't say it plainly, you don't understand it well enough yet — go find out first, then write.
+
+Documentation nobody can read isn't documentation. It's a record that someone once knew something.
+
+## The test
+
+Before writing a paragraph, ask: **could a developer who knows Swift, but has never opened this project, follow this on one read?**
+
+If not, rewrite it.
+
+## The rules
+
+1. **Plain words first.** Prefer the everyday word over the technical one. "Working out which item is under your finger" beats "hit-testing." When a technical term is genuinely needed, define it the first time, then use it freely.
+2. **Explain why as cause and effect.** Don't write "uses delta-based composition to avoid state races." Write what went wrong, why it went wrong, and what fixed it. The story is the part people remember.
+3. **Short sentences. Active voice.** One idea per sentence.
+4. **Concrete over abstract.** A good analogy is worth a paragraph of theory. A decorative one is noise — cut it.
+5. **Lead with what it does, then how.** Open every section with a plain sentence saying what the thing is for.
+6. **Cut hedging and filler.** "It should be noted that," "in order to," "leverage," "utilize." Just say the thing.
+7. **Define shared vocabulary once.** Each architecture doc opens with a short glossary. Define a term there, then use it everywhere without re-explaining.
+
+## The one hard limit
+
+**Never simplify away precision.**
+
+- Type, function, file, and property names stay exact and literal. People search for them.
+- Exact numbers stay exact (128 world units, 0.05x–8.0x, 8pt).
+- Code blocks stay as they are.
+
+If plain language would make something ambiguous, keep the precise version and put a plain-language sentence in front of it. **Simple and wrong is worse than dense and right.**
+
+---
+
+# TEMPORARY: Backend doc still needs this treatment
+
+> **Delete this entire section once the work below is done.**
+
+`architecture-frontend.md` has been rewritten in the Feynman style described above (glossary up front, plain-language section openers, cause-and-effect explanations, all identifiers and numbers preserved). Use it as the reference for tone and structure.
+
+`architecture-backend.md` has **not** been rewritten yet. It was deliberately left alone because it's Dev B's file and a full-file rewrite would conflict with any work in flight.
+
+**Plan:** rewrite `architecture-backend.md` in the same style once Dev B's latest branch is created and merged, so the rewrite lands on a settled file instead of fighting an open branch. Coordinate with Dev B before starting.
+
+Then delete this section.
+
+---
+
 ## Avoiding Merge Conflicts
 
 **By separating architecture documentation:**
