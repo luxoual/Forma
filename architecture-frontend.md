@@ -280,7 +280,7 @@ We used to hand-build this as floating overlays (`CanvasOverlayLayout` + `Canvas
 
 ```
 [Leading group]                                                [Trailing items]
-< (back)  |  BoardName pill   [Pointer | Group | Text | Add] | [Undo | Redo] | [Home | Settings]
+< (back)  |  BoardName pill   [Select | Text | Add] | [Undo | Redo] | [Home | Settings]
 ```
 
 - The **leading group** puts the back chevron and board name in one glass capsule. The name is a non-interactive glass button inside the group, so only the group's outer pill is glass — glass inside glass looks wrong
@@ -291,7 +291,6 @@ We used to hand-build this as floating overlays (`CanvasOverlayLayout` + `Canvas
 
 ```swift
 ToolbarItemGroup(placement: .topBarTrailing) {
-    toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
     toolButton(.group,   label: "Group",   icon: "rectangle.dashed")
     toolButton(.text,    label: "Text",    icon: "textformat")
     Button("Add", systemImage: "plus", action: onAddItem)
@@ -471,8 +470,7 @@ CanvasTool (enum)              -- toolbar identity, UI selection
     |
     v
 CanvasToolBehavior (protocol)  -- gesture interpretation per tool
-    ├── PointerToolBehavior    -- tap=select, drag-on-item=move, drag-on-empty=pan
-    ├── GroupToolBehavior      -- tap=toggle selection, drag-on-item=group move, drag-on-empty=marquee select
+    ├── GroupToolBehavior      -- tap=select one (shift-tap=toggle), drag-on-item=move, drag-on-empty=marquee
     └── TextToolBehavior       -- tap-empty=place text (canvas owns this), tap-item=select, drag-on-item=move, drag-on-empty=pan
 ```
 
@@ -505,13 +503,26 @@ Taps are split into two methods so the view can call the right one based on whic
 3. Later `.onChanged` events: `applyDrag()` sends them to pan, move, resize, or marquee based on the cached mode
 4. `.onEnded`: commit whichever action was running
 
-**Pointer:** drag an item to select it, raise it, and move it. Drag empty space to pan. Tap an item to select. Tap empty to deselect.
+**Group** — the only general-purpose selection tool; there is no pointer tool any more:
 
-**Group:** drag a selected item to move the whole group. Drag an unselected item to add it (`extending: true`) and move. Drag empty space to draw a marquee. Tap an item to toggle its membership. Tap empty to clear.
+- Tap an item: select just that one, replacing whatever was selected, then bring it to the top
+- Shift-tap an item: toggle it in or out of the selection, and *don't* promote its z-order
+- Drag on empty canvas: `.marqueeSelect` mode — draw a selection rectangle
+- Drag a selected item: `.moveItem` mode — move the whole group
+- Drag an unselected item: add it to the selection (`extending: true`), then `.moveItem`
+- Tap empty space: clear the selection
 
-**Text:** drag an item to select and move it (same as pointer). Drag empty space to pan. Tap an item to select it. Tap empty space is special — see below.
+Committing a marquee always **replaces** the selection. `commitMarqueeSelect` assigns `selection.selectedIDs = ids` outright — it never adds to what was already there, Shift or no Shift.
 
-**Why text's empty-tap is handled by the canvas, not the tool:** placing text needs the world coordinate of the tap, and that lives in the view's coordinate space, which the protocol doesn't expose. So `TextToolBehavior.tappedEmpty` only clears the selection, and `BoardCanvasView` does the actual `insertText(at:)`. After placing, `insertText` switches `activeTool = .pointer` automatically (the Figma convention), so you don't leave a trail of empty text boxes with every tap.
+**Why Shift is the key that adds to a selection.** A tablet has no modifier you can hold with touch alone, so the touch-only route to multi-select is the marquee, and a plain tap stays unambiguous. Where a hardware keyboard *is* attached, Shift-tap gives you the desktop convention for free.
+
+Reading that Shift state is the awkward part. SwiftUI's `.onTapGesture` reports no modifier state on iOS — `Gesture.modifiers(_:)` is macOS-only — so `KeyModifierMonitor` bridges it. It's a passive `UIGestureRecognizer` that reads `modifierFlags` (iPadOS 13.4+) on `touchesBegan` and immediately sets `state = .failed`, so it watches without ever claiming the touch. UIKit delivers `touchesBegan` to the hit-chain's recognizers before SwiftUI resolves a tap on touch-up, so the flag is current by the time the handler reads it. `BoardCanvasView` reads the monitor at the call site and passes `extending:` into `tappedItem`, which keeps the behaviors pure functions of their inputs.
+
+**Text:** drag an item to select and move it. Drag empty space to pan. Tap an item to select it (single-select, or toggle under Shift). Tap empty space is special — see below.
+
+**Why text's empty-tap is handled by the canvas, not the tool:** placing text needs the world coordinate of the tap, and that lives in the view's coordinate space, which the protocol doesn't expose. So `TextToolBehavior.tappedEmpty` only clears the selection, and `BoardCanvasView` does the actual `insertText(at:)`. After placing, `insertText` switches `activeTool` back to `.group` automatically (the Figma convention), so you don't leave a trail of empty text boxes with every tap.
+
+**`CanvasTool` has two cases, `.group` and `.text`.** `.group` is where boards open, and what `insertText` swaps back to after a placement; `.text` is a momentary mode. The pointer tool was removed rather than demoted — its tap-to-select-one behavior moved into `GroupToolBehavior`, which left nothing to tell the two apart except drag-on-empty, and that isn't worth a second tool and the mode switch it costs. None of this affects getting around the canvas: two-finger pan is installed at the canvas level and stays live whatever tool is active (see "Two-finger pan").
 
 **Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior`.
 
@@ -842,9 +853,10 @@ private func insertText(at worldPoint: CGPoint) {
     selection.clearSelection()
     editingTextID = id
     skipNextToolChangeCommit = true
-    activeTool = .pointer    // Figma auto-swap; the skip flag stops the
-                             // resulting onChange(of: activeTool) from
-                             // committing the just-placed draft
+    activeTool = .group      // Figma auto-swap back to the default tool;
+                             // the skip flag stops the resulting
+                             // onChange(of: activeTool) from committing
+                             // the just-placed draft
 }
 ```
 
@@ -862,7 +874,7 @@ private func insertText(at worldPoint: CGPoint) {
 }
 ```
 
-This works the same under all three tools, since any of them can leave you with a single text selected.
+This works the same under both tools, since either one can leave you with a single text element selected.
 
 **`commitTextEdit(id:)` is the one place edits are saved.** It's safe to call twice for a newly placed id because `pendingTextInserts.remove(id)` makes the second call a no-op. For re-edits it's scoped to `editingTextID == id`, so a double-fire (selection change, then focus loss) finds a nil original on the second pass and skips pushing a duplicate command.
 
@@ -1256,7 +1268,7 @@ Because "New Board" makes you choose a save location up front, `currentBoardURL`
 
 1. **Tools**
    - ~~Connect `activeTool` to canvas interactions~~ ✅
-   - ~~Selection via pointer tool~~ ✅
+   - ~~Tap to select a single item~~ ✅
    - ~~Marquee select for group tool~~ ✅
    - ~~Group move/resize~~ ✅
 
