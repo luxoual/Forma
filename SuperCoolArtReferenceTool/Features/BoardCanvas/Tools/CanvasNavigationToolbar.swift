@@ -58,8 +58,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
         // here because it's the same kind of "put stuff on the canvas"
         // action as the tools next to it.
         ToolbarItemGroup(placement: .topBarTrailing) {
-            toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
-            toolButton(.group, label: "Group", icon: "rectangle.dashed")
+            toolButton(.group, label: "Select", icon: "rectangle.dashed")
             toolButton(.text, label: "Text", icon: "textformat")
             Button("Add", systemImage: "plus", action: onAddItem)
         }
@@ -78,7 +77,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
 
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button("Go to Content", systemImage: "house", action: onHome)
+            Button("Fit to Content", systemImage: "house", action: onHome)
             Button(action: onSettings) {
                 Label("Settings", systemImage: "gear")
             }

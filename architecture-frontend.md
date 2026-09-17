@@ -62,12 +62,12 @@ Camera state lives in `@Observable final class CanvasCamera` (`CanvasCamera.swif
 - `camera.scale: CGFloat` — zoom level
 - Limits: `minScale = 0.05`, `maxScale = 8.0`
 
-Four things write to the camera: pinch, two-finger pan, the home button (`jumpToContentCenter`), and the landing snap when a board loads. All of them go through `camera.offset` / `camera.scale` — there's no second path.
+Four things write to the camera: pinch, two-finger pan, the home button (`zoomToFitContent`), and the landing snap when a board loads. All of them go through `camera.offset` / `camera.scale` — there's no second path. The home button and the landing snap write *both* properties, not just the offset — they zoom to fit as well as center.
 
 **Where the camera points on open:**
 
 - Normally, `.onAppear` sets `camera.offset` to `(screenWidth/2, screenHeight/2)`, putting world origin in the middle of the screen
-- If elements happened to load before `onAppear` ran, it calls `jumpToContentCenter(animated: false)` instead, so you land on your content
+- If elements happened to load before `onAppear` ran, it calls `zoomToFitContent(animated: false)` instead, so you land with your whole board on screen
 - When a board loads through `elementsToLoad`, that same snap is delayed by one run-loop tick (see "Landing snap" below for why)
 
 **Converting a tap to a world position:**
@@ -133,6 +133,7 @@ SwiftUI's `MagnificationGesture` only zooms around the center of the view. We wa
 - Reports the centroid in the installer's own coordinate space, not the window's, so it matches the space the canvas positions things in. Matters if the canvas ever gets inset by a toolbar or safe area
 - Attached with `.background(PinchGestureView(onPinch:))`, handled by `handlePinch(phase:scaleDelta:anchor:)`
 - The actual zoom math is a **pure function** with no view involved: `CanvasCamera.zoomAnchoredOffset(anchor:oldOffset:oldScale:newScale:)` in `CanvasCamera.swift`. It keeps `worldPoint = (anchor - offset) / scale` the same across the zoom change, which is what "the point under your fingers stays under your fingers" means mathematically. Being pure makes it testable without running a view.
+- The recognizer sets **`cancelsTouchesInView = true`**, along with `delaysTouchesBegan/Ended = false` and a delegate that returns `true` for `shouldRecognizeSimultaneouslyWith`. That first setting is the one place the two UIKit bridges disagree, and it's deliberate. Pinching over the selection action bar used to delete the very thing you were zooming in on: a finger landed on the delete button, held there through the zoom, and fired the button on lift. The bar's `allowsHitTesting(false)` can't stop that, because it blocks *new* hit tests, not a touch a button has already claimed. The bar can't hide any earlier either — `isInteracting` only flips on `.began`, and UIKit won't call `.began` until two touches have moved far enough to count as a pinch. Cancelling view touches at recognition kills the pending press. Only delivery to *views* is cancelled, so `TwoFingerPanView`'s recognizer is unaffected and pan + zoom still compose.
 
 ## Two-finger pan (bridged from UIKit)
 
@@ -170,9 +171,9 @@ Cleanup matters here. Each bridge's `dismantleUIView(_:coordinator:)` calls `Coo
 
 `offset` and `scale` now live in `CanvasCamera`. `zoomAnchoredOffset` is a static method on it.
 
-Three functions stayed on `BoardCanvasView` because they need view-local state the camera doesn't have:
+Four functions stayed on `BoardCanvasView` because they need view-local state the camera doesn't have:
 - `viewportCGRect()` and `allElementRects()` need `canvasSize`, `placedImages`, `placedTexts`
-- `jumpToContentCenter` needs `canvasSize`, `reduceMotion`, and `scheduleRefreshVisibleElements()` — it writes to `camera.offset` but lives on the view
+- `zoomToFitContent` and its `fitScale(for:)` helper need `canvasSize`, `reduceMotion`, `minScale`/`maxScale`, and `scheduleRefreshVisibleElements()` — they write to `camera.offset` and `camera.scale` but live on the view
 
 **Possible next step:** if the camera became an environment-injected observable, the toolbar could call camera methods directly, and the UUID-trigger pattern for `homeTrigger` (maybe `undoTrigger`/`redoTrigger` too) could go away.
 
@@ -279,18 +280,17 @@ We used to hand-build this as floating overlays (`CanvasOverlayLayout` + `Canvas
 
 ```
 [Leading group]                                                [Trailing items]
-< (back)  |  BoardName pill        [Pointer | Group | Text | Add] | [Undo | Redo] | [Settings]
+< (back)  |  BoardName pill   [Select | Text | Add] | [Undo | Redo] | [Home | Settings]
 ```
 
 - The **leading group** puts the back chevron and board name in one glass capsule. The name is a non-interactive glass button inside the group, so only the group's outer pill is glass — glass inside glass looks wrong
-- **Trailing groups** are separated by `ToolbarSpacer(.fixed)`. That spacer is what makes each group render as its own capsule
-- **Every button uses `Label("Title", systemImage:)`** so the overflow menu has real text to show when the bar runs out of room
+- **Trailing groups** are separated by `ToolbarSpacer(.fixed)`. That spacer is what makes each group render as its own capsule: tools+add, then history, then home+settings. Home sits next to Settings rather than next to Undo/Redo because Home moves the camera while Undo/Redo change the board itself — grouping buttons by what they touch keeps a "move the view" tap from landing next to a "change my work" tap
+- **Every button carries a title**, written either as `Label("Title", systemImage:)` or as `Button("Title", systemImage:action:)`, so the overflow menu has real text to show when the bar runs out of room
 
 **Tools group:**
 
 ```swift
 ToolbarItemGroup(placement: .topBarTrailing) {
-    toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
     toolButton(.group,   label: "Group",   icon: "rectangle.dashed")
     toolButton(.text,    label: "Text",    icon: "textformat")
     Button("Add", systemImage: "plus", action: onAddItem)
@@ -342,6 +342,7 @@ NavigationStack {
                 onBack: handleBack,
                 onUndo: { undoTrigger = UUID() },
                 onRedo: { redoTrigger = UUID() },
+                onHome: { homeTrigger = UUID() },
                 onAddItem: openImageImporter,
                 onSettings: { showingSettings = true }
             )
@@ -412,18 +413,28 @@ The panel itself stays 160×100 in any orientation. The indicator's shape inside
 **Status: Implemented**
 **Files:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`, `BoardCanvasView.swift`
 
-A house icon in the undo/redo group that flies the camera back to the middle of your content.
+A house icon, titled "Fit to Content", in the home+settings group. Tap it and the camera flies back to your work — zooming out far enough that every element sits on screen at once, centered. It fits the board, it doesn't only re-center it.
 
-**How the button reaches the canvas:** the same UUID trick as undo/redo. `ContentView` owns `@State private var homeTrigger: UUID?`. Tapping sets it to a fresh `UUID()`. `BoardCanvasView` watches it with `.onChange(of: homeTrigger)`, calls `jumpToContentCenter()`, and clears it. The point of a UUID rather than a `Bool` is that every tap is a distinct value, so two taps in a row both register.
+**How the button reaches the canvas:** the same UUID trick as undo/redo. `ContentView` owns `@State private var homeTrigger: UUID?`. Tapping sets it to a fresh `UUID()`. `BoardCanvasView` watches it with `.onChange(of: homeTrigger)`, calls `zoomToFitContent()`, and clears it. The point of a UUID rather than a `Bool` is that every tap is a distinct value, so two taps in a row both register.
 
-**`jumpToContentCenter(animated: Bool = true)`:**
+**`zoomToFitContent(animated: Bool = true)`:**
 
 1. Bails unless `canvasSize != .zero` and `camera.scale > 0`
-2. `guard let bounds = union(of: allElementRects()) else { return }` — nothing to center on if the board is empty
-3. Works out the offset that puts the content's middle at the screen's middle:
-   `target = CGSize(width: canvasSize.width/2 - bounds.midX * camera.scale, height: canvasSize.height/2 - bounds.midY * camera.scale)`
-4. If animating and Reduce Motion is off: `.easeInOut(0.4)`, with `scheduleRefreshVisibleElements()` in the `completion:` block so images don't pop in mid-flight
-5. Otherwise: set the offset instantly and refresh immediately
+2. `guard let bounds = union(of: allElementRects()) else { return }` — nothing to fit if the board is empty
+3. Asks how far to zoom: `let targetScale = fitScale(for: bounds)`
+4. Works out the offset that puts the content's middle at the screen's middle:
+   `target = CGSize(width: canvasSize.width/2 - bounds.midX * targetScale, height: canvasSize.height/2 - bounds.midY * targetScale)`
+5. If animating and Reduce Motion is off: `.easeInOut(0.4)`, writing **both** `camera.scale` and `camera.offset` inside the one block so the zoom and the pan ease together instead of stepping on each other. `scheduleRefreshVisibleElements()` goes in the `completion:` block so images don't pop in mid-flight
+6. Otherwise: set scale and offset instantly, then refresh immediately
+
+**The easy thing to get wrong here: taking the offset from `camera.scale` instead of `targetScale`.** Step 4 multiplies the content's center by the scale it is *about to* be drawn at. Hand it the pre-zoom scale and the content settles off-center by exactly the zoom delta. It reads like a bug in the centering formula, but the formula is fine — it was given the wrong number.
+
+**`fitScale(for bounds: CGRect) -> CGFloat`** — decides how far to zoom out:
+
+- The space to fit into is `canvasSize` minus `fitPadding` (64pt) on every edge, so the outermost elements clear the toolbar and the screen edges instead of sitting flush against them. Each axis is floored at 1, so a canvas narrower than its own padding still can't produce a zero or negative extent
+- The fit itself is `min(availableW / bounds.width, availableH / bounds.height)` — whichever axis runs out of room first is the one that decides. That result then goes through `clamp(min(fit, 1.0), minScale, maxScale)`
+- **The `min(fit, 1.0)` caps fitting at 1.0, so it only ever zooms out, never in.** A board holding one small image would otherwise be blown up past its native size on every home press, which just blurs the reference art. Figma and Miro do magnify past 100% on zoom-to-fit; this app deliberately doesn't, because the content here is raster reference imagery and enlarging it shows nothing new. If that call is ever revisited, dropping the `min(fit, 1.0)` is the whole change
+- A zero-width or zero-height bounding box would divide by zero, so a degenerate axis is skipped and the other one decides alone. If both are degenerate, it returns the current `camera.scale` and nothing moves
 
 `@Environment(\.accessibilityReduceMotion) private var reduceMotion` is read on `BoardCanvasView` and respected on the animated path.
 
@@ -431,11 +442,11 @@ A house icon in the undo/redo group that flies the camera back to the middle of 
 
 **Status: Implemented**
 
-Open a board with content and you land looking at that content, not at empty space near the world origin.
+Open a board with content and you land looking at that content, not at empty space near the world origin. It calls the same `zoomToFitContent(animated: false)` the home button uses, so opening a board and pressing Home leave you in exactly the same place — same zoom included.
 
 **Why it needs `DispatchQueue.main.async`:**
 
-The snap fires from `onChange(of: elementsToLoad)`, right after `applyElements`. But `jumpToContentCenter` refuses to run unless `canvasSize != .zero`, and `canvasSize` is only set in `BoardCanvasView.onAppear`.
+The snap fires from `onChange(of: elementsToLoad)`, right after `applyElements`. But `zoomToFitContent` refuses to run unless `canvasSize != .zero`, and `canvasSize` is only set in `BoardCanvasView.onAppear`.
 
 SwiftUI doesn't guarantee which `onAppear` runs first. Sometimes `ContentView.onAppear` (which sets `elementsToLoad`) fires *before* `BoardCanvasView.onAppear`, so `canvasSize` is still zero and the snap silently gives up.
 
@@ -459,8 +470,7 @@ CanvasTool (enum)              -- toolbar identity, UI selection
     |
     v
 CanvasToolBehavior (protocol)  -- gesture interpretation per tool
-    ├── PointerToolBehavior    -- tap=select, drag-on-item=move, drag-on-empty=pan
-    ├── GroupToolBehavior      -- tap=toggle selection, drag-on-item=group move, drag-on-empty=marquee select
+    ├── GroupToolBehavior      -- tap=select one (shift-tap=toggle), drag-on-item=move, drag-on-empty=marquee
     └── TextToolBehavior       -- tap-empty=place text (canvas owns this), tap-item=select, drag-on-item=move, drag-on-empty=pan
 ```
 
@@ -493,13 +503,26 @@ Taps are split into two methods so the view can call the right one based on whic
 3. Later `.onChanged` events: `applyDrag()` sends them to pan, move, resize, or marquee based on the cached mode
 4. `.onEnded`: commit whichever action was running
 
-**Pointer:** drag an item to select it, raise it, and move it. Drag empty space to pan. Tap an item to select. Tap empty to deselect.
+**Group** — the only general-purpose selection tool; there is no pointer tool any more:
 
-**Group:** drag a selected item to move the whole group. Drag an unselected item to add it (`extending: true`) and move. Drag empty space to draw a marquee. Tap an item to toggle its membership. Tap empty to clear.
+- Tap an item: select just that one, replacing whatever was selected, then bring it to the top
+- Shift-tap an item: toggle it in or out of the selection, and *don't* promote its z-order
+- Drag on empty canvas: `.marqueeSelect` mode — draw a selection rectangle
+- Drag a selected item: `.moveItem` mode — move the whole group
+- Drag an unselected item: add it to the selection (`extending: true`), then `.moveItem`
+- Tap empty space: clear the selection
 
-**Text:** drag an item to select and move it (same as pointer). Drag empty space to pan. Tap an item to select it. Tap empty space is special — see below.
+Committing a marquee always **replaces** the selection. `commitMarqueeSelect` assigns `selection.selectedIDs = ids` outright — it never adds to what was already there, Shift or no Shift.
 
-**Why text's empty-tap is handled by the canvas, not the tool:** placing text needs the world coordinate of the tap, and that lives in the view's coordinate space, which the protocol doesn't expose. So `TextToolBehavior.tappedEmpty` only clears the selection, and `BoardCanvasView` does the actual `insertText(at:)`. After placing, `insertText` switches `activeTool = .pointer` automatically (the Figma convention), so you don't leave a trail of empty text boxes with every tap.
+**Why Shift is the key that adds to a selection.** A tablet has no modifier you can hold with touch alone, so the touch-only route to multi-select is the marquee, and a plain tap stays unambiguous. Where a hardware keyboard *is* attached, Shift-tap gives you the desktop convention for free.
+
+Reading that Shift state is the awkward part. SwiftUI's `.onTapGesture` reports no modifier state on iOS — `Gesture.modifiers(_:)` is macOS-only — so `KeyModifierMonitor` bridges it. It's a passive `UIGestureRecognizer` that reads `modifierFlags` (iPadOS 13.4+) on `touchesBegan` and immediately sets `state = .failed`, so it watches without ever claiming the touch. UIKit delivers `touchesBegan` to the hit-chain's recognizers before SwiftUI resolves a tap on touch-up, so the flag is current by the time the handler reads it. `BoardCanvasView` reads the monitor at the call site and passes `extending:` into `tappedItem`, which keeps the behaviors pure functions of their inputs.
+
+**Text:** drag an item to select and move it. Drag empty space to pan. Tap an item to select it (single-select, or toggle under Shift). Tap empty space is special — see below.
+
+**Why text's empty-tap is handled by the canvas, not the tool:** placing text needs the world coordinate of the tap, and that lives in the view's coordinate space, which the protocol doesn't expose. So `TextToolBehavior.tappedEmpty` only clears the selection, and `BoardCanvasView` does the actual `insertText(at:)`. After placing, `insertText` switches `activeTool` back to `.group` automatically (the Figma convention), so you don't leave a trail of empty text boxes with every tap.
+
+**`CanvasTool` has two cases, `.group` and `.text`.** `.group` is where boards open, and what `insertText` swaps back to after a placement; `.text` is a momentary mode. The pointer tool was removed rather than demoted — its tap-to-select-one behavior moved into `GroupToolBehavior`, which left nothing to tell the two apart except drag-on-empty, and that isn't worth a second tool and the mode switch it costs. None of this affects getting around the canvas: two-finger pan is installed at the canvas level and stays live whatever tool is active (see "Two-finger pan").
 
 **Factory:** `toolBehavior(for: CanvasTool) -> CanvasToolBehavior`.
 
@@ -632,9 +655,9 @@ ContentView                  — triggers undo/redo from toolbar
 # Selection action bar
 
 **Status: Implemented**
-**Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`
+**Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`, `TextColorWell.swift`
 
-A small floating bar that appears next to whatever you've selected. Right now it holds one button: delete.
+A small floating bar that appears next to whatever you've selected. It holds two controls: delete, which works on any selection, and a text color well that only appears when the selection contains text.
 
 We tried `.contextMenu(menuItems:preview:)` first. Its default preview couldn't lift a whole multi-selection, and a custom preview couldn't blur the items that weren't part of it. So: a floating bar.
 
@@ -649,6 +672,32 @@ Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
 ```
 
 The title still exists for VoiceOver; `.labelStyle(.iconOnly)` just hides it visually. The native glass style brings its own material, press animation, and shape, replacing hand-rolled `RoundedRectangle` + shadow code.
+
+**The text color well (`TextColorWell`):**
+
+Slotted in ahead of the delete button whenever `textColorHex != nil` — that is, whenever the selection contains text. This one *is* conditionally inserted, unlike the bar itself. The stale-glass problem described below only bites at launch, and by the time you've selected a text element the canvas composited long ago.
+
+It's the native `ColorPicker` well with `.labelsHidden()`, wrapped in glass. The well *is* the button: tapping it opens the system color picker straight away, with no popover of our own in between.
+
+```swift
+ColorPicker("Text Color", selection: pickerBinding, supportsOpacity: false)
+    .labelsHidden()
+    .frame(width: CanvasActionBarMetrics.buttonSide,
+           height: CanvasActionBarMetrics.buttonSide)
+    .glassEffect(.regular.interactive(), in: .circle)
+```
+
+**Why `CanvasActionBarMetrics.buttonSide = 52`.** `ColorPicker` sizes its own well and ignores `controlSize`, so left alone it won't line up with the `.controlSize(.large)` glass button beside it. 52pt is the documented iOS button height for the large control size: the HIG's button-shape table lists mini 28 / small 32 / regular 44 / **large 52** / extra large 64, and those names map one-to-one onto SwiftUI's `ControlSize`. Every control in the bar takes that frame explicitly — including the ones `.controlSize(.large)` would already size correctly — so the constant is the single source of truth instead of one control quietly measuring another. Icon-only controls at that size are circular per the same table, which is why it's `in: .circle`.
+
+**The swatch row is the system's; the default color is ours.** We don't draw a recents row. `UIColorPickerViewController` already has a saved-swatch row, and drawing a second one would make this the odd control out on the platform. That row has limits — you curate it by hand with "+", it's shared system-wide rather than scoped to this app, and there's no API to read or seed it. So we keep exactly one value of our own: the last hex picked, which `insertText` hands to every new text element. Pick a color once and it stays the default until you pick another.
+
+**That value belongs to the board, not the app.** It rides in the manifest as `lastTextColor` (schema v3 — see `architecture-backend.md`). `ContentView` owns it as `@State lastTextColorHex` and binds it into `BoardCanvasView`, which seeds new text from it and writes back through the binding on every commit. A dark board and a light board want different text colors, and picking on one shouldn't quietly change the other. `ContentView` also carries a `lastTextColorDirty` flag next to `canvasColorDirty`, for the same reason that one exists: picking a color might not touch the element store at all, so `wasDirty` on its own would let `saveInPlace` conclude there was nothing to save.
+
+`TextColorMemory` (`Features/BoardCanvas/Elements/TextColorMemory.swift`) holds only the *rules* — hex normalization, and the fallback below. It's stateless, so where the value actually lives stays the caller's decision.
+
+**Before you've picked anything** there's nothing to remember, so `defaultHex(onCanvas:)` works the starting color out from the canvas. It takes the W3C relative luminance of the resolved `canvasColor` and returns the palette's near-black above the 0.179 crossover, its white below. It keys off the canvas rather than `colorScheme` because `canvasColor` is user-settable in board settings — a light board still wants dark text even on a device in dark mode. Without this, `ContentView`'s `Color(uiColor: .systemBackground)` default put `#191919` text on a black canvas in dark mode, which is to say invisible text.
+
+**Coalescing a picker drag into one undo step.** The system picker publishes a new color on every frame while you drag across the spectrum. `BoardCanvasView.applyTextColor(hex:)` repaints the canvas immediately but holds the store write and the history push back by 400 ms (`textColorCommitTask`), and snapshots the per-element originals only on the first call. So one visit to the picker costs one undo step, not hundreds. `commitTextColorEdit()` is flushed at the top of `performUndo` / `performRedo` and in the snapshot trigger, so a pending pick can't land after a save or an undo has already gone through.
 
 **Positioning — and why the bar is always mounted**
 
@@ -709,10 +758,14 @@ private struct PlacedText: Identifiable {
     var worldRect: CGRect         // origin = anchor; size derives from rendered geometry
     var zIndex: Int
     var fontSize: CGFloat         // base/world units, NOT pre-scaled by canvas zoom
-    var color: Color
+    var colorHex: String          // authoritative "#RRGGBB"; `color` is derived
     var wrapWidth: CGFloat?       // nil = auto-width; set = fixed wrap width (Figma convention)
+
+    var color: Color { Color(hex: colorHex) ?? DesignSystem.Colors.primary }
 }
 ```
+
+Color is stored as a hex string rather than as a `Color` for two reasons. It round-trips through `CMCanvasElementPayload.text` unchanged, and it can be snapshotted for undo without needing an `EnvironmentValues` to resolve an adaptive `Color` down to real channel values. A malformed hex — a manifest written by some other build, say — falls back to the palette primary.
 
 `fontSize` is the one true source of text size. Corner-drag resize, group resize, and any future font-size picker all change this same field. `worldRect.size` is *measured from what actually rendered* — never assigned directly, except for `worldRect.origin`.
 
@@ -800,9 +853,10 @@ private func insertText(at worldPoint: CGPoint) {
     selection.clearSelection()
     editingTextID = id
     skipNextToolChangeCommit = true
-    activeTool = .pointer    // Figma auto-swap; the skip flag stops the
-                             // resulting onChange(of: activeTool) from
-                             // committing the just-placed draft
+    activeTool = .group      // Figma auto-swap back to the default tool;
+                             // the skip flag stops the resulting
+                             // onChange(of: activeTool) from committing
+                             // the just-placed draft
 }
 ```
 
@@ -820,7 +874,7 @@ private func insertText(at worldPoint: CGPoint) {
 }
 ```
 
-This works the same under all three tools, since any of them can leave you with a single text selected.
+This works the same under both tools, since either one can leave you with a single text element selected.
 
 **`commitTextEdit(id:)` is the one place edits are saved.** It's safe to call twice for a newly placed id because `pendingTextInserts.remove(id)` makes the second call a no-op. For re-edits it's scoped to `editingTextID == id`, so a double-fire (selection change, then focus loss) finds a nil original on the second pass and skips pushing a duplicate command.
 
@@ -933,7 +987,7 @@ Now the snapshot includes everything typed, no matter how fast you hit back.
 
 ## Persistence
 
-`CMCanvasElementPayload.text` and `BoardArchiver.ManifestPayload.text` mirror `PlacedText`'s fields (content, fontName, fontSize, color, wrapWidth). `wrapWidth` uses `encodeIfPresent` / `decodeIfPresent`, so older `.refboard` files that predate the field load fine with `wrapWidth = nil` (auto-width). See `architecture-backend.md` for how the file format evolves.
+`CMCanvasElementPayload.text` and `BoardArchiver.ManifestPayload.text` mirror `PlacedText`'s fields (content, fontName, fontSize, color, wrapWidth). The `color` field is genuinely read and written now. Both load paths used to throw it away and substitute a hard-coded palette primary; that stopped once `PlacedText.colorHex` became the authoritative value. `wrapWidth` uses `encodeIfPresent` / `decodeIfPresent`, so older `.refboard` files that predate the field load fine with `wrapWidth = nil` (auto-width). See `architecture-backend.md` for how the file format evolves.
 
 ## Which text actions are undoable
 
@@ -943,6 +997,7 @@ Now the snapshot includes everything typed, no matter how fast you hit back.
 | Re-edit content | `.editTextContent(from, to)` | Only when the content actually changed |
 | Re-edit cleared everything | `.delete` | Snapshot rebuilds from original content, so undo restores the text |
 | Move text | `.move` | Same command as images; `applyMoveDelta` walks both arrays |
+| Change text color | `.setTextColor(fromHexes, toHex)` | `fromHexes` is per-element, since a multi-text selection can start out mixed; `toHex` is shared. Debounced, so a picker drag is one step |
 | Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin |
 | Group resize including text | `.groupResize` | Extended with text-state dictionaries |
 | Delete via action bar | `.delete` | `deleteSelection` snapshots both kinds; `applyResizeRects` filters out text ids defensively |
@@ -1213,7 +1268,7 @@ Because "New Board" makes you choose a save location up front, `currentBoardURL`
 
 1. **Tools**
    - ~~Connect `activeTool` to canvas interactions~~ ✅
-   - ~~Selection via pointer tool~~ ✅
+   - ~~Tap to select a single item~~ ✅
    - ~~Marquee select for group tool~~ ✅
    - ~~Group move/resize~~ ✅
 

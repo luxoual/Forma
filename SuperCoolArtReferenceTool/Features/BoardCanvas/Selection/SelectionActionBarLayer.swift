@@ -14,6 +14,10 @@ struct SelectionActionBarLayer: View {
     let offset: CGSize
     /// True while a drag/resize/marquee is in progress — the bar hides then.
     let isInteracting: Bool
+    /// Current text color of the selection as `#RRGGBB`, or nil when the
+    /// selection holds no text (the color controls hide then).
+    let textColorHex: String?
+    let onPickTextColor: (String) -> Void
     let onDelete: () -> Void
 
     /// Last visible center, so the bar fades out in place instead of snapping
@@ -51,7 +55,11 @@ struct SelectionActionBarLayer: View {
     }
 
     var body: some View {
-        CanvasSelectionActionBar(onDelete: onDelete)
+        CanvasSelectionActionBar(
+            textColorHex: textColorHex,
+            onPickTextColor: onPickTextColor,
+            onDelete: onDelete
+        )
             .position(displayCenter)
             .opacity(isVisible ? 1 : 0)
             .allowsHitTesting(isVisible)

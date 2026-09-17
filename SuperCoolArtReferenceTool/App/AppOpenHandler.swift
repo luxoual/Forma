@@ -10,4 +10,8 @@ final class AppOpenHandler {
     /// `nil` for legacy v1 boards (or files written before the field
     /// existed) — the canvas will fall back to the system background.
     var importedCanvasColorHex: String?
+    /// Last text color picked on the imported board, as `#RRGGBB`. `nil`
+    /// when the file predates the field or nothing was ever picked — the
+    /// canvas then derives a readable default from its own background.
+    var importedLastTextColorHex: String?
 }

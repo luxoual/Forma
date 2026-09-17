@@ -25,7 +25,7 @@ import os
 /// import paths would all spam warnings.
 nonisolated enum BoardArchiver {
     /// Result of importing a `.refboard`. Carries the placed elements plus any
-    /// board-level state stored in the manifest (currently just the canvas
+    /// board-level state stored in the manifest (canvas color, last text
     /// color). Optional fields are `nil` when missing from the file —
     /// callers fall back to whatever default they prefer (system background
     /// for canvas color, etc.).
@@ -34,6 +34,13 @@ nonisolated enum BoardArchiver {
         /// `#RRGGBB` hex, or `nil` for legacy v1 boards saved before this
         /// field existed. The SwiftUI layer turns it into a `Color`.
         let canvasColorHex: String?
+        /// `#RRGGBB` hex of the last text color picked on this board, or
+        /// `nil` when the board predates the field or has never had one
+        /// picked. New text elements start in this color, so it's board
+        /// state rather than an app-wide preference: a dark board and a
+        /// light board want different text and shouldn't overwrite each
+        /// other's choice.
+        let lastTextColorHex: String?
     }
 
     /// Import a `.refboard` URL. Supports both legacy package folders and the
@@ -157,7 +164,11 @@ nonisolated enum BoardArchiver {
                 results.append(element)
             }
         }
-        return ImportResult(elements: results, canvasColorHex: manifest.canvasColor)
+        return ImportResult(
+            elements: results,
+            canvasColorHex: manifest.canvasColor,
+            lastTextColorHex: manifest.lastTextColor
+        )
     }
 
     private static func safeAssetURL(packageURL: URL, relativePath: String) -> URL? {
@@ -192,7 +203,16 @@ nonisolated enum BoardArchiver {
     /// `canvasColorHex` is `#RRGGBB`; pass `nil` for "no preference saved" (a fresh
     /// new-board export, or a board the user hasn't touched the color on). On
     /// reopen, the SwiftUI layer falls back to the system background when nil.
-    nonisolated static func export(elements: [CMCanvasElement], canvasColorHex: String?, to destination: URL) throws -> URL {
+    ///
+    /// `lastTextColorHex` is the same shape: the color new text on this board
+    /// should start in, or `nil` when nothing has been picked, in which case
+    /// the canvas derives a readable default from its own background.
+    nonisolated static func export(
+        elements: [CMCanvasElement],
+        canvasColorHex: String?,
+        lastTextColorHex: String?,
+        to destination: URL
+    ) throws -> URL {
         let signposter = OSSignposter.archiver
         let signpostID = signposter.makeSignpostID()
         let intervalState = signposter.beginInterval("export", id: signpostID, "provider: \(fileProviderDescription(for: destination), privacy: .public), elements: \(elements.count, privacy: .public)")
@@ -273,7 +293,12 @@ nonisolated enum BoardArchiver {
             try archive.remove(existing)
         }
         let manifestData = try JSONEncoder().encode(
-            BoardManifest(version: 2, elements: manifestElements, canvasColor: canvasColorHex)
+            BoardManifest(
+                version: 3,
+                elements: manifestElements,
+                canvasColor: canvasColorHex,
+                lastTextColor: lastTextColorHex
+            )
         )
         try archive.addEntry(
             with: "manifest.json",
@@ -373,6 +398,16 @@ nonisolated enum BoardArchiver {
         /// have no key, which `Codable` synthesizes as `nil` automatically,
         /// so old boards still decode cleanly.
         var canvasColor: String?
+        /// `#RRGGBB` hex the board's next new text element should use, or
+        /// `nil` (= "nothing picked yet; derive one from the canvas").
+        /// Added in manifest version 3; same story as `canvasColor` for
+        /// older files — the key is simply absent and decodes to `nil`.
+        ///
+        /// `version` is written but not currently read on import, so a v3
+        /// file still loads in a build that only knows v2: the unknown key
+        /// is ignored by `Codable` and the board opens without its text
+        /// color. Bumping is documentation of the format, not a gate.
+        var lastTextColor: String?
     }
 
     private struct ManifestElement: Codable {

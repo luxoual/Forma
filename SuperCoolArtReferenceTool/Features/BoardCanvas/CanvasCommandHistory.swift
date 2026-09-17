@@ -59,6 +59,15 @@ enum CanvasCommand {
         fromWrapWidth: CGFloat?, toWrapWidth: CGFloat?,
         fromOrigin: CGPoint, toOrigin: CGPoint
     )
+    /// Text color was changed from the selection action bar. `fromHexes` is
+    /// per-element because a multi-text selection can start out in mixed
+    /// colors, and undo has to restore each one — `toHex` is shared because
+    /// a pick always paints the whole selection uniformly.
+    ///
+    /// Live picker drags are coalesced by the host before a command lands
+    /// here (see `BoardCanvasView.applyTextColor`), so one visit to the
+    /// color picker is one undo step, not one per frame.
+    case setTextColor(fromHexes: [UUID: String], toHex: String)
 }
 
 /// Tracks performed commands for undo/redo support.

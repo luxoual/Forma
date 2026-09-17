@@ -27,9 +27,14 @@ protocol CanvasToolBehavior {
     /// Called when a specific item was tapped. Hit-testing is already done by
     /// the view layer (per-item `.onTapGesture`), so no world-point lookup is
     /// needed here.
+    ///
+    /// `extending` is the caller's read of the hardware Shift key at touch-down
+    /// (see `KeyModifierMonitor`). Passed in rather than read here so the
+    /// behaviors stay pure functions of their inputs.
     @MainActor
     func tappedItem(
         id: UUID,
+        extending: Bool,
         store: LocalBoardStore,
         selection: CanvasSelectionState
     ) async
@@ -39,48 +44,28 @@ protocol CanvasToolBehavior {
     func tappedEmpty(selection: CanvasSelectionState)
 }
 
-struct PointerToolBehavior: CanvasToolBehavior {
-    @MainActor
-    func dragBegan(
-        worldStart: CGPoint,
-        items: [HitTestItem],
-        selection: CanvasSelectionState
-    ) -> DragMode {
-        if let hit = Self.topmostItem(at: worldStart, in: items) {
-            if !selection.selectedIDs.contains(hit.id) {
-                selection.select(hit.id)
-            }
-            return .moveItem
-        } else {
-            return .pan
-        }
-    }
-
-    static func topmostItem(at point: CGPoint, in items: [HitTestItem]) -> HitTestItem? {
-        items.filter { $0.worldRect.contains(point) }
-             .max(by: { $0.zIndex < $1.zIndex })
-    }
-
-    @MainActor
-    func tappedItem(
-        id: UUID,
-        store: LocalBoardStore,
-        selection: CanvasSelectionState
-    ) async {
-        selection.select(id)
-        await store.moveToTop(elementIDs: [id])
-    }
-
-    @MainActor
-    func tappedEmpty(selection: CanvasSelectionState) {
-        selection.clearSelection()
-    }
+/// Topmost (highest `zIndex`) item whose world rect contains `point`.
+/// Shared by every behavior — hit-testing doesn't vary per tool.
+func topmostItem(at point: CGPoint, in items: [HitTestItem]) -> HitTestItem? {
+    items.filter { $0.worldRect.contains(point) }
+         .max(by: { $0.zIndex < $1.zIndex })
 }
 
+/// The canvas's single general-purpose selection tool.
+///
+/// - Tap an item: select just that item, and bring it to the top.
+/// - Shift-tap an item: toggle it in or out of the current selection. Requires
+///   a hardware keyboard; on touch alone the marquee is the multi-select path.
+/// - Drag from empty canvas: marquee select (always replaces).
+/// - Drag from an item: move the selection.
+///
+/// Two-finger pan is installed at the canvas level and stays live throughout,
+/// which is what makes it fine for a one-finger drag on empty canvas to marquee
+/// rather than pan.
 struct GroupToolBehavior: CanvasToolBehavior {
     @MainActor
     func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode {
-        if let hit = PointerToolBehavior.topmostItem(at: worldStart, in: items) {
+        if let hit = topmostItem(at: worldStart, in: items) {
             if !selection.selectedIDs.contains(hit.id) {
                 selection.select(hit.id, extending: true)
             }
@@ -91,8 +76,14 @@ struct GroupToolBehavior: CanvasToolBehavior {
     }
 
     @MainActor
-    func tappedItem(id: UUID, store: LocalBoardStore, selection: CanvasSelectionState) async {
-        selection.select(id, extending: true)
+    func tappedItem(id: UUID, extending: Bool, store: LocalBoardStore, selection: CanvasSelectionState) async {
+        // `select(extending:)` toggles, so a shift-tap on an already-selected
+        // item removes it — the desktop convention.
+        selection.select(id, extending: extending)
+        guard !extending else { return }
+        // Only a plain tap promotes: raising z-order on every shift-tap would
+        // reshuffle the stack while the user is still assembling a selection.
+        await store.moveToTop(elementIDs: [id])
     }
 
     @MainActor
@@ -108,7 +99,7 @@ struct TextToolBehavior: CanvasToolBehavior {
         items: [HitTestItem],
         selection: CanvasSelectionState
     ) -> DragMode {
-        if let hit = PointerToolBehavior.topmostItem(at: worldStart, in: items) {
+        if let hit = topmostItem(at: worldStart, in: items) {
             if !selection.selectedIDs.contains(hit.id) {
                 selection.select(hit.id)
             }
@@ -120,10 +111,12 @@ struct TextToolBehavior: CanvasToolBehavior {
     @MainActor
     func tappedItem(
         id: UUID,
+        extending: Bool,
         store: LocalBoardStore,
         selection: CanvasSelectionState
     ) async {
-        selection.select(id)
+        selection.select(id, extending: extending)
+        guard !extending else { return }
         await store.moveToTop(elementIDs: [id])
     }
 
@@ -138,7 +131,6 @@ struct TextToolBehavior: CanvasToolBehavior {
 
 func toolBehavior(for tool: CanvasTool) -> CanvasToolBehavior {
     switch tool {
-    case .pointer: return PointerToolBehavior()
     case .group: return GroupToolBehavior()
     case .text: return TextToolBehavior()
     }
