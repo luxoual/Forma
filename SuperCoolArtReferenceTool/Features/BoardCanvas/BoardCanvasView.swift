@@ -172,7 +172,8 @@ struct BoardCanvasView: View {
                     showGrid: showGrid,
                     scale: camera.scale,
                     offset: camera.offset,
-                    gridSpacing: gridSpacingWorld
+                    gridSpacing: gridSpacingWorld,
+                    safeAreaInsets: geo.safeAreaInsets
                 )
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
