@@ -88,10 +88,17 @@ func screenToWorld(_ p: CGPoint) -> CGPoint {
 
 **The grid:**
 
+- Lives in `CanvasGridView` (`Features/BoardCanvas/CanvasGridView.swift`)
 - Lines every 128 world units (`gridSpacingWorld = 128.0`)
 - Drawn in world coordinates, then converted to screen positions
 - Toggled by `showGrid`
 - There used to be a red crosshair at the origin. It caused render timing problems and was removed.
+
+**The grid must share the content's origin.** The grid has `.ignoresSafeArea()` so its lines keep going under the glass toolbar instead of stopping at a visible seam. That modifier grows the grid's frame upward, so the grid's `(0, 0)` is the top of the screen. Images and text are placed with `.position()` inside the `ZStack`, whose `(0, 0)` is the top of the safe area, just below the toolbar. Both used the same formula (`world * scale + offset`), so every grid line landed one toolbar-height above where the content believed that world coordinate was.
+
+It looked like the grid panned at a different rate than the content. It didn't. The error was a fixed number of screen points, which in world units is `toolbarHeight / scale`. Line an image up with the grid at one zoom, change the zoom (pinch-panning always does a little), and the world-space error changes, so the image slides off the grid.
+
+The fix: `BoardCanvasView` passes `geo.safeAreaInsets` into `CanvasGridView`, which adds `insets.top` and `insets.leading` to `offset` before mapping world to screen. That puts the grid's origin back where the content's is. If you ever move the grid out from under `.ignoresSafeArea()`, pass zero insets, or the grid will shift the other way.
 
 **Empty canvas:**
 
