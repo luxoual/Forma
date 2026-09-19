@@ -182,7 +182,7 @@ Four functions stayed on `BoardCanvasView` because they need view-local state th
 - `viewportCGRect()` and `allElementRects()` need `canvasSize`, `placedImages`, `placedTexts`
 - `zoomToFitContent` and its `fitScale(for:)` helper need `canvasSize`, `reduceMotion`, `minScale`/`maxScale`, and `scheduleRefreshVisibleElements()` — they write to `camera.offset` and `camera.scale` but live on the view
 
-**Possible next step:** if the camera became an environment-injected observable, the toolbar could call camera methods directly, and the UUID-trigger pattern for `homeTrigger` (maybe `undoTrigger`/`redoTrigger` too) could go away.
+**Possible next step:** if the camera became an environment-injected observable, the toolbar could call camera methods directly, and the UUID-trigger pattern for `homeTrigger` could go away. (Undo/redo already dropped theirs when they moved onto the system `UndoManager` — see "Undo and redo".)
 
 **One subtlety to watch:** `PinchGestureView` reports its centroid in installer-local coordinates; `TwoFingerPanView` uses `recognizer.view`. These are the same space today only because the installer sits as a `.background` of the canvas ZStack. Inset the canvas and they'd drift apart. For any new recognizer that reports points, use installer-local coordinates.
 
@@ -347,8 +347,10 @@ NavigationStack {
                 boardName: boardName,
                 activeTool: $activeTool,
                 onBack: handleBack,
-                onUndo: { undoTrigger = UUID() },
-                onRedo: { redoTrigger = UUID() },
+                canUndo: commandHistory.canUndo,
+                canRedo: commandHistory.canRedo,
+                onUndo: { commandHistory.undo() },
+                onRedo: { commandHistory.redo() },
                 onHome: { homeTrigger = UUID() },
                 onAddItem: openImageImporter,
                 onSettings: { showingSettings = true }
@@ -624,38 +626,51 @@ Each change uses batched `elements(for:)` + `upsert(elements:)`: two round-trips
 # Undo and redo
 
 **Status: Implemented**
-**Files:** `CanvasCommandHistory.swift`, `BoardCanvasView.swift`, `ContentView.swift`
+**Files:** `CanvasCommandHistory.swift`, `WindowUndoManagerReader.swift`, `BoardCanvasView.swift`, `ContentView.swift`, `CanvasNavigationToolbar.swift`
 
-Every reversible action is recorded as a small description of what changed and what it changed from — enough to play it backwards or forwards, without storing whole board snapshots.
+Every reversible action is recorded as a small description of what changed and what it changed from — enough to play it backwards or forwards, without storing whole board snapshots. The stacks themselves belong to the system: we hand each action to the window's `UndoManager` (Foundation's built-in undo system), and iPadOS gives us the menu bar's Edit > Undo/Redo, the three-finger swipe, the floating Undo/Redo pill, and ⌘Z / ⇧⌘Z in return.
 
 ```
 CanvasCommand (enum)         — describes a reversible operation
-CanvasCommandHistory         — @Observable class with undo/redo stacks
-BoardCanvasView              — executes commands via helper methods
-ContentView                  — triggers undo/redo from toolbar
+CanvasCommandHistory         — thin @Observable wrapper around the window's UndoManager
+BoardCanvasView              — perform(_:) runs a command and returns its reverse
+ContentView                  — toolbar buttons call commandHistory.undo() / redo()
 ```
 
-| Command | Data stored | Undo | Redo |
-|---------|-------------|------|------|
-| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize` | Move by -delta | Move by +delta |
-| `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Restore fromRect | Restore toRect |
-| `.groupResize` | `fromRects: [UUID: CGRect]`, `toRects: [UUID: CGRect]` | Restore all fromRects | Apply all toRects |
-| `.insert` | `snapshots: [PlacedElementSnapshot]` | Remove elements | Re-add elements |
-| `.delete` | `snapshots: [PlacedElementSnapshot]` | Re-add elements | Remove elements |
+| Command | Data stored | Applying it |
+|---------|-------------|-------------|
+| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize` | Move by delta; reverse is `-delta` |
+| `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Apply toRect; reverse swaps from/to |
+| `.groupResize` | `fromRects`, `toRects`, `fromTextStates`, `toTextStates` | Apply all `to*`; reverse swaps |
+| `.insert` | `snapshots: [PlacedElementSnapshot]` | Add elements; reverse is `.delete` |
+| `.delete` | `snapshots: [PlacedElementSnapshot]` | Remove elements; reverse is `.insert` |
+| `.editTextContent` | `elementID`, `fromContent`, `toContent` | Apply toContent; reverse swaps |
+| `.resizeText` | `elementID`, from/to fontSize, wrapWidth, origin | Apply `to*`; reverse swaps |
+| `.setTextColors` | `hexes: [UUID: String]` | Apply the colors; reverse is read from the live board first |
 
 `PlacedElementSnapshot` holds everything needed to fully recreate an element: `id`, `url`, `worldRect`, `zIndex`, and the complete `CMCanvasElement`.
 
+**How one action becomes undo *and* redo.** `BoardCanvasView.perform(_:)` applies a command and returns the command that reverses it. `CanvasCommandHistory.registerUndo(_:perform:)` hands the reverse to `UndoManager` as a closure. When the user undoes, that closure runs the stored command through `perform`, gets *its* reverse back, and registers that. `UndoManager` knows it is mid-undo at that moment, so the second registration lands on the redo stack. No second stack, no mirrored switch.
+
+**Why `.setTextColors` is the odd one out.** The system color picker publishes a new color on every frame of a drag. The undo step has to be registered on the *first* changed frame, not after the 400 ms debounce, because a three-finger swipe can arrive during the debounce and reach `UndoManager` without passing through our code. On frame one we know the originals but not where the drag will end, so the command carries only "put these elements in these colors." `perform` reads the current colors off `placedTexts` before applying, and that becomes the redo.
+
 **Managing history:**
 
-- `CanvasCommandHistory` is `@Observable @MainActor`, owned as `@State` in `ContentView` and handed to `BoardCanvasView` as a required init parameter (no default — an accidental second history would silently split the undo stack)
-- `push(_:)` adds to undo and clears redo
-- `popUndo()` / `popRedo()` move commands between the stacks
-- `canUndo` / `canRedo` drive button state
-- `clear()` wipes both. Called after importing a board, so undo can't reach back into the previous board and try to resurrect assets that no longer exist
+- `CanvasCommandHistory` is `@Observable @MainActor`, owned as `@State` in `ContentView` and handed to `BoardCanvasView` as a required init parameter. It exists as a class because `UndoManager.registerUndo(withTarget:)` needs a class target and `BoardCanvasView` is a struct
+- `attach(_:)` points it at `UIWindow.undoManager`, found by `WindowUndoManagerReader` — a zero-size `UIViewRepresentable` in `BoardCanvasView`'s background that reads the manager off its window in `didMoveToWindow`. Why not `@Environment(\.undoManager)`: the menu bar and the gestures validate against the responder chain's manager, and SwiftUI's environment value isn't guaranteed to be that object. Before a window is found (and in previews) `undoManager` is nil and registrations are dropped — there's no user yet to undo for
+- The same reader view is also what makes Edit > Undo/Redo light up. A menu item enables only when a responder on the chain answers yes to `canPerformAction(#selector(undo:))`, and plain views don't implement `undo:`/`redo:` — only text views do. So `ReaderView` implements them, validates against the window's manager, and becomes first responder whenever nothing else is (on landing in a window, and again after a canvas text view ends editing — after checking the seat is really empty, since switching straight between two text boxes fires end-editing for the first while the second already has focus). While a text view is focused it holds first responder instead and its own typing-undo wins; the reader isn't its ancestor, so there's no hijacking
+- `canUndo` / `canRedo` mirror the manager's state. `UndoManager` isn't observable, so the class listens for `NSUndoManagerDidCloseUndoGroup`, `DidUndoChange`, `DidRedoChange` and copies the answer over. Not `NSUndoManagerCheckpoint`: reading `canRedo` posts that one, so an observer that reads `canRedo` would wake itself forever. The toolbar greys the buttons off these
+- `clear()` calls `removeAllActions(withTarget: self)` — only *our* actions, since the window's manager is shared. Called after importing a board (so undo can't resurrect assets that no longer exist) and in `BoardCanvasView.onDisappear` (so a swipe on the file picker can't edit a board that's gone)
 
-**Wiring:** toolbar buttons fire the `undoTrigger` / `redoTrigger` UUID bindings. `BoardCanvasView` watches them and calls `performUndo()` / `performRedo()`, which pop a command and dispatch to shared helpers: `applyMoveDelta()`, `applyResizeRect()`, `applyResizeRects(_:)`, `addElements()`, `removeElements()`.
+**Wiring in `BoardCanvasView`:**
 
-**To make a new action undoable:** add a case to `CanvasCommand`, push it in that action's commit function, handle it in `performUndo()` / `performRedo()`.
+- `execute(_:)` — run a command and register its reverse. Used when the command *is* the edit: move, resize, group resize, text resize, delete
+- `recordUndo(reverse:)` — register the reverse of an edit other code already applied: chunked image insertion, text commit, the color picker's first frame. The label is a reminder that its argument is the opposite of `execute`'s
+- `perform(_:)` flushes `commitTextColorEdit()` before every command, so a pending pick lands before it can race an undo
+
+**To make a new action undoable:** add a case to `CanvasCommand` (and its `undoneEditName` — named for the edit the *reverse* undoes, which is why `.insert` reads "Delete"), handle it in `perform(_:)` returning the reverse, then call `execute` or `recordUndo(reverse:)` from the action's commit function.
+
+**Text fields.** While a text box has keyboard focus, the three-finger swipe undoes keystrokes — the text view has its own `UndoManager`. That's correct. `.editTextContent` is registered on commit, so once focus leaves, the board-level step takes over.
 
 ---
 
@@ -704,7 +719,7 @@ ColorPicker("Text Color", selection: pickerBinding, supportsOpacity: false)
 
 **Before you've picked anything** there's nothing to remember, so `defaultHex(onCanvas:)` works the starting color out from the canvas. It takes the W3C relative luminance of the resolved `canvasColor` and returns the palette's near-black above the 0.179 crossover, its white below. It keys off the canvas rather than `colorScheme` because `canvasColor` is user-settable in board settings — a light board still wants dark text even on a device in dark mode. Without this, `ContentView`'s `Color(uiColor: .systemBackground)` default put `#191919` text on a black canvas in dark mode, which is to say invisible text.
 
-**Coalescing a picker drag into one undo step.** The system picker publishes a new color on every frame while you drag across the spectrum. `BoardCanvasView.applyTextColor(hex:)` repaints the canvas immediately but holds the store write and the history push back by 400 ms (`textColorCommitTask`), and snapshots the per-element originals only on the first call. So one visit to the picker costs one undo step, not hundreds. `commitTextColorEdit()` is flushed at the top of `performUndo` / `performRedo` and in the snapshot trigger, so a pending pick can't land after a save or an undo has already gone through.
+**Coalescing a picker drag into one undo step.** The system picker publishes a new color on every frame while you drag across the spectrum. `BoardCanvasView.applyTextColor(hex:)` repaints the canvas immediately, registers the undo step (`.setTextColors` with the per-element originals) on the first frame that actually changes a color, and holds only the store write back by 400 ms (`textColorCommitTask`). So one visit to the picker costs one undo step, not hundreds. `commitTextColorEdit()` is flushed at the top of `perform(_:)` and in the snapshot trigger, so a pending pick can't land after a save or an undo has already gone through. Why the step is registered early rather than at commit is covered under "Undo and redo".
 
 **Positioning — and why the bar is always mounted**
 
@@ -1004,7 +1019,7 @@ Now the snapshot includes everything typed, no matter how fast you hit back.
 | Re-edit content | `.editTextContent(from, to)` | Only when the content actually changed |
 | Re-edit cleared everything | `.delete` | Snapshot rebuilds from original content, so undo restores the text |
 | Move text | `.move` | Same command as images; `applyMoveDelta` walks both arrays |
-| Change text color | `.setTextColor(fromHexes, toHex)` | `fromHexes` is per-element, since a multi-text selection can start out mixed; `toHex` is shared. Debounced, so a picker drag is one step |
+| Change text color | `.setTextColors(hexes)` | Per-element, since a multi-text selection can start out mixed. Registered on the first changed frame; the store write is debounced, so a picker drag is one step |
 | Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin |
 | Group resize including text | `.groupResize` | Extended with text-state dictionaries |
 | Delete via action bar | `.delete` | `deleteSelection` snapshots both kinds; `applyResizeRects` filters out text ids defensively |
@@ -1353,7 +1368,7 @@ The duplicated file-loading code is also gone: `InsertFileControl` was deleted (
 ## Concurrency cleanup
 
 - **`Task.sleep(nanoseconds:)`** in `scheduleRefreshVisibleElements` (`BoardCanvasView.swift` ~line 1030). `references/api.md` says use `.sleep(for:)`. Pre-existing on `main`
-- **`DispatchQueue.main.async` in trigger-clear patterns.** `undoTrigger`, `redoTrigger`, `homeTrigger`, and `externalInsertURLs` clear themselves this way, and `references/swift.md` says no GCD. These can move to `Task { @MainActor in ... }`. **The `elementsToLoad` handler is the exception** — its run-loop drain guarantee is doing real work there (see "Landing snap"). Leave it alone
+- **`DispatchQueue.main.async` in trigger-clear patterns.** `homeTrigger` and `externalInsertURLs` clear themselves this way, and `references/swift.md` says no GCD. These can move to `Task { @MainActor in ... }`. **The `elementsToLoad` handler is the exception** — its run-loop drain guarantee is doing real work there (see "Landing snap"). Leave it alone
 
 (The text-elements PR added one `DispatchQueue.main.async` in `CanvasTextField.swift` for `becomeFirstResponder`; it's already converted.)
 

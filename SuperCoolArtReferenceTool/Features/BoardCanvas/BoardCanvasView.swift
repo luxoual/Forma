@@ -127,10 +127,11 @@ struct BoardCanvasView: View {
     @State private var currentDragMode: DragMode? = nil
     @State private var dragStartWorldPos: CGPoint? = nil
 
-    // Command history for undo/redo
+    // Undo/redo. `commandHistory` registers into the window's `UndoManager`
+    // (found by `WindowUndoManagerReader` below), which is what gives us the
+    // menu bar's Edit > Undo/Redo, the three-finger gestures, ⌘Z, and the
+    // Undo/Redo pill.
     var commandHistory: CanvasCommandHistory
-    @Binding private var undoTrigger: UUID?
-    @Binding private var redoTrigger: UUID?
 
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
@@ -144,7 +145,7 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.group), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.group), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -153,8 +154,6 @@ struct BoardCanvasView: View {
         self._canvasColor = canvasColor
         self._lastTextColorHex = lastTextColorHex
         self.commandHistory = commandHistory
-        self._undoTrigger = undoTrigger
-        self._redoTrigger = redoTrigger
         self._homeTrigger = homeTrigger
         self._markCleanTrigger = markCleanTrigger
         self.onInsertURLs = onInsertURLs
@@ -459,6 +458,10 @@ struct BoardCanvasView: View {
                 refreshTask?.cancel()
                 interactionEndTask?.cancel()
                 insertionTask?.cancel()
+                // The window's undo manager outlives this view. Leaving our
+                // actions in it would let a three-finger swipe on the file
+                // picker try to edit a board that's no longer on screen.
+                commandHistory.clear()
             }
             .onChange(of: geo.size) { oldValue, newValue in
                 canvasSize = newValue
@@ -567,16 +570,6 @@ struct BoardCanvasView: View {
                       !newIDs.isEmpty,
                       !newIDs.contains(editing) else { return }
                 commitTextEdit(id: editing)
-            }
-            .onChange(of: undoTrigger) { _, newValue in
-                guard newValue != nil else { return }
-                performUndo()
-                Task { @MainActor in undoTrigger = nil }
-            }
-            .onChange(of: redoTrigger) { _, newValue in
-                guard newValue != nil else { return }
-                performRedo()
-                Task { @MainActor in redoTrigger = nil }
             }
             .onChange(of: homeTrigger) { _, newValue in
                 guard newValue != nil else { return }
@@ -713,6 +706,7 @@ struct BoardCanvasView: View {
             .background(KeyModifierObserverView(monitor: keyModifiers))
             .background(TwoFingerPanView(onPan: handleTwoFingerPan))
             .background(PinchGestureView(onPinch: handlePinch))
+            .background(WindowUndoManagerReader { commandHistory.attach($0) })
         }
     }
 
@@ -1076,8 +1070,7 @@ struct BoardCanvasView: View {
             return
         }
 
-        commandHistory.push(.resize(elementID: elementID, fromRect: startRect, toRect: newRect))
-        applyResizeRect(elementID: elementID, rect: newRect)
+        execute(.resize(elementID: elementID, fromRect: startRect, toRect: newRect))
         selection.clearResize()
     }
 
@@ -1177,11 +1170,10 @@ struct BoardCanvasView: View {
             )
         }
 
-        commandHistory.push(.groupResize(
+        execute(.groupResize(
             fromRects: startRects, toRects: toRects,
             fromTextStates: startTextStates, toTextStates: toTextStates
         ))
-        applyGroupResizeApply(rects: toRects, textStates: toTextStates)
         selection.clearGroupResize()
     }
 
@@ -1362,17 +1354,14 @@ struct BoardCanvasView: View {
             return
         }
 
-        commandHistory.push(.resizeText(
+        // The live drag already mutated `placedTexts`; running the command
+        // re-applies the same values and does the store upsert.
+        execute(.resizeText(
             elementID: id,
             fromFontSize: startFontSize, toFontSize: toFontSize,
             fromWrapWidth: startWrapWidth, toWrapWidth: toWrapWidth,
             fromOrigin: startRect.origin, toOrigin: toOrigin
         ))
-
-        let element = fallbackTextElement(for: placed)
-        enqueueStoreMutation { store in
-            await store.upsert(elements: [element])
-        }
     }
 
     /// Restore a text element's resize-affected state (used by undo/redo
@@ -1424,69 +1413,81 @@ struct BoardCanvasView: View {
         guard dx != 0 || dy != 0 else { return }
 
         let idsToMove = selection.selectedIDs
-        commandHistory.push(.move(elementIDs: idsToMove, delta: CGSize(width: dx, height: dy)))
-        applyMoveDelta(elementIDs: idsToMove, dx: dx, dy: dy)
+        execute(.move(elementIDs: idsToMove, delta: CGSize(width: dx, height: dy)))
     }
 
     // MARK: - Undo / Redo
 
-    func performUndo() {
-        // Land any in-flight color pick as its own step first, so undo
-        // reverses it rather than racing the debounce.
-        commitTextColorEdit()
-        guard let command = commandHistory.popUndo() else { return }
-        switch command {
-        case .move(let ids, let delta):
-            applyMoveDelta(elementIDs: ids, dx: -delta.width, dy: -delta.height)
-        case .resize(let id, let fromRect, _):
-            applyResizeRect(elementID: id, rect: fromRect)
-        case .groupResize(let fromRects, _, let fromTextStates, _):
-            applyGroupResizeApply(rects: fromRects, textStates: fromTextStates)
-        case .insert(let snapshots):
-            removeElements(snapshots: snapshots)
-        case .delete(let snapshots):
-            addElements(snapshots: snapshots)
-        case .editTextContent(let id, let fromContent, _):
-            applyTextContent(elementID: id, content: fromContent)
-        case .resizeText(let id, let fromFontSize, _, let fromWrapWidth, _, let fromOrigin, _):
-            applyTextResizeState(
-                elementID: id,
-                fontSize: fromFontSize,
-                wrapWidth: fromWrapWidth,
-                origin: fromOrigin
-            )
-        case .setTextColor(let fromHexes, _):
-            applyTextColors(fromHexes)
+    /// Run `command` on the board, then register its reverse so the user can
+    /// undo it. Use this when the command *is* the edit.
+    private func execute(_ command: CanvasCommand) {
+        recordUndo(reverse: perform(command))
+    }
+
+    /// Register the *reverse* of an edit that other code has already applied
+    /// (chunked image insertion, text commit, the color picker's first frame).
+    /// Note the argument is the opposite of `execute`'s: you pass what undo
+    /// should run, not what just happened.
+    private func recordUndo(reverse: CanvasCommand) {
+        commandHistory.registerUndo(reverse) { command in
+            perform(command)
         }
     }
 
-    func performRedo() {
+    /// Apply `command` to the board and hand back the command that reverses
+    /// it. `UndoManager` runs this for undo *and* redo: undoing runs the
+    /// stored command and registers what comes back as the redo.
+    ///
+    /// Every case but `.setTextColors` carries both sides, so the reverse is
+    /// just the same case with from/to swapped. `.setTextColors` carries only
+    /// the target colors (see its doc comment), so the reverse is read from
+    /// the live board before the change lands.
+    @discardableResult
+    private func perform(_ command: CanvasCommand) -> CanvasCommand {
+        // Land any in-flight color pick first, so an undo mid-drag reverses
+        // it rather than racing the debounce.
         commitTextColorEdit()
-        guard let command = commandHistory.popRedo() else { return }
         switch command {
         case .move(let ids, let delta):
             applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
-        case .resize(let id, _, let toRect):
+            return .move(elementIDs: ids, delta: CGSize(width: -delta.width, height: -delta.height))
+        case .resize(let id, let fromRect, let toRect):
             applyResizeRect(elementID: id, rect: toRect)
-        case .groupResize(_, let toRects, _, let toTextStates):
+            return .resize(elementID: id, fromRect: toRect, toRect: fromRect)
+        case .groupResize(let fromRects, let toRects, let fromTextStates, let toTextStates):
             applyGroupResizeApply(rects: toRects, textStates: toTextStates)
+            return .groupResize(
+                fromRects: toRects, toRects: fromRects,
+                fromTextStates: toTextStates, toTextStates: fromTextStates
+            )
         case .insert(let snapshots):
             addElements(snapshots: snapshots)
+            return .delete(snapshots: snapshots)
         case .delete(let snapshots):
             removeElements(snapshots: snapshots)
-        case .editTextContent(let id, _, let toContent):
+            return .insert(snapshots: snapshots)
+        case .editTextContent(let id, let fromContent, let toContent):
             applyTextContent(elementID: id, content: toContent)
-        case .resizeText(let id, _, let toFontSize, _, let toWrapWidth, _, let toOrigin):
+            return .editTextContent(elementID: id, fromContent: toContent, toContent: fromContent)
+        case .resizeText(let id, let fromFontSize, let toFontSize, let fromWrapWidth, let toWrapWidth, let fromOrigin, let toOrigin):
             applyTextResizeState(
                 elementID: id,
                 fontSize: toFontSize,
                 wrapWidth: toWrapWidth,
                 origin: toOrigin
             )
-        case .setTextColor(let fromHexes, let toHex):
-            applyTextColors(fromHexes.keys.reduce(into: [UUID: String]()) { acc, id in
-                acc[id] = toHex
-            })
+            return .resizeText(
+                elementID: id,
+                fromFontSize: toFontSize, toFontSize: fromFontSize,
+                fromWrapWidth: toWrapWidth, toWrapWidth: fromWrapWidth,
+                fromOrigin: toOrigin, toOrigin: fromOrigin
+            )
+        case .setTextColors(let hexes):
+            let previous = placedTexts.reduce(into: [UUID: String]()) { acc, placed in
+                if hexes[placed.id] != nil { acc[placed.id] = placed.colorHex }
+            }
+            applyTextColors(hexes)
+            return .setTextColors(hexes: previous)
         }
     }
 
@@ -1640,14 +1641,21 @@ struct BoardCanvasView: View {
         selectedTexts().first?.colorHex
     }
 
-    /// Apply `hex` to every selected text element and schedule a coalesced
-    /// history entry.
+    /// Apply `hex` to every selected text element, registering one undo step
+    /// for the whole picker session.
     ///
     /// Called straight from the picker binding, so it can fire many times a
     /// second while the user drags in the system color picker. The canvas
     /// updates live on every call (that's the point — you want to see the
-    /// color you're scrubbing through), but the store write and the undo
-    /// command are deferred to `commitTextColorEdit` once the picking stops.
+    /// color you're scrubbing through), but the store write is deferred to
+    /// `commitTextColorEdit` once the picking stops.
+    ///
+    /// The undo step is registered on the first frame that actually changes
+    /// a color, not at commit. A three-finger swipe can arrive during the
+    /// 400 ms debounce and go straight to `UndoManager` without passing
+    /// through our code, so the step has to already be there. Undo only
+    /// needs the originals, which we have on frame one; the redo side is
+    /// read from the live board at undo time (see `perform(_:)`).
     private func applyTextColor(hex: String) {
         let targets = selectedTexts()
         guard !targets.isEmpty else { return }
@@ -1656,9 +1664,17 @@ struct BoardCanvasView: View {
         // whole picker session undoes back to where it started rather than to
         // the previous frame's color.
         if textColorEditOriginals == nil {
-            textColorEditOriginals = Dictionary(
+            // Opening the picker can publish the color that's already
+            // applied. Don't start a session (or burn an undo step) for that.
+            // (Scrubbing away and back to the original before the debounce
+            // lands still leaves a no-op step — `UndoManager` can't pop one
+            // entry selectively. Rare enough to live with.)
+            guard targets.contains(where: { $0.colorHex != hex }) else { return }
+            let originals = Dictionary(
                 uniqueKeysWithValues: targets.map { ($0.id, $0.colorHex) }
             )
+            textColorEditOriginals = originals
+            recordUndo(reverse: .setTextColors(hexes: originals))
         }
 
         let ids = Set(targets.map(\.id))
@@ -1676,10 +1692,10 @@ struct BoardCanvasView: View {
         }
     }
 
-    /// Close out a color edit: record the color as most-recently-used, push a
-    /// single undo command covering the whole picker session, and sync the
-    /// affected elements to the store. No-ops when nothing actually changed
-    /// (e.g. the user re-picked the color already applied).
+    /// Close out a color edit: record the color as most-recently-used and
+    /// sync the affected elements to the store. No-ops when nothing actually
+    /// changed (e.g. the user re-picked the color already applied). The undo
+    /// step was already registered by `applyTextColor`.
     private func commitTextColorEdit() {
         textColorCommitTask?.cancel()
         textColorCommitTask = nil
@@ -1694,18 +1710,13 @@ struct BoardCanvasView: View {
 
         lastTextColorHex = TextColorMemory.recording(toHex, into: lastTextColorHex)
 
-        let fromHexes = changed.reduce(into: [UUID: String]()) { acc, placed in
-            acc[placed.id] = originals[placed.id]
-        }
-        commandHistory.push(.setTextColor(fromHexes: fromHexes, toHex: toHex))
-
         let elements = changed.map(fallbackTextElement(for:))
         enqueueStoreMutation { store in
             await store.upsert(elements: elements)
         }
     }
 
-    /// Restore per-element text colors (used by undo/redo of `.setTextColor`).
+    /// Restore per-element text colors (used by undo/redo of `.setTextColors`).
     /// Takes a hex per element because undo of a mixed-color selection has to
     /// put each element back to its own original.
     private func applyTextColors(_ hexes: [UUID: String]) {
@@ -1826,8 +1837,7 @@ struct BoardCanvasView: View {
                 ))
             }
 
-            commandHistory.push(.delete(snapshots: snapshots))
-            removeElements(snapshots: snapshots)
+            execute(.delete(snapshots: snapshots))
         }
     }
 
@@ -2072,7 +2082,9 @@ struct BoardCanvasView: View {
 
         guard !snapshots.isEmpty else { return }
 
-        commandHistory.push(.insert(snapshots: snapshots))
+        // Insertion below is chunked, so it can't go through `execute`;
+        // register the reverse by hand.
+        recordUndo(reverse: .delete(snapshots: snapshots))
         nextZIndex += snapshots.count
 
         let chunks = snapshots.chunked(into: insertionChunkSize)
@@ -2409,7 +2421,7 @@ struct BoardCanvasView: View {
                 id: id, url: nil,
                 worldRect: restored.worldRect, zIndex: restored.zIndex, element: element
             )
-            commandHistory.push(.delete(snapshots: [snapshot]))
+            recordUndo(reverse: .insert(snapshots: [snapshot]))
             enqueueStoreMutation { store in
                 await store.delete(elementIDs: [id])
             }
@@ -2422,13 +2434,14 @@ struct BoardCanvasView: View {
                 id: id, url: nil,
                 worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
             )
-            commandHistory.push(.insert(snapshots: [snapshot]))
+            recordUndo(reverse: .delete(snapshots: [snapshot]))
         } else if let originalContent, originalContent != placed.content {
-            // Re-edit produced a real content change — record it for undo.
-            commandHistory.push(.editTextContent(
+            // Re-edit produced a real content change — undo puts the
+            // original content back.
+            recordUndo(reverse: .editTextContent(
                 elementID: id,
-                fromContent: originalContent,
-                toContent: placed.content
+                fromContent: placed.content,
+                toContent: originalContent
             ))
         }
         // Always upsert — covers both new placements and re-edit content

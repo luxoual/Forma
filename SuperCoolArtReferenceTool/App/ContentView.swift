@@ -53,8 +53,6 @@ struct ContentView: View {
 
     // Undo/redo/home
     @State private var commandHistory = CanvasCommandHistory()
-    @State private var undoTrigger: UUID?
-    @State private var redoTrigger: UUID?
     @State private var homeTrigger: UUID?
     @State private var markCleanTrigger: UUID?
 
@@ -116,6 +114,12 @@ struct ContentView: View {
     }
 
     var body: some View {
+        // Read these here, not inside `.toolbar { }`. That closure runs
+        // outside body's observation tracking, so a read in there wouldn't
+        // re-render the view when the undo manager's state changes — the
+        // buttons would stay stale until something else redrew the toolbar.
+        let canUndo = commandHistory.canUndo
+        let canRedo = commandHistory.canRedo
         NavigationStack {
             BoardCanvasView(
                 activeTool: $activeTool,
@@ -126,8 +130,6 @@ struct ContentView: View {
                 snapshotTrigger: $snapshotToken,
                 loadElements: $elementsToLoad,
                 commandHistory: commandHistory,
-                undoTrigger: $undoTrigger,
-                redoTrigger: $redoTrigger,
                 homeTrigger: $homeTrigger,
                 markCleanTrigger: $markCleanTrigger,
                 onInsertURLs: { _ in },
@@ -147,8 +149,10 @@ struct ContentView: View {
                     boardName: boardName,
                     activeTool: $activeTool,
                     onBack: handleBack,
-                    onUndo: { undoTrigger = UUID() },
-                    onRedo: { redoTrigger = UUID() },
+                    canUndo: canUndo,
+                    canRedo: canRedo,
+                    onUndo: { commandHistory.undo() },
+                    onRedo: { commandHistory.redo() },
                     onHome: { homeTrigger = UUID() },
                     onAddItem: openImageImporter,
                     onSettings: { showingSettings = true }
