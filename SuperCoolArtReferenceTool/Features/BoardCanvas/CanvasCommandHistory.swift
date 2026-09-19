@@ -59,46 +59,143 @@ enum CanvasCommand {
         fromWrapWidth: CGFloat?, toWrapWidth: CGFloat?,
         fromOrigin: CGPoint, toOrigin: CGPoint
     )
-    /// Text color was changed from the selection action bar. `fromHexes` is
-    /// per-element because a multi-text selection can start out in mixed
-    /// colors, and undo has to restore each one — `toHex` is shared because
-    /// a pick always paints the whole selection uniformly.
+    /// Text color was changed from the selection action bar. Unlike the
+    /// other cases this carries only one side — "put these elements in
+    /// these colors" — because it is registered on the *first* frame of a
+    /// picker drag, before anyone knows where the drag will end. Undo runs
+    /// it with the original colors; the redo command is built from the live
+    /// board at undo time (see `BoardCanvasView.perform(_:)`), which is when
+    /// the final picked color is actually known.
+    case setTextColors(hexes: [UUID: String])
+
+    /// Label the system shows in the Undo/Redo pill and the Edit menu
+    /// ("Undo Move", "Redo Delete").
     ///
-    /// Live picker drags are coalesced by the host before a command lands
-    /// here (see `BoardCanvasView.applyTextColor`), so one visit to the
-    /// color picker is one undo step, not one per frame.
-    case setTextColor(fromHexes: [UUID: String], toHex: String)
+    /// Named for the *edit this command undoes*, because what gets registered
+    /// is always the reverse: after the user deletes, the registered command
+    /// is `.insert`, and the pill should still read "Undo Delete". Every
+    /// other case is its own reverse, so the name is the same either way.
+    var undoneEditName: String {
+        switch self {
+        case .move: "Move"
+        case .resize, .groupResize: "Resize"
+        case .insert: "Delete"
+        case .delete: "Add"
+        case .editTextContent: "Edit Text"
+        case .resizeText: "Resize Text"
+        case .setTextColors: "Text Color"
+        }
+    }
 }
 
-/// Tracks performed commands for undo/redo support.
+/// The board's handle on the system `UndoManager`.
+///
+/// We don't keep our own undo/redo stacks. Every reversible edit is handed
+/// to the window's `UndoManager` (Foundation's built-in undo system), and
+/// the system does the rest: three-finger swipe left/right, the floating
+/// Undo/Redo pill, ⌘Z / ⇧⌘Z on a hardware keyboard, and the Edit menu all
+/// route into that same manager for free.
+///
+/// The only reason this is a class is that `UndoManager.registerUndo` needs
+/// a class instance as the "target" of each action, and `BoardCanvasView` is
+/// a struct. Being the target also lets `clear()` remove *only our* actions
+/// from the shared manager, without touching whatever else the window has
+/// registered.
+///
+/// `canUndo` / `canRedo` mirror the manager's state so SwiftUI can grey out
+/// the toolbar buttons. `UndoManager` isn't observable, so we listen to its
+/// notifications and copy the answer over each time it changes.
 @Observable
 @MainActor
 final class CanvasCommandHistory {
-    private(set) var undoStack: [CanvasCommand] = []
-    private(set) var redoStack: [CanvasCommand] = []
+    private(set) var canUndo = false
+    private(set) var canRedo = false
 
-    var canUndo: Bool { !undoStack.isEmpty }
-    var canRedo: Bool { !redoStack.isEmpty }
+    /// The window's undo manager, handed over by `WindowUndoManagerReader`
+    /// once the canvas is in a window. Nil before that (and in previews), in
+    /// which case registrations are dropped — there's no user yet to undo for.
+    @ObservationIgnored private var undoManager: UndoManager?
+    @ObservationIgnored private var observerTasks: [Task<Void, Never>] = []
 
-    func push(_ command: CanvasCommand) {
-        undoStack.append(command)
-        redoStack.removeAll()
+    deinit {
+        observerTasks.forEach { $0.cancel() }
     }
 
-    func popUndo() -> CanvasCommand? {
-        guard let command = undoStack.popLast() else { return nil }
-        redoStack.append(command)
-        return command
+    /// Point this history at `manager`. Safe to call repeatedly; re-attaching
+    /// the same manager is a no-op.
+    func attach(_ manager: UndoManager?) {
+        guard manager !== undoManager else { return }
+        undoManager?.removeAllActions(withTarget: self)
+        undoManager = manager
+        observe(manager)
+        refresh()
     }
 
-    func popRedo() -> CanvasCommand? {
-        guard let command = redoStack.popLast() else { return nil }
-        undoStack.append(command)
-        return command
+    /// Register `command` as what undo should run next.
+    ///
+    /// `perform` is the board's "run this command and hand back its
+    /// reverse" function. When the user undoes, we run `command` through it
+    /// and register the returned reverse — and because `UndoManager` knows
+    /// it is mid-undo at that moment, that second registration lands on the
+    /// redo stack. That one trick is how redo works without a second stack.
+    func registerUndo(
+        _ command: CanvasCommand,
+        perform: @escaping @MainActor (CanvasCommand) -> CanvasCommand
+    ) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { history in
+            let redo = perform(command)
+            history.registerUndo(redo, perform: perform)
+        }
+        // Only name the group on a fresh edit. Mid-undo or mid-redo the
+        // manager carries the original name across to the new group itself.
+        if !undoManager.isUndoing && !undoManager.isRedoing {
+            undoManager.setActionName(command.undoneEditName)
+        }
+        // `canUndo` flips when the run loop closes this event's group;
+        // the DidCloseUndoGroup observer below picks that up.
     }
 
+    func undo() { undoManager?.undo() }
+    func redo() { undoManager?.redo() }
+
+    /// Drop every action we registered. Called after importing a board, so
+    /// undo can't reach back into the previous board and try to resurrect
+    /// assets that no longer exist.
     func clear() {
-        undoStack.removeAll()
-        redoStack.removeAll()
+        undoManager?.removeAllActions(withTarget: self)
+        refresh()
+    }
+
+    private func observe(_ manager: UndoManager?) {
+        observerTasks.forEach { $0.cancel() }
+        observerTasks = []
+        guard let manager else { return }
+        // These three are the moments the stacks actually change. A fresh
+        // registration lands as a group that the run loop closes at the end
+        // of the event, so DidCloseUndoGroup catches new actions too.
+        //
+        // Deliberately NOT `NSUndoManagerCheckpoint`: reading `canRedo`
+        // posts that notification, so a checkpoint observer that reads
+        // `canRedo` would wake itself up forever.
+        let names: [Notification.Name] = [
+            .NSUndoManagerDidCloseUndoGroup,
+            .NSUndoManagerDidUndoChange,
+            .NSUndoManagerDidRedoChange,
+        ]
+        observerTasks = names.map { name in
+            Task { [weak self] in
+                let changes = NotificationCenter.default.notifications(named: name, object: manager)
+                for await _ in changes {
+                    guard let self else { return }
+                    self.refresh()
+                }
+            }
+        }
+    }
+
+    private func refresh() {
+        canUndo = undoManager?.canUndo ?? false
+        canRedo = undoManager?.canRedo ?? false
     }
 }

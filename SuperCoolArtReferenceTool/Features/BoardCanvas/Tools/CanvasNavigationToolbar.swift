@@ -24,6 +24,11 @@ struct CanvasNavigationToolbar: ToolbarContent {
     let boardName: String
     @Binding var activeTool: CanvasTool
     let onBack: () -> Void
+    /// Mirrors of `UndoManager.canUndo` / `canRedo`, kept by
+    /// `CanvasCommandHistory`, so the buttons grey out when there's nothing
+    /// to do.
+    let canUndo: Bool
+    let canRedo: Bool
     let onUndo: () -> Void
     let onRedo: () -> Void
     let onHome: () -> Void
@@ -69,9 +74,11 @@ struct CanvasNavigationToolbar: ToolbarContent {
             Button(action: onUndo) {
                 Label("Undo", systemImage: "arrow.uturn.backward")
             }
+            .disabled(!canUndo)
             Button(action: onRedo) {
                 Label("Redo", systemImage: "arrow.uturn.forward")
             }
+            .disabled(!canRedo)
         }
 
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
