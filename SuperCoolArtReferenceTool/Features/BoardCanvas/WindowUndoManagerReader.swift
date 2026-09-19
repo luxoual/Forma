@@ -60,7 +60,7 @@ struct WindowUndoManagerReader: UIViewRepresentable {
             // here trips "modifying state during view update".
             Task { @MainActor in
                 onFound?(window.undoManager)
-                becomeFirstResponder()
+if window.firstResponderView == nil { becomeFirstResponder() }
             }
             // When a canvas text view resigns, first responder becomes nil
             // and the menu items grey out. Step back in — but only if the
