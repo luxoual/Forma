@@ -33,7 +33,7 @@ Read this once and the rest of the doc gets easier.
 
 ## Current status
 
-The data model, the in-memory store, and save/open of `.refboard` files are all built and working. Frames (grouping) are saved and loaded.
+The data model, the in-memory store, and save/open of `.refboard` files are all built and working. Frames (grouping) are saved and loaded, but still in progress (see "Frames").
 
 ---
 
@@ -80,6 +80,8 @@ case frame(title: String)
 Older boards were saved before this field existed. To keep them opening, the decoder uses `decodeIfPresent`, so a missing key just means `nil`. The encoder uses `encodeIfPresent`, so an auto-width text writes no key at all instead of writing `null`. **Any payload that grows a new optional field should copy this pattern.**
 
 ## Frames: grouping without changing what's inside
+
+**Status: In progress.** This works today, but product owner feedback calls for changes to much of it. Treat the behavior below as a snapshot, not a settled design.
 
 **What a frame is:** a labeled box drawn around a set of elements, so they move and resize together.
 

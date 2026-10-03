@@ -766,7 +766,7 @@ SelectionActionBarLayer(
 
 # Frames
 
-**Status: Implemented**
+**Status: In progress.** This works today, but product owner feedback calls for changes to much of it. Treat the behavior below as a snapshot, not a settled design.
 **Files:** `PlacedFrame.swift`, `CanvasPlacedFrameView.swift`, `AssetOutlinerView.swift`, `BoardCanvasView.swift`
 
 A frame is a labeled, dashed box that groups items so they move and resize together. Grouping doesn't change the items: an image in a frame is still an image. It just records which frame it's in (`parentFrameID`). How frames are saved and undone is in `architecture-backend.md` → "Frames".
