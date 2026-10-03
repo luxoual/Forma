@@ -59,6 +59,7 @@ struct BoardCanvasView: View {
     @State private var editingTextOriginalContent: String? = nil
     @State private var placedFrames: [PlacedFrame] = []
     @State private var assetNames: [UUID: String] = [:]
+    @State private var outlineRebuildTask: Task<Void, Never>? = nil
 
     @State private var nextZIndex: Int = 0
     @State private var canvasSize: CGSize = .zero
@@ -136,6 +137,9 @@ struct BoardCanvasView: View {
     // Undo/Redo pill.
     var commandHistory: CanvasCommandHistory
 
+    /// Feeds the asset outliner shown in `CanvasHUDView`.
+    private let outliner: AssetOutlinerModel
+
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
 
@@ -148,7 +152,7 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.group), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.group), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, outliner: AssetOutlinerModel, homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
@@ -157,6 +161,7 @@ struct BoardCanvasView: View {
         self._canvasColor = canvasColor
         self._lastTextColorHex = lastTextColorHex
         self.commandHistory = commandHistory
+        self.outliner = outliner
         self._homeTrigger = homeTrigger
         self._markCleanTrigger = markCleanTrigger
         self.onInsertURLs = onInsertURLs
@@ -258,18 +263,7 @@ struct BoardCanvasView: View {
             .background {
                 canvasColor.ignoresSafeArea()
             }
-            .overlay(alignment: .topLeading) {
-                AssetOutlinerView(
-                    nodes: assetOutlineNodes(),
-                    selectedIDs: expandedElementIDs(for: selection.selectedIDs),
-                    canCreateFrame: canCreateFrameFromSelection(),
-                    onSelect: selectAssetFromOutliner,
-                    onCreateFrame: createFrameFromSelection,
-                    onRenameAsset: renameAsset
-                )
-                .padding(.leading, 12)
-                .padding(.top, 12)
-            }
+            .background { outlinerSync }
             .onAppear {
                 canvasSize = geo.size
                 // Center the canvas on world origin (0, 0) on first appearance
@@ -587,6 +581,31 @@ struct BoardCanvasView: View {
             visible.worldRect = visibleWorldRect(id: item.id, rect: visible.worldRect)
             return visible.worldRect.isNull || visible.worldRect.isEmpty ? nil : visible
         }
+    }
+
+    /// Keeps the shared `AssetOutlinerModel` current. The outliner itself is
+    /// drawn by `CanvasHUDView` up in `ContentView`. Lives on an invisible
+    /// background view so `body`'s modifier chain stays small enough for the
+    /// compiler to type-check.
+    ///
+    /// The tree is rebuilt only when the board's contents change, not on
+    /// every redraw: pans, zooms, and drags redraw constantly but don't touch
+    /// these arrays.
+    private var outlinerSync: some View {
+        Color.clear
+            .onChange(of: placedImages) { scheduleOutlineRebuild() }
+            .onChange(of: placedTexts) { scheduleOutlineRebuild() }
+            .onChange(of: placedFrames) { scheduleOutlineRebuild() }
+            .onChange(of: assetNames) { scheduleOutlineRebuild() }
+            .onChange(of: expandedElementIDs(for: selection.selectedIDs), initial: true) { _, ids in
+                outliner.selectedIDs = ids
+            }
+            .onAppear {
+                outliner.nodes = assetOutlineNodes()
+                outliner.onSelect = { selectAssetFromOutliner($0) }
+                outliner.onRename = { renameAsset(id: $0, title: $1) }
+            }
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -3035,7 +3054,26 @@ struct BoardCanvasView: View {
         handleItemTap(id, refreshAfterSelection: false)
     }
 
+    /// Rebuild the outliner tree shortly after the board's contents change.
+    /// Several changes in a row (an undo touching images and frames, every
+    /// frame of a live resize) collapse into one rebuild.
+    private func scheduleOutlineRebuild() {
+        outlineRebuildTask?.cancel()
+        outlineRebuildTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            outliner.nodes = assetOutlineNodes()
+        }
+    }
+
     private func assetOutlineNodes() -> [AssetOutlineNode] {
+        // Looked up once per sort comparison, so build it once up front
+        // rather than scanning all three arrays every time.
+        var zIndexByID: [UUID: Int] = [:]
+        for image in placedImages { zIndexByID[image.id] = image.zIndex }
+        for text in placedTexts { zIndexByID[text.id] = text.zIndex }
+        for frame in placedFrames { zIndexByID[frame.id] = frame.zIndex }
+
         let framesByParent = Dictionary(grouping: placedFrames, by: \.parentFrameID)
         let imagesByParent = Dictionary(grouping: placedImages, by: \.parentFrameID)
         let textsByParent = Dictionary(grouping: placedTexts, by: \.parentFrameID)
@@ -3077,7 +3115,7 @@ struct BoardCanvasView: View {
                 if lhs.kind != rhs.kind {
                     return outlineRank(for: lhs.kind) < outlineRank(for: rhs.kind)
                 }
-                return zIndex(for: lhs.id) > zIndex(for: rhs.id)
+                return (zIndexByID[lhs.id] ?? .min) > (zIndexByID[rhs.id] ?? .min)
             }
         }
 
@@ -3095,19 +3133,6 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func zIndex(for id: UUID) -> Int {
-        if let frame = placedFrames.first(where: { $0.id == id }) {
-            return frame.zIndex
-        }
-        if let image = placedImages.first(where: { $0.id == id }) {
-            return image.zIndex
-        }
-        if let text = placedTexts.first(where: { $0.id == id }) {
-            return text.zIndex
-        }
-        return Int.min
-    }
-
     // MARK: - Models
 
     private struct ImageRenderPlan {
@@ -3117,7 +3142,7 @@ struct BoardCanvasView: View {
 }
 
 #Preview {
-    BoardCanvasView(commandHistory: CanvasCommandHistory())
+    BoardCanvasView(commandHistory: CanvasCommandHistory(), outliner: AssetOutlinerModel())
 }
 
 private struct PreparedImportedImage {

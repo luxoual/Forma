@@ -14,46 +14,54 @@ struct AssetOutlineNode: Identifiable, Equatable {
     var children: [AssetOutlineNode]
 }
 
+/// The asset tree: frames, images, and text, nested the way they're grouped.
+///
+/// Just the list. The glass container, width, and header come from
+/// `CanvasHUDView`, which shows this under the board name. Its height fits
+/// its rows, up to `maxHeight`, then it scrolls.
 struct AssetOutlinerView: View {
     let nodes: [AssetOutlineNode]
     let selectedIDs: Set<UUID>
-    let canCreateFrame: Bool
+    let maxHeight: CGFloat
+    /// False while the HUD has the panel collapsed. The list stays built
+    /// (so its height is already measured when it opens), so this is how it
+    /// knows to close out an in-progress rename.
+    let isVisible: Bool
     let onSelect: (UUID) -> Void
-    let onCreateFrame: () -> Void
     let onRenameAsset: (UUID, String) -> Void
 
     @State private var expandedFrameIDs: Set<UUID> = []
     @State private var editingAssetID: UUID?
     @State private var draftTitle = ""
+    @State private var contentHeight: CGFloat = 0
     @FocusState private var focusedAssetID: UUID?
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if nodes.isEmpty {
-                        Text("No assets yet")
-                            .font(.subheadline)
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .padding(16)
-                    } else {
-                        ForEach(nodes) { node in
-                            nodeRow(node, depth: 0)
-                        }
+        ScrollView {
+            // Not lazy: a lazy stack only builds the rows on screen and
+            // guesses the rest, and that guess made the first open overshoot.
+            VStack(alignment: .leading, spacing: 2) {
+                if nodes.isEmpty {
+                    Text("No assets yet")
+                        .font(.subheadline)
+                        .foregroundStyle(DesignSystem.Colors.secondary)
+                        .padding(16)
+                } else {
+                    ForEach(nodes) { node in
+                        nodeRow(node, depth: 0)
                     }
                 }
-                .padding(.vertical, 8)
             }
+            .padding(.vertical, 8)
         }
-        .frame(width: 280)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(.white.opacity(0.35), lineWidth: 1)
-        )
+        // A ScrollView takes all the height it's offered. Measuring its
+        // content and asking for exactly that (capped) is what lets the
+        // panel shrink to a short list instead of always running full height.
+        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, height in
+            contentHeight = height
+        }
+        .frame(height: min(contentHeight, maxHeight))
+        .scrollBounceBehavior(.basedOnSize)
         .onAppear {
             expandedFrameIDs.formUnion(allFrameIDs(in: nodes))
         }
@@ -71,28 +79,10 @@ struct AssetOutlinerView: View {
         .onChange(of: selectedIDs) { _, newValue in
             if let editingAssetID, !newValue.contains(editingAssetID) { commitRename() }
         }
-        .onDisappear { commitRename() }
-    }
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Assets")
-                    .font(.headline)
-                Text("Frames and layers")
-                    .font(.caption)
-                    .foregroundStyle(DesignSystem.Colors.secondary)
-            }
-
-            Spacer()
-
-            Button("Create Frame", systemImage: "square.on.square", action: onCreateFrame)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.glass)
-                .disabled(!canCreateFrame)
-                .accessibilityLabel("Create frame from selection")
+        .onChange(of: isVisible) { _, visible in
+            if !visible { commitRename() }
         }
-        .padding(14)
+        .onDisappear { commitRename() }
     }
 
     private func nodeRow(_ node: AssetOutlineNode, depth: Int) -> AnyView {
