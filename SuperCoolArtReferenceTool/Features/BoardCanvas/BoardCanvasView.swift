@@ -1667,7 +1667,30 @@ struct BoardCanvasView: View {
         guard dx != 0 || dy != 0 else { return }
 
         let idsToMove = selection.selectedIDs
-        execute(.move(elementIDs: idsToMove, delta: CGSize(width: dx, height: dy)))
+        execute(.move(
+            elementIDs: idsToMove,
+            delta: CGSize(width: dx, height: dy),
+            memberships: dropMemberships(for: idsToMove, delta: CGSize(width: dx, height: dy))
+        ))
+    }
+
+    /// Which frame a dragged selection lands in. The whole selection moves
+    /// as one, so it gets one answer: the innermost frame under the finger
+    /// where the drag ended (Figma's rule). Deciding per item split a
+    /// selection that straddled a frame edge, with some items leaving the
+    /// frame and others staying.
+    ///
+    /// Nil when there's no finger position (shouldn't happen for a drag),
+    /// which falls back to `applyMoveDelta`'s per-item check.
+    private func dropMemberships(for ids: Set<UUID>, delta: CGSize) -> [FrameMembership]? {
+        guard let start = dragStartWorldPos else { return nil }
+        let finger = CGPoint(x: start.x + delta.width, y: start.y + delta.height)
+        // Frames being dragged can't receive the drop. Every other frame
+        // stays put, so their current rects are where they'll be after.
+        let target = FrameGeometry.dropTarget(
+            at: finger, frames: placedFrames, excluding: expandedElementIDs(for: ids)
+        )
+        return selectionRoots(ids).map { FrameMembership(elementID: $0, parentID: target) }
     }
 
     // MARK: - Undo / Redo
