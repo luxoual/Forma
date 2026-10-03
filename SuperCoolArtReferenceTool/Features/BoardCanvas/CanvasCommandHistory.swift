@@ -22,12 +22,9 @@ struct TextResizeSnapshot {
 
 /// A reversible canvas operation.
 enum CanvasCommand {
-    /// Moving items can grow the frames they sit in, so the items stay
-    /// inside. `frameRectsToRestore` says which way the move is going:
-    /// - nil: a real move. Grow parent frames as needed.
-    /// - non-nil: the undo of a move. Don't grow anything; put these frames
-    ///   back to the sizes they had before the original move grew them.
-    case move(elementIDs: Set<UUID>, delta: CGSize, frameRectsToRestore: [UUID: CGRect]? = nil)
+    /// A drag changes position and membership together. Undo supplies the
+    /// exact old parents instead of guessing from geometry again.
+    case move(elementIDs: Set<UUID>, delta: CGSize, memberships: [FrameMembership]? = nil)
     case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
     /// Resize of a multi-element selection. `fromRects`/`toRects` cover
     /// image elements (which use a worldRect as authoritative state).
@@ -50,15 +47,17 @@ enum CanvasCommand {
     case createFrame(
         frameSnapshot: PlacedElementSnapshot,
         beforeChildSnapshots: [PlacedElementSnapshot],
-        afterChildSnapshots: [PlacedElementSnapshot]
+        afterChildSnapshots: [PlacedElementSnapshot],
+        actionName: String = "Create Frame"
     )
     /// The reverse of `.createFrame`: removes the frame and puts its
     /// children back under the parents they had before it was created.
-    /// Only ever registered as the undo of `.createFrame`.
+    /// Also used by Remove Frame, which keeps every child in place.
     case dissolveFrame(
         frameSnapshot: PlacedElementSnapshot,
         groupedChildSnapshots: [PlacedElementSnapshot],
-        ungroupedChildSnapshots: [PlacedElementSnapshot]
+        ungroupedChildSnapshots: [PlacedElementSnapshot],
+        actionName: String = "Create Frame"
     )
     /// Text content was changed during a re-edit. Body of the text element
     /// is the only authoritative state being touched — `worldRect` is
@@ -88,6 +87,7 @@ enum CanvasCommand {
     /// board at undo time (see `BoardCanvasView.perform(_:)`), which is when
     /// the final picked color is actually known.
     case setTextColors(hexes: [UUID: String])
+    case renameAsset(elementID: UUID, name: String?)
 
     /// Label the system shows in the Undo/Redo pill and the Edit menu
     /// ("Undo Move", "Redo Delete").
@@ -102,10 +102,11 @@ enum CanvasCommand {
         case .resize, .groupResize: "Resize"
         case .insert: "Delete"
         case .delete: "Add"
-        case .createFrame, .dissolveFrame: "Create Frame"
+        case .createFrame(_, _, _, let name), .dissolveFrame(_, _, _, let name): name
         case .editTextContent: "Edit Text"
         case .resizeText: "Resize Text"
         case .setTextColors: "Text Color"
+        case .renameAsset: "Rename Asset"
         }
     }
 }

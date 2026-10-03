@@ -19,6 +19,7 @@ struct SelectionActionBarLayer: View {
     let textColorHex: String?
     let onPickTextColor: (String) -> Void
     let onCreateFrame: (() -> Void)?
+    var onRemoveFrame: (() -> Void)? = nil
     let onDelete: () -> Void
 
     /// Last visible center, so the bar fades out in place instead of snapping
@@ -60,6 +61,7 @@ struct SelectionActionBarLayer: View {
             textColorHex: textColorHex,
             onPickTextColor: onPickTextColor,
             onCreateFrame: onCreateFrame,
+            onRemoveFrame: onRemoveFrame,
             onDelete: onDelete
         )
             .position(displayCenter)

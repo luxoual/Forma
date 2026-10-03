@@ -101,6 +101,8 @@ public struct CMElementHeader: Codable, Hashable, Identifiable {
     public var layerId: CMLayerID
     public var zIndex: Int
     public var parentID: UUID?
+    /// Optional outliner label; older boards decode this as nil.
+    public var displayName: String?
 
     public init(
         id: UUID,
@@ -109,7 +111,8 @@ public struct CMElementHeader: Codable, Hashable, Identifiable {
         bounds: CMWorldRect,
         layerId: CMLayerID,
         zIndex: Int,
-        parentID: UUID? = nil
+        parentID: UUID? = nil,
+        displayName: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -118,6 +121,7 @@ public struct CMElementHeader: Codable, Hashable, Identifiable {
         self.layerId = layerId
         self.zIndex = zIndex
         self.parentID = parentID
+        self.displayName = displayName
     }
 }
 

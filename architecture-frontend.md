@@ -644,7 +644,7 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 
 | Command | Data stored | Applying it |
 |---------|-------------|-------------|
-| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize`, `frameRectsToRestore: [UUID: CGRect]?` | Move by delta (growing parent frames to fit); reverse is `-delta` plus the frame sizes to shrink back to |
+| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize`, `memberships: [FrameMembership]?` | Move by delta and update parents on drop; reverse stores the opposite delta and exact previous parents |
 | `.createFrame` / `.dissolveFrame` | frame snapshot, child snapshots before and after grouping | Add the frame and reparent children / remove it and restore old parents; each is the other's reverse |
 | `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Apply toRect; reverse swaps from/to |
 | `.groupResize` | `fromRects`, `toRects`, `fromTextStates`, `toTextStates` | Apply all `to*`; reverse swaps |
@@ -766,16 +766,22 @@ SelectionActionBarLayer(
 
 # Frames
 
-**Status: In progress.** This works today, but product owner feedback calls for changes to much of it. Treat the behavior below as a snapshot, not a settled design.
-**Files:** `PlacedFrame.swift`, `CanvasPlacedFrameView.swift`, `AssetOutlinerView.swift`, `BoardCanvasView.swift`
+**Status: Implemented; device interaction review pending.**
+**Files:** `PlacedFrame.swift`, `FrameClipShape.swift`, `CanvasPlacedFrameView.swift`, `AssetOutlinerView.swift`, `BoardCanvasView.swift`
 
-A frame is a labeled, dashed box that groups items so they move and resize together. Grouping doesn't change the items: an image in a frame is still an image. It just records which frame it's in (`parentFrameID`). How frames are saved and undone is in `architecture-backend.md` → "Frames".
+A frame is a labeled container. Moving it moves its descendants. Resizing it changes only its boundary, leaving child positions and sizes unchanged. Contents outside that boundary are hidden rather than cropped from the source asset.
 
-- **Creating.** Select items, then tap Create Frame in the action bar or the outliner. The frame is the selection's bounds plus `defaultFramePadding` (40 world units), drawn just behind its lowest child.
-- **Nesting.** If everything selected is already in the same frame, the new frame goes inside that frame. A selection drawn from different frames gets a top-level frame.
-- **Moving and resizing.** Moving or resizing a frame takes all its descendants with it (`expandedElementIDs(for:)`). Dragging a child past its frame's edge grows the frame instead of pulling the child out.
-- **Picking one.** The frame's body ignores taps, so you can reach the items inside. Tap the title pill to select the frame, or drag from bare frame area (see "What a drag grabs").
-- **Outliner.** `AssetOutlinerView` (top-left) shows the frame tree. Tap a row to select it, or rename a frame there.
+- **Creating.** Select items, then tap Create Frame in the action bar or the outliner. The boundary starts at the selection's bounds plus 40 world units of padding.
+- **Nesting.** Grouping operates only on selected roots: a selected frame keeps all its descendants, even if a marquee also selected those descendants. Grouping roots with a shared parent creates a nested frame. Roots drawn from different parents create a top-level frame. The same root filtering applies to moving and resizing.
+- **Dragging in or out.** At drop time, each moved root joins the innermost visible frame containing its center, or becomes a board item if there is none. Descendants travelling with a moved frame retain their parents. Moving frames cannot target themselves or any other item in the moving set, preventing cycles. Parent frames do not auto-expand.
+- **Drag preview.** Moving roots lift out of their old frame's clipping so they remain visible when dragged out. Their descendants still clip to the moving frame. The new parent's clipping applies on release.
+- **Resizing.** A frame's corners and edges change its boundary without scaling children. Corners allow independent width and height. If a selection includes a frame and its descendants, resizing affects the frame rather than also resizing its descendants.
+- **Overflow.** Images, text, nested frames, and overview image placeholders clip against the intersection of their ancestor frame bounds. Enlarging an image leaves its original content intact behind the boundary. Drag and marquee selection ignore hidden portions; selection handles remain available for editing the full item.
+- **Removing.** Select one frame and tap Remove Frame in the action bar. Its children retain their positions and become children of its parent (or board items). The separate Delete action still deletes the frame and its contents.
+- **Undo/redo.** Moves restore exact parent assignments with positions. Remove Frame restores the frame and original child memberships. Boundary resizing uses the existing resize snapshots without child snapshots.
+- **Picking and naming.** A single click on an Assets row selects the frame and highlights its descendants in both the canvas and tree. Descendants are highlighted without becoming separate selections, so the frame retains its resize handles and Remove Frame action. Double-click any Assets row (frame, image, or text) to edit its name; Enter or focus loss commits, and Escape cancels. Image and text names are separate labels stored in `CMElementHeader.displayName`, leaving filenames and note content unchanged. Renaming these assets supports undo/redo, and snapshot restoration preserves the label. Names render as ordinary text until editing starts. Tree updates preserve collapsed rows. The disclosure chevron has its own 44-point button, outside the name row’s selection and rename gesture area; expanding or collapsing does not select the frame.
+
+`tests/FrameGeometryChecks.swift` exercises drop targets, ancestor clipping, excluded moving frames, and malformed ancestor cycles. Compile it with `PlacedFrame.swift` using the command at the top of the test file. The app also builds for the iOS simulator; touch interactions still need device review.
 
 ---
 

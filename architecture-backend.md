@@ -404,3 +404,8 @@ The result is that expensive image work stays near a fixed budget, instead of gr
 - **Queries.** `CanvasService` offers viewport and point queries (`elements(in:margin:...)`, `topmostElement(at:...)`) and z-order changes (`moveToTop` / `moveToBottom`). `LocalBoardStore.imagePlacements(in:margin:limit:)` is the specialized query the visible-canvas render uses.
 - **Stable image URLs.** The thumbnail pipeline assumes an image's file URL keeps working after open, save, and app-open. That's what `copyAssetsToAppSupport` guarantees. Board settings like `canvasColor` don't affect this — image URLs round-trip the same way regardless.
 - **Fast viewport queries.** The level-of-detail budget and sticky detail both re-query on every pan and zoom step, so `imagePlacements(...)` needs to stay cheap.
+
+
+## Asset display names
+
+`CMElementHeader.displayName: String?` stores an optional image or text label for the Assets tree. It does not change an image URL or text payload. The archiver already serializes each full header, so these names round-trip through `.refboard` files without a separate manifest field. Older files omit the optional key and decode as nil; the UI then uses the image filename or note text as before. Move, resize, frame membership, and delete/restore paths retain the label. `tests/AssetNameChecks.swift` checks the header and element round-trip, old-header compatibility, and unchanged payloads.

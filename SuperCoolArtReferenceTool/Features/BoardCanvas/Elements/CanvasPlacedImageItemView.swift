@@ -6,15 +6,24 @@ struct CanvasPlacedImageItemView: View {
     let isInteracting: Bool
     let size: CGSize
     let position: CGPoint
+    var clipRect: CGRect? = nil
     let isSelected: Bool
     let isMultiSelected: Bool
     let activeHandle: HandlePosition?
     let zIndex: Int
     let onTap: () -> Void
 
+    private var localClip: CGRect? {
+        clipRect.map { rect in
+            rect.isNull ? .null : rect.offsetBy(dx: -position.x + size.width / 2,
+                                               dy: -position.y + size.height / 2)
+        }
+    }
+
     var body: some View {
         FileImageView(url: url, targetMaxPixelSize: targetMaxPixelSize, isInteracting: isInteracting)
             .frame(width: size.width, height: size.height)
+            .mask(FrameClipShape(boundary: localClip))
             .overlay {
                 if isSelected && !isMultiSelected {
                     SelectionOverlay(activeHandle: activeHandle)
@@ -23,6 +32,7 @@ struct CanvasPlacedImageItemView: View {
                         .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)
                 }
             }
+            .contentShape(FrameClipShape(boundary: localClip))
             .onTapGesture(perform: onTap)
             .accessibilityAddTraits(.isButton)
             .position(x: position.x, y: position.y)

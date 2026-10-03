@@ -24,6 +24,7 @@ struct CanvasSelectionActionBar: View {
     let onPickTextColor: (String) -> Void
     /// Nil hides the Create Frame button (e.g. nothing frameable selected).
     let onCreateFrame: (() -> Void)?
+    var onRemoveFrame: (() -> Void)? = nil
     let onDelete: () -> Void
 
     var body: some View {
@@ -52,6 +53,14 @@ struct CanvasSelectionActionBar: View {
                         width: CanvasActionBarMetrics.buttonSide,
                         height: CanvasActionBarMetrics.buttonSide
                     )
+            }
+
+            if let onRemoveFrame {
+                Button("Remove Frame", systemImage: "rectangle.badge.minus", action: onRemoveFrame)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
+                    .help("Remove frame and keep its contents")
             }
 
             // Title is kept for VoiceOver, then hidden visually so only the

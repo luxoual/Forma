@@ -20,9 +20,12 @@ struct AssetOutlinerView: View {
     let canCreateFrame: Bool
     let onSelect: (UUID) -> Void
     let onCreateFrame: () -> Void
-    let onRenameFrame: (UUID, String) -> Void
+    let onRenameAsset: (UUID, String) -> Void
 
     @State private var expandedFrameIDs: Set<UUID> = []
+    @State private var editingAssetID: UUID?
+    @State private var draftTitle = ""
+    @FocusState private var focusedAssetID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,9 +57,21 @@ struct AssetOutlinerView: View {
         .onAppear {
             expandedFrameIDs.formUnion(allFrameIDs(in: nodes))
         }
-        .onChange(of: nodes) { _, newValue in
-            expandedFrameIDs.formUnion(allFrameIDs(in: newValue))
+        .onChange(of: nodes) { oldValue, newValue in
+            let currentIDs = allFrameIDs(in: newValue)
+            expandedFrameIDs.formIntersection(currentIDs)
+            expandedFrameIDs.formUnion(currentIDs.subtracting(allFrameIDs(in: oldValue)))
+            if let editingAssetID, !allAssetIDs(in: newValue).contains(editingAssetID) {
+                cancelRename()
+            }
         }
+        .onChange(of: focusedAssetID) { oldValue, newValue in
+            if let oldValue, oldValue == editingAssetID, newValue == nil { commitRename() }
+        }
+        .onChange(of: selectedIDs) { _, newValue in
+            if let editingAssetID, !newValue.contains(editingAssetID) { commitRename() }
+        }
+        .onDisappear { commitRename() }
     }
 
     private var header: some View {
@@ -82,59 +97,83 @@ struct AssetOutlinerView: View {
 
     private func nodeRow(_ node: AssetOutlineNode, depth: Int) -> AnyView {
         AnyView(VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                // Disclosure and selection are siblings. The disclosure button
+                // must not sit inside the selection/rename gesture's hit area.
                 if node.kind == .frame {
                     Button {
                         toggleExpanded(node.id)
                     } label: {
                         Image(systemName: expandedFrameIDs.contains(node.id) ? "chevron.down" : "chevron.right")
                             .font(.caption2.weight(.bold))
-                            .frame(width: 12, height: 12)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(expandedFrameIDs.contains(node.id) ? "Collapse \(node.title)" : "Expand \(node.title)")
                 } else {
                     Color.clear
-                        .frame(width: 12, height: 12)
+                        .frame(width: 44, height: 44)
                 }
 
-                Image(systemName: iconName(for: node.kind))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(iconColor(for: node.kind))
-                    .frame(width: 14)
+                HStack(spacing: 8) {
+                    Image(systemName: iconName(for: node.kind))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(iconColor(for: node.kind))
+                        .frame(width: 14)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    if node.kind == .frame {
-                        TextField("Frame name", text: Binding(
-                            get: { node.title },
-                            set: { onRenameFrame(node.id, $0) }
-                        ))
-                        .font(.subheadline.weight(.medium))
-                        .textFieldStyle(.plain)
-                    } else {
-                        Text(node.title)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        if editingAssetID == node.id {
+                            TextField("Asset name", text: $draftTitle)
+                                .font(.subheadline.weight(.medium))
+                                .textFieldStyle(.plain)
+                                .focused($focusedAssetID, equals: node.id)
+                                .onAppear { focusedAssetID = node.id }
+                                .onSubmit { commitRename() }
+                                .onKeyPress(.escape) {
+                                    cancelRename()
+                                    return .handled
+                                }
+                        } else {
+                            Text(node.title)
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                        }
+
+                        if let subtitle = node.subtitle {
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundStyle(DesignSystem.Colors.secondary)
+                                .lineLimit(1)
+                        }
                     }
 
-                    if let subtitle = node.subtitle {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .lineLimit(1)
-                    }
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
+                .padding(.vertical, 8)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                .gesture(
+                    TapGesture(count: 2).exclusively(before: TapGesture())
+                        .onEnded { gesture in
+                            switch gesture {
+                            case .first:
+                                commitRename()
+                                onSelect(node.id)
+                                draftTitle = node.title
+                                editingAssetID = node.id
+                            case .second:
+                                commitRename()
+                                onSelect(node.id)
+                            }
+                        },
+                    including: editingAssetID == node.id ? .subviews : .all
+                )
             }
-            .padding(.leading, CGFloat(depth) * 18 + 10)
+            .padding(.leading, CGFloat(depth) * 18 + 2)
             .padding(.trailing, 10)
-            .padding(.vertical, 8)
             .background(rowBackground(for: node.id))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .contentShape(Rectangle())
-            .onTapGesture {
-                onSelect(node.id)
-            }
 
             if node.kind == .frame, expandedFrameIDs.contains(node.id) {
                 ForEach(node.children) { child in
@@ -143,6 +182,19 @@ struct AssetOutlinerView: View {
             }
         }
         .padding(.horizontal, 8))
+    }
+
+    private func commitRename() {
+        guard let id = editingAssetID else { return }
+        let title = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        editingAssetID = nil
+        focusedAssetID = nil
+        if !title.isEmpty { onRenameAsset(id, title) }
+    }
+
+    private func cancelRename() {
+        editingAssetID = nil
+        focusedAssetID = nil
     }
 
     private func rowBackground(for id: UUID) -> some ShapeStyle {
@@ -157,6 +209,13 @@ struct AssetOutlinerView: View {
             expandedFrameIDs.remove(id)
         } else {
             expandedFrameIDs.insert(id)
+        }
+    }
+
+    private func allAssetIDs(in nodes: [AssetOutlineNode]) -> Set<UUID> {
+        nodes.reduce(into: Set<UUID>()) { ids, node in
+            ids.insert(node.id)
+            ids.formUnion(allAssetIDs(in: node.children))
         }
     }
 
