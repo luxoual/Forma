@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import UIKit
 import ImageIO
 import simd
 
@@ -9,8 +8,7 @@ struct BoardCanvasView: View {
     private let onInsertURLs: ImportHandler
 
     // View transform (world -> screen)
-    @State private var scale: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
+    @State private var camera = CanvasCamera()
 
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
@@ -21,7 +19,16 @@ struct BoardCanvasView: View {
     @Binding private var showGrid: Bool
     @Binding private var canvasColor: Color
     @State private var gridSpacingWorld: CGFloat = 128.0
+    /// Hardware Shift state at touch-down, for shift-tap-to-extend. Stays
+    /// false on a device with no keyboard, which is the touch-only path.
+    @State private var keyModifiers = KeyModifierMonitor()
+
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Whole environment, needed to resolve `canvasColor` to concrete RGB —
+    /// it can be an adaptive color, and the starting color for new text is
+    /// derived from how light or dark the canvas actually renders.
+    @Environment(\.self) private var environment
 
     // Placed images (source-of-truth for interactions)
     @State private var placedImages: [PlacedImage] = []
@@ -39,9 +46,10 @@ struct BoardCanvasView: View {
     /// for the same id can't push duplicate `.insert` commands.
     @State private var pendingTextInserts: Set<UUID> = []
     /// One-shot guard: when `insertText` auto-swaps the active tool back to
-    /// `.pointer` (Figma convention — keep editing the just-placed text but
-    /// route subsequent canvas taps through pointer), the resulting
-    /// `onChange(of: activeTool)` would otherwise commit the brand-new draft.
+    /// `.group` (the default; Figma convention — keep editing the just-placed text but
+    /// stop routing subsequent canvas taps through the text tool), the
+    /// resulting `onChange(of: activeTool)` would otherwise commit the
+    /// brand-new draft.
     /// Set right before the programmatic write, consumed on the next firing.
     @State private var skipNextToolChangeCommit: Bool = false
     /// Snapshot of the text content captured at the moment a re-edit begins.
@@ -84,11 +92,28 @@ struct BoardCanvasView: View {
     // and shrinks with canvas zoom (Figma/Miro convention). The base
     // unit choice is deliberate: layout (especially wrap-locked text)
     // happens once and stays invariant under zoom.
-    // Color hex is round-tripped through CMCanvasElementPayload.text but in v1
-    // the read path always falls back to DesignSystem.Colors.primary.
+    // Color hex round-trips through CMCanvasElementPayload.text: it is
+    // written from `PlacedText.colorHex` and read back into it, with
+    // `PlacedText.color` deriving the render color (see TextColorMemory for
+    // where the default for *new* text comes from).
     private let defaultTextFontSize: CGFloat = 24
     private let defaultTextFontName: String = "system"
-    private let defaultTextColorHex: String = "#191919"
+
+    /// Last text color picked on *this board*, as `#RRGGBB`, or nil when
+    /// nothing has been picked yet. Owned by `ContentView` (which persists it
+    /// to the manifest) so it travels with the board rather than the app:
+    /// a dark board and a light board want different text, and picking on one
+    /// shouldn't change the other.
+    @Binding private var lastTextColorHex: String?
+
+    /// Original per-element colors captured when a color edit begins, held
+    /// until the edit coalesces into a single history command. Nil when no
+    /// edit is in flight.
+    @State private var textColorEditOriginals: [UUID: String]? = nil
+    /// Debounce for the above. The system `ColorPicker` publishes a new
+    /// color on every frame of a spectrum drag; without coalescing, one
+    /// visit to the picker would push dozens of undo steps.
+    @State private var textColorCommitTask: Task<Void, Never>? = nil
     private let defaultFramePadding: CGFloat = 40
 
     // Zoom bounds
@@ -97,15 +122,18 @@ struct BoardCanvasView: View {
 
     // Active tool from toolbar
     @Binding private var activeTool: CanvasTool
+    // Home-button trigger: fires zoomToFitContent when set to a non-nil UUID
+    @Binding private var homeTrigger: UUID?
     // Selection state
     @State private var selection = CanvasSelectionState()
     @State private var currentDragMode: DragMode? = nil
     @State private var dragStartWorldPos: CGPoint? = nil
 
-    // Command history for undo/redo
+    // Undo/redo. `commandHistory` registers into the window's `UndoManager`
+    // (found by `WindowUndoManagerReader` below), which is what gives us the
+    // menu bar's Edit > Undo/Redo, the three-finger gestures, ⌘Z, and the
+    // Undo/Redo pill.
     var commandHistory: CanvasCommandHistory
-    @Binding private var undoTrigger: UUID?
-    @Binding private var redoTrigger: UUID?
 
     // Binding to receive external insert requests (e.g., from toolbar)
     @Binding private var externalInsertURLs: [URL]?
@@ -119,16 +147,16 @@ struct BoardCanvasView: View {
     @Binding private var markCleanTrigger: UUID?
 
     @MainActor
-    init(activeTool: Binding<CanvasTool> = .constant(.pointer), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, undoTrigger: Binding<UUID?> = .constant(nil), redoTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
+    init(activeTool: Binding<CanvasTool> = .constant(.group), externalInsertURLs: Binding<[URL]?> = .constant(nil), showGrid: Binding<Bool> = .constant(true), canvasColor: Binding<Color> = .constant(.white), lastTextColorHex: Binding<String?> = .constant(nil), snapshotTrigger: Binding<UUID?> = .constant(nil), loadElements: Binding<[CMCanvasElement]?> = .constant(nil), commandHistory: CanvasCommandHistory, homeTrigger: Binding<UUID?> = .constant(nil), markCleanTrigger: Binding<UUID?> = .constant(nil), onInsertURLs: @escaping ImportHandler = { _ in }, onSnapshot: (([CMCanvasElement], Bool) -> Void)? = nil) {
         let store = LocalBoardStore()
         self._canvasStore = State(initialValue: store)
         self._activeTool = activeTool
         self._externalInsertURLs = externalInsertURLs
         self._showGrid = showGrid
         self._canvasColor = canvasColor
+        self._lastTextColorHex = lastTextColorHex
         self.commandHistory = commandHistory
-        self._undoTrigger = undoTrigger
-        self._redoTrigger = redoTrigger
+        self._homeTrigger = homeTrigger
         self._markCleanTrigger = markCleanTrigger
         self.onInsertURLs = onInsertURLs
         self._snapshotTrigger = snapshotTrigger
@@ -141,45 +169,13 @@ struct BoardCanvasView: View {
             let renderPlan = imageRenderPlan()
             ZStack {
                 // Grid background
-                Canvas { ctx, size in
-                    guard showGrid else { return }
-
-                    let s = scale
-                    let off = offset
-
-                    // Visible world rect
-                    let worldMinX = (-off.width) / s
-                    let worldMinY = (-off.height) / s
-                    let worldMaxX = (size.width - off.width) / s
-                    let worldMaxY = (size.height - off.height) / s
-
-                    // Draw minor grid lines
-                    var path = Path()
-                    let spacing = max(8.0, gridSpacingWorld)
-
-                    // Start lines aligned to world grid
-                    let startX = floor(worldMinX / spacing) * spacing
-                    let startY = floor(worldMinY / spacing) * spacing
-
-                    // Vertical lines
-                    var x = startX
-                    while x <= worldMaxX {
-                        let screenX = x * s + off.width
-                        path.move(to: CGPoint(x: screenX, y: 0))
-                        path.addLine(to: CGPoint(x: screenX, y: size.height))
-                        x += spacing
-                    }
-                    // Horizontal lines
-                    var y = startY
-                    while y <= worldMaxY {
-                        let screenY = y * s + off.height
-                        path.move(to: CGPoint(x: 0, y: screenY))
-                        path.addLine(to: CGPoint(x: size.width, y: screenY))
-                        y += spacing
-                    }
-
-                    ctx.stroke(path, with: .color(.gray.opacity(0.25)), lineWidth: 0.5)
-                }
+                CanvasGridView(
+                    showGrid: showGrid,
+                    scale: camera.scale,
+                    offset: camera.offset,
+                    gridSpacing: gridSpacingWorld,
+                    safeAreaInsets: geo.safeAreaInsets
+                )
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
                 .onTapGesture(coordinateSpace: .local) { location in
@@ -202,24 +198,11 @@ struct BoardCanvasView: View {
                 }
 
                 if !renderPlan.overviewItems.isEmpty {
-                    Canvas { ctx, _ in
-                        for item in renderPlan.overviewItems {
-                            let screenRect = CGRect(
-                                x: item.worldRect.origin.x * scale + offset.width,
-                                y: item.worldRect.origin.y * scale + offset.height,
-                                width: item.worldRect.width * scale,
-                                height: item.worldRect.height * scale
-                            )
-                            let fillRect = screenRect.integral.insetBy(dx: 0.25, dy: 0.25)
-                            let fillPath = Path(roundedRect: fillRect, cornerRadius: min(3, min(fillRect.width, fillRect.height) * 0.2))
-                            ctx.fill(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.18)))
-                            if fillRect.width >= 6, fillRect.height >= 6 {
-                                ctx.stroke(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.32)), lineWidth: 0.75)
-                            }
-                        }
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                    CanvasOverviewLayer(
+                        items: renderPlan.overviewItems,
+                        scale: camera.scale,
+                        offset: camera.offset
+                    )
                 }
 
                 frameLayer()
@@ -255,20 +238,17 @@ struct BoardCanvasView: View {
             }
             .overlay {
                 if placedImages.isEmpty && placedTexts.isEmpty && placedFrames.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "photo.on.rectangle.angled")
-                            .font(.system(size: 80))
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .compositingGroup()
-                            .blendMode(.difference)
-                            .accessibilityHidden(true)
-
-                        Text("Drag and drop an image here")
-                            .font(.title3)
-                            .foregroundStyle(DesignSystem.Colors.secondary)
-                            .compositingGroup()
-                            .blendMode(.difference)
-                    }
+                    EmptyCanvasOverlay()
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                let rects = allElementRects()
+                if !rects.isEmpty {
+                    CanvasMinimapView(
+                        elementRects: rects,
+                        viewportRect: viewportCGRect()
+                    )
+                    .padding(16)
                 }
             }
             .onDrop(of: allowedDropTypes, delegate: CanvasDropDelegate(allowedTypes: allowedDropTypes) { point, urls in
@@ -292,15 +272,26 @@ struct BoardCanvasView: View {
             .onAppear {
                 canvasSize = geo.size
                 // Center the canvas on world origin (0, 0) on first appearance
-                if offset == .zero {
-                    offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
+                if camera.offset == .zero {
+                    camera.offset = CGSize(width: geo.size.width / 2, height: geo.size.height / 2)
                 }
-                scheduleRefreshVisibleElements()
+                // If elements were already applied AND no pending load is in flight
+                // (elementsToLoad non-nil means the deferred DispatchQueue handler
+                // will snap after it fires — gating here avoids a redundant double call).
+                if elementsToLoad == nil && (!placedImages.isEmpty || !placedTexts.isEmpty) {
+                    zoomToFitContent(animated: false)
+                } else {
+                    scheduleRefreshVisibleElements()
+                }
             }
             .onDisappear {
                 refreshTask?.cancel()
                 interactionEndTask?.cancel()
                 insertionTask?.cancel()
+                // The window's undo manager outlives this view. Leaving our
+                // actions in it would let a three-finger swipe on the file
+                // picker try to edit a board that's no longer on screen.
+                commandHistory.clear()
             }
             .onChange(of: geo.size) { oldValue, newValue in
                 canvasSize = newValue
@@ -313,7 +304,7 @@ struct BoardCanvasView: View {
                     if isFirstInsert {
                         commandHistory.clear()
                     }
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         externalInsertURLs = nil
                     }
                 }
@@ -331,6 +322,10 @@ struct BoardCanvasView: View {
                 if let editing = editingTextID {
                     commitTextEdit(id: editing)
                 }
+                // Same reasoning for a color pick still inside its coalescing
+                // window — flush it so the store write happens before, not
+                // after, the snapshot reads the store.
+                commitTextColorEdit()
                 let pendingMutation = storeMutationTask
                 Task {
                     // Wait for any in-flight store mutation (especially
@@ -348,16 +343,25 @@ struct BoardCanvasView: View {
             }
             .onChange(of: markCleanTrigger) { _, newValue in
                 guard newValue != nil else { return }
-                Task { await canvasStore.markClean() }
-                DispatchQueue.main.async { markCleanTrigger = nil }
+                Task { @MainActor in
+                    await canvasStore.markClean()
+                    markCleanTrigger = nil
+                }
             }
             .onChange(of: elementsToLoad) { oldValue, newValue in
                 if let els = newValue {
                     applyElements(els)
                     commandHistory.clear()
                     selection.clearSelection()
-                    // Clear the binding after applying
+                    // Defer one run-loop tick so every onAppear handler has
+                    // fired and canvasSize is guaranteed non-zero before we
+                    // try to center on content. DispatchQueue.main.async is
+                    // intentional: Task{} uses Swift concurrency's cooperative
+                    // scheduler and doesn't drain the run loop; .main.async does.
                     DispatchQueue.main.async {
+                        if !els.isEmpty {
+                            zoomToFitContent(animated: false)
+                        }
                         elementsToLoad = nil
                     }
                 }
@@ -368,8 +372,8 @@ struct BoardCanvasView: View {
                 // tapping another toolbar button mid-type.
                 //
                 // Skip the auto-swap fired by `insertText` itself, which
-                // flips activeTool to `.pointer` while keeping focus on the
-                // just-placed draft.
+                // flips activeTool back to the default tool while keeping
+                // focus on the just-placed draft.
                 if skipNextToolChangeCommit {
                     skipNextToolChangeCommit = false
                     return
@@ -397,15 +401,10 @@ struct BoardCanvasView: View {
                       !newIDs.contains(editing) else { return }
                 commitTextEdit(id: editing)
             }
-            .onChange(of: undoTrigger) { _, newValue in
+            .onChange(of: homeTrigger) { _, newValue in
                 guard newValue != nil else { return }
-                performUndo()
-                DispatchQueue.main.async { undoTrigger = nil }
-            }
-            .onChange(of: redoTrigger) { _, newValue in
-                guard newValue != nil else { return }
-                performRedo()
-                DispatchQueue.main.async { redoTrigger = nil }
+                zoomToFitContent()
+                Task { @MainActor in homeTrigger = nil }
             }
             .contentShape(Rectangle())
             // Drag: routed through active tool behavior
@@ -441,7 +440,7 @@ struct BoardCanvasView: View {
                                 currentDragMode = DragMode.none
                                 return
                             }
-                            dragStartOffset = offset
+                            dragStartOffset = camera.offset
 
                             if let hitResult = hitTestHandle(screenPoint: value.startLocation) {
                                 switch hitResult {
@@ -494,7 +493,7 @@ struct BoardCanvasView: View {
                                 HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
                             })
                             items.append(contentsOf: placedFrames.map {
-                                HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
+                                HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex, isFrame: true)
                             })
                             let mode = behavior.dragBegan(
                                 worldStart: worldStart,
@@ -541,8 +540,10 @@ struct BoardCanvasView: View {
                         endInteraction()
                     }
             )
+            .background(KeyModifierObserverView(monitor: keyModifiers))
             .background(TwoFingerPanView(onPan: handleTwoFingerPan))
             .background(PinchGestureView(onPinch: handlePinch))
+            .background(WindowUndoManagerReader { commandHistory.attach($0) })
         }
     }
 
@@ -551,13 +552,13 @@ struct BoardCanvasView: View {
         let sortedFrames = placedFrames.sorted { $0.zIndex < $1.zIndex }
         ForEach(sortedFrames, id: \.id) { frame in
             let isSelected = selection.selectedIDs.contains(frame.id)
-            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
-            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
             let screenRect = CGRect(
-                x: frame.worldRect.origin.x * scale + offset.width + liveDX,
-                y: frame.worldRect.origin.y * scale + offset.height + liveDY,
-                width: frame.worldRect.width * scale,
-                height: frame.worldRect.height * scale
+                x: frame.worldRect.origin.x * camera.scale + camera.offset.width + liveDX,
+                y: frame.worldRect.origin.y * camera.scale + camera.offset.height + liveDY,
+                width: frame.worldRect.width * camera.scale,
+                height: frame.worldRect.height * camera.scale
             )
 
             CanvasPlacedFrameView(
@@ -585,12 +586,12 @@ struct BoardCanvasView: View {
                 }
             }()
 
-            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
-            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
 
             let multiSelected = selectedIDs.count > 1
-            let scaledWidth = liveRect.width * scale
-            let scaledHeight = liveRect.height * scale
+            let scaledWidth = liveRect.width * camera.scale
+            let scaledHeight = liveRect.height * camera.scale
             let maxDimensionPoints = max(scaledWidth, scaledHeight)
             let position = screenPosition(for: liveRect, dx: liveDX, dy: liveDY)
             let targetMaxPixelSize = FileImageView.requestedThumbnailPixelSize(
@@ -620,8 +621,8 @@ struct BoardCanvasView: View {
             let placed = placedTexts[index]
             let isSelected = selectedIDs.contains(placed.id)
             let isMultiSelected = selectedIDs.count > 1
-            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * scale : 0
-            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * scale : 0
+            let liveDX = (isSelected && selection.isDragging) ? selection.dragOffset.width * camera.scale : 0
+            let liveDY = (isSelected && selection.isDragging) ? selection.dragOffset.height * camera.scale : 0
             let id = placed.id
             let isEditing = editingTextID == id
             let isOnlySelected = selectedIDs.count == 1 && selectedIDs.contains(id)
@@ -629,7 +630,7 @@ struct BoardCanvasView: View {
 
             CanvasPlacedTextItemView(
                 placed: $placedTexts[index],
-                scale: scale,
+                scale: camera.scale,
                 position: position,
                 isEditing: isEditing,
                 isSelected: isSelected,
@@ -643,9 +644,11 @@ struct BoardCanvasView: View {
     private func selectionActionBarLayer() -> some View {
         SelectionActionBarLayer(
             boundingBox: selectionBoundingBox(),
-            scale: scale,
-            offset: offset,
+            scale: camera.scale,
+            offset: camera.offset,
             isInteracting: isSelectionActionBarInteracting,
+            textColorHex: selectionTextColorHex(),
+            onPickTextColor: applyTextColor(hex:),
             onCreateFrame: selectionActionBarCreateFrameAction,
             onDelete: { deleteSelection() }
         )
@@ -674,10 +677,10 @@ struct BoardCanvasView: View {
            !selection.isDragging,
            !selection.isMarqueeing {
             let screenRect = CGRect(
-                x: placed.worldRect.origin.x * scale + offset.width,
-                y: placed.worldRect.origin.y * scale + offset.height,
-                width: placed.worldRect.width * scale,
-                height: placed.worldRect.height * scale
+                x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: placed.worldRect.width * camera.scale,
+                height: placed.worldRect.height * camera.scale
             )
             SelectionOverlay(
                 handles: TextElementView.textHandles,
@@ -695,10 +698,10 @@ struct BoardCanvasView: View {
         if let editingID = editingTextID,
            let placed = placedTexts.first(where: { $0.id == editingID }) {
             let screenRect = CGRect(
-                x: placed.worldRect.origin.x * scale + offset.width,
-                y: placed.worldRect.origin.y * scale + offset.height,
-                width: placed.worldRect.width * scale,
-                height: placed.worldRect.height * scale
+                x: placed.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: placed.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: placed.worldRect.width * camera.scale,
+                height: placed.worldRect.height * camera.scale
             )
             CanvasScreenRectBorderView(
                 screenRect: screenRect,
@@ -720,10 +723,10 @@ struct BoardCanvasView: View {
                 ? (selection.groupResizeBBoxCurrent ?? frame.worldRect)
                 : frame.worldRect
             let screenRect = CGRect(
-                x: worldRect.origin.x * scale + offset.width,
-                y: worldRect.origin.y * scale + offset.height,
-                width: worldRect.width * scale,
-                height: worldRect.height * scale
+                x: worldRect.origin.x * camera.scale + camera.offset.width,
+                y: worldRect.origin.y * camera.scale + camera.offset.height,
+                width: worldRect.width * camera.scale,
+                height: worldRect.height * camera.scale
             )
             GroupSelectionOverlay(activeHandle: selection.resizeHandle)
                 .frame(width: screenRect.width, height: screenRect.height)
@@ -737,10 +740,10 @@ struct BoardCanvasView: View {
     private func marqueeLayer() -> some View {
         if selection.isMarqueeing, let worldRect = selection.marqueeWorldRect {
             let screenRect = CGRect(
-                x: worldRect.origin.x * scale + offset.width,
-                y: worldRect.origin.y * scale + offset.height,
-                width: worldRect.width * scale,
-                height: worldRect.height * scale
+                x: worldRect.origin.x * camera.scale + camera.offset.width,
+                y: worldRect.origin.y * camera.scale + camera.offset.height,
+                width: worldRect.width * camera.scale,
+                height: worldRect.height * camera.scale
             )
             MarqueeOverlayView(screenRect: screenRect)
                 .allowsHitTesting(false)
@@ -756,10 +759,10 @@ struct BoardCanvasView: View {
                 : groupBoundingBox()
             if let bbox {
                 let screenRect = CGRect(
-                    x: bbox.origin.x * scale + offset.width,
-                    y: bbox.origin.y * scale + offset.height,
-                    width: bbox.width * scale,
-                    height: bbox.height * scale
+                    x: bbox.origin.x * camera.scale + camera.offset.width,
+                    y: bbox.origin.y * camera.scale + camera.offset.height,
+                    width: bbox.width * camera.scale,
+                    height: bbox.height * camera.scale
                 )
                 GroupSelectionOverlay(activeHandle: selection.resizeHandle)
                     .frame(width: screenRect.width, height: screenRect.height)
@@ -776,26 +779,6 @@ struct BoardCanvasView: View {
         min(max(value, minVal), maxVal)
     }
 
-    /// Pure function: compute the new `offset` that keeps the world point under
-    /// `anchor` (in screen-space points) fixed while scale changes from `oldScale`
-    /// to `newScale`. Extracted from `handlePinch` so the pivot-preserving math is
-    /// callable without a live view (e.g. from future unit tests).
-    ///
-    /// Preserves `worldPoint = (anchor - offset) / scale` across the zoom step.
-    static func zoomAnchoredOffset(
-        anchor: CGPoint,
-        oldOffset: CGSize,
-        oldScale: CGFloat,
-        newScale: CGFloat
-    ) -> CGSize {
-        let worldXBefore = (anchor.x - oldOffset.width) / oldScale
-        let worldYBefore = (anchor.y - oldOffset.height) / oldScale
-        return CGSize(
-            width: anchor.x - worldXBefore * newScale,
-            height: anchor.y - worldYBefore * newScale
-        )
-    }
-
     private func startInteraction() {
         interactionEndTask?.cancel()
         if !isInteracting {
@@ -806,7 +789,7 @@ struct BoardCanvasView: View {
     private func endInteraction() {
         interactionEndTask?.cancel()
         interactionEndTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try? await Task.sleep(for: .milliseconds(150))
             isInteracting = false
         }
     }
@@ -816,20 +799,20 @@ struct BoardCanvasView: View {
         case .began:
             startInteraction()
         case .changed:
-            let newScale = clamp(scale * scaleDelta, minScale, maxScale)
+            let newScale = clamp(camera.scale * scaleDelta, minScale, maxScale)
             // Clamp can cancel the delta; skip to avoid unnecessary offset churn.
-            guard newScale != scale else { return }
+            guard newScale != camera.scale else { return }
             // Pivot-preserving zoom: keep the world point currently under `anchor`
             // pinned to the same screen position after the scale change. Reading
-            // `offset`/`scale` fresh every tick is what lets this compose with the
-            // simultaneous two-finger pan (no frozen baselines to clobber).
-            offset = Self.zoomAnchoredOffset(
+            // `camera.offset`/`camera.scale` fresh every tick is what lets this
+            // compose with the simultaneous two-finger pan (no frozen baselines).
+            camera.offset = CanvasCamera.zoomAnchoredOffset(
                 anchor: anchor,
-                oldOffset: offset,
-                oldScale: scale,
+                oldOffset: camera.offset,
+                oldScale: camera.scale,
                 newScale: newScale
             )
-            scale = newScale
+            camera.scale = newScale
             scheduleRefreshVisibleElements()
         case .ended:
             endInteraction()
@@ -841,8 +824,8 @@ struct BoardCanvasView: View {
         case .began:
             startInteraction()
         case .changed:
-            offset = CGSize(width: offset.width + delta.width,
-                            height: offset.height + delta.height)
+            camera.offset = CGSize(width: camera.offset.width + delta.width,
+                                   height: camera.offset.height + delta.height)
             scheduleRefreshVisibleElements()
         case .ended:
             endInteraction()
@@ -873,10 +856,10 @@ struct BoardCanvasView: View {
            textIDs.contains(selectedID),
            let text = placedTexts.first(where: { $0.id == selectedID }) {
             let textScreenRect = CGRect(
-                x: text.worldRect.origin.x * scale + offset.width,
-                y: text.worldRect.origin.y * scale + offset.height,
-                width: text.worldRect.width * scale,
-                height: text.worldRect.height * scale
+                x: text.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: text.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: text.worldRect.width * camera.scale,
+                height: text.worldRect.height * camera.scale
             )
             if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: textScreenRect),
                handle != .topCenter && handle != .bottomCenter {
@@ -891,10 +874,10 @@ struct BoardCanvasView: View {
            frameIDs.contains(selectedID),
            let frame = placedFrames.first(where: { $0.id == selectedID }) {
             let frameScreenRect = CGRect(
-                x: frame.worldRect.origin.x * scale + offset.width,
-                y: frame.worldRect.origin.y * scale + offset.height,
-                width: frame.worldRect.width * scale,
-                height: frame.worldRect.height * scale
+                x: frame.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: frame.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: frame.worldRect.width * camera.scale,
+                height: frame.worldRect.height * camera.scale
             )
             if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: frameScreenRect) {
                 return .group(handle: handle, bbox: frame.worldRect)
@@ -909,20 +892,20 @@ struct BoardCanvasView: View {
            !frameIDs.contains(selectedID),
            let item = visibleImages.first(where: { $0.id == selectedID }) {
             let itemScreenRect = CGRect(
-                x: item.worldRect.origin.x * scale + offset.width,
-                y: item.worldRect.origin.y * scale + offset.height,
-                width: item.worldRect.width * scale,
-                height: item.worldRect.height * scale
+                x: item.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: item.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: item.worldRect.width * camera.scale,
+                height: item.worldRect.height * camera.scale
             )
             if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: itemScreenRect) {
                 return .singleItem(handle: handle, item: item)
             }
         } else if selection.selectedIDs.count > 1, let bbox = groupBoundingBox() {
             let bboxScreenRect = CGRect(
-                x: bbox.origin.x * scale + offset.width,
-                y: bbox.origin.y * scale + offset.height,
-                width: bbox.width * scale,
-                height: bbox.height * scale
+                x: bbox.origin.x * camera.scale + camera.offset.width,
+                y: bbox.origin.y * camera.scale + camera.offset.height,
+                width: bbox.width * camera.scale,
+                height: bbox.height * camera.scale
             )
             if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: bboxScreenRect) {
                 return .group(handle: handle, bbox: bbox)
@@ -972,10 +955,10 @@ struct BoardCanvasView: View {
 
         for item in visibleImages {
             let screenRect = CGRect(
-                x: item.worldRect.origin.x * scale + offset.width,
-                y: item.worldRect.origin.y * scale + offset.height,
-                width: item.worldRect.width * scale,
-                height: item.worldRect.height * scale
+                x: item.worldRect.origin.x * camera.scale + camera.offset.width,
+                y: item.worldRect.origin.y * camera.scale + camera.offset.height,
+                width: item.worldRect.width * camera.scale,
+                height: item.worldRect.height * camera.scale
             )
             let screenMaxDimension = max(screenRect.width, screenRect.height)
             let screenArea = max(screenRect.width * screenRect.height, 0)
@@ -1042,14 +1025,14 @@ struct BoardCanvasView: View {
         switch mode {
         case .pan:
             guard let start = dragStartOffset else { return }
-            offset = CGSize(
+            camera.offset = CGSize(
                 width: start.width + value.translation.width,
                 height: start.height + value.translation.height
             )
             scheduleRefreshVisibleElements()
         case .moveItem:
-            let worldDX = value.translation.width / scale
-            let worldDY = value.translation.height / scale
+            let worldDX = value.translation.width / camera.scale
+            let worldDY = value.translation.height / camera.scale
             selection.dragOffset = CGSize(width: worldDX, height: worldDY)
             selection.isDragging = true
         case .resizeItem:
@@ -1085,8 +1068,8 @@ struct BoardCanvasView: View {
         translation: CGSize,
         minDimension: CGFloat? = nil
     ) -> CGRect? {
-        let worldDX = translation.width / scale
-        let worldDY = translation.height / scale
+        let worldDX = translation.width / camera.scale
+        let worldDY = translation.height / camera.scale
         let minDim = minDimension ?? minImageDimensionWorld
 
         let anchorPos = handle.anchorPosition
@@ -1169,8 +1152,7 @@ struct BoardCanvasView: View {
             return
         }
 
-        commandHistory.push(.resize(elementID: elementID, fromRect: startRect, toRect: newRect))
-        applyResizeRect(elementID: elementID, rect: newRect)
+        execute(.resize(elementID: elementID, fromRect: startRect, toRect: newRect))
         selection.clearResize()
     }
 
@@ -1285,11 +1267,10 @@ struct BoardCanvasView: View {
             )
         }
 
-        commandHistory.push(.groupResize(
+        execute(.groupResize(
             fromRects: startRects, toRects: toRects,
             fromTextStates: startTextStates, toTextStates: toTextStates
         ))
-        applyGroupResizeApply(rects: toRects, textStates: toTextStates)
         selection.clearGroupResize()
     }
 
@@ -1436,7 +1417,7 @@ struct BoardCanvasView: View {
             // Reference width: existing wrapWidth if set, else current
             // measured worldRect.width (auto-width text).
             let baseWidth = startWrapWidth ?? startRect.width
-            let worldDX = translation.width / scale
+            let worldDX = translation.width / camera.scale
             let newWrap = max(minTextWrapWidth, baseWidth + worldDX)
             placedTexts[idx].wrapWidth = newWrap
             // Origin unchanged — left edge is anchor.
@@ -1444,7 +1425,7 @@ struct BoardCanvasView: View {
             // Left edge drag → set wrap width AND shift origin so the right
             // edge stays anchored (Figma convention).
             let baseWidth = startWrapWidth ?? startRect.width
-            let worldDX = translation.width / scale
+            let worldDX = translation.width / camera.scale
             let newWrap = max(minTextWrapWidth, baseWidth - worldDX)
             placedTexts[idx].wrapWidth = newWrap
             // Right edge anchored at startRect.maxX; origin = right - newWrap.
@@ -1473,17 +1454,14 @@ struct BoardCanvasView: View {
             return
         }
 
-        commandHistory.push(.resizeText(
+        // The live drag already mutated `placedTexts`; running the command
+        // re-applies the same values and does the store upsert.
+        execute(.resizeText(
             elementID: id,
             fromFontSize: startFontSize, toFontSize: toFontSize,
             fromWrapWidth: startWrapWidth, toWrapWidth: toWrapWidth,
             fromOrigin: startRect.origin, toOrigin: toOrigin
         ))
-
-        let element = fallbackTextElement(for: placed)
-        enqueueStoreMutation { store in
-            await store.upsert(elements: [element])
-        }
     }
 
     /// Restore a text element's resize-affected state (used by undo/redo
@@ -1535,70 +1513,109 @@ struct BoardCanvasView: View {
         guard dx != 0 || dy != 0 else { return }
 
         let idsToMove = selection.selectedIDs
-        let frameRectsBeforeExpansion = applyMoveDelta(elementIDs: idsToMove, dx: dx, dy: dy)
-        commandHistory.push(.move(
-            elementIDs: idsToMove,
-            delta: CGSize(width: dx, height: dy),
-            expandedFrameRects: frameRectsBeforeExpansion
-        ))
+        execute(.move(elementIDs: idsToMove, delta: CGSize(width: dx, height: dy)))
     }
 
     // MARK: - Undo / Redo
 
-    func performUndo() {
-        guard let command = commandHistory.popUndo() else { return }
-        switch command {
-        case .move(let ids, let delta, let expandedFrameRects):
-            applyMoveDelta(elementIDs: ids, dx: -delta.width, dy: -delta.height, expandsParentFrames: false)
-            applyFrameRects(expandedFrameRects)
-        case .resize(let id, let fromRect, _):
-            applyResizeRect(elementID: id, rect: fromRect)
-        case .groupResize(let fromRects, _, let fromTextStates, _):
-            applyGroupResizeApply(rects: fromRects, textStates: fromTextStates)
-        case .insert(let snapshots):
-            removeElements(snapshots: snapshots)
-        case .delete(let snapshots):
-            addElements(snapshots: snapshots)
-        case .createFrame(let frameSnapshot, let beforeChildSnapshots, _):
-            removeElements(snapshots: [frameSnapshot])
-            applyElementSnapshots(beforeChildSnapshots)
-        case .editTextContent(let id, let fromContent, _):
-            applyTextContent(elementID: id, content: fromContent)
-        case .resizeText(let id, let fromFontSize, _, let fromWrapWidth, _, let fromOrigin, _):
-            applyTextResizeState(
-                elementID: id,
-                fontSize: fromFontSize,
-                wrapWidth: fromWrapWidth,
-                origin: fromOrigin
-            )
+    /// Run `command` on the board, then register its reverse so the user can
+    /// undo it. Use this when the command *is* the edit.
+    private func execute(_ command: CanvasCommand) {
+        recordUndo(reverse: perform(command))
+    }
+
+    /// Register the *reverse* of an edit that other code has already applied
+    /// (chunked image insertion, text commit, the color picker's first frame).
+    /// Note the argument is the opposite of `execute`'s: you pass what undo
+    /// should run, not what just happened.
+    private func recordUndo(reverse: CanvasCommand) {
+        commandHistory.registerUndo(reverse) { command in
+            perform(command)
         }
     }
 
-    func performRedo() {
-        guard let command = commandHistory.popRedo() else { return }
+    /// Apply `command` to the board and hand back the command that reverses
+    /// it. `UndoManager` runs this for undo *and* redo: undoing runs the
+    /// stored command and registers what comes back as the redo.
+    ///
+    /// Every case but `.setTextColors` carries both sides, so the reverse is
+    /// just the same case with from/to swapped. `.setTextColors` carries only
+    /// the target colors (see its doc comment), so the reverse is read from
+    /// the live board before the change lands.
+    @discardableResult
+    private func perform(_ command: CanvasCommand) -> CanvasCommand {
+        // Land any in-flight color pick first, so an undo mid-drag reverses
+        // it rather than racing the debounce.
+        commitTextColorEdit()
         switch command {
-        case .move(let ids, let delta, _):
-            applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
-        case .resize(let id, _, let toRect):
+        case .move(let ids, let delta, let frameRectsToRestore):
+            let reverseDelta = CGSize(width: -delta.width, height: -delta.height)
+            if let frameRectsToRestore {
+                // Undoing a move. The saved frame sizes were captured *after*
+                // the original move, at the moved position. So shrink the
+                // frames first, while everything is still there, then slide
+                // it all back together. The other order leaves a moved frame
+                // stranded where it was dragged to, and each undo/redo cycle
+                // pushes it further from its contents.
+                applyFrameRects(frameRectsToRestore)
+                applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height, expandsParentFrames: false)
+                return .move(elementIDs: ids, delta: reverseDelta)
+            }
+            let frameRectsBeforeExpansion = applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
+            return .move(elementIDs: ids, delta: reverseDelta, frameRectsToRestore: frameRectsBeforeExpansion)
+        case .resize(let id, let fromRect, let toRect):
             applyResizeRect(elementID: id, rect: toRect)
-        case .groupResize(_, let toRects, _, let toTextStates):
+            return .resize(elementID: id, fromRect: toRect, toRect: fromRect)
+        case .groupResize(let fromRects, let toRects, let fromTextStates, let toTextStates):
             applyGroupResizeApply(rects: toRects, textStates: toTextStates)
+            return .groupResize(
+                fromRects: toRects, toRects: fromRects,
+                fromTextStates: toTextStates, toTextStates: fromTextStates
+            )
         case .insert(let snapshots):
             addElements(snapshots: snapshots)
+            return .delete(snapshots: snapshots)
         case .delete(let snapshots):
             removeElements(snapshots: snapshots)
-        case .createFrame(let frameSnapshot, _, let afterChildSnapshots):
+            return .insert(snapshots: snapshots)
+        case .createFrame(let frameSnapshot, let beforeChildSnapshots, let afterChildSnapshots):
             applyElementSnapshots(afterChildSnapshots)
             addElements(snapshots: [frameSnapshot])
-        case .editTextContent(let id, _, let toContent):
+            return .dissolveFrame(
+                frameSnapshot: frameSnapshot,
+                groupedChildSnapshots: afterChildSnapshots,
+                ungroupedChildSnapshots: beforeChildSnapshots
+            )
+        case .dissolveFrame(let frameSnapshot, let groupedChildSnapshots, let ungroupedChildSnapshots):
+            removeElements(snapshots: [frameSnapshot])
+            applyElementSnapshots(ungroupedChildSnapshots)
+            return .createFrame(
+                frameSnapshot: frameSnapshot,
+                beforeChildSnapshots: ungroupedChildSnapshots,
+                afterChildSnapshots: groupedChildSnapshots
+            )
+        case .editTextContent(let id, let fromContent, let toContent):
             applyTextContent(elementID: id, content: toContent)
-        case .resizeText(let id, _, let toFontSize, _, let toWrapWidth, _, let toOrigin):
+            return .editTextContent(elementID: id, fromContent: toContent, toContent: fromContent)
+        case .resizeText(let id, let fromFontSize, let toFontSize, let fromWrapWidth, let toWrapWidth, let fromOrigin, let toOrigin):
             applyTextResizeState(
                 elementID: id,
                 fontSize: toFontSize,
                 wrapWidth: toWrapWidth,
                 origin: toOrigin
             )
+            return .resizeText(
+                elementID: id,
+                fromFontSize: toFontSize, toFontSize: fromFontSize,
+                fromWrapWidth: toWrapWidth, toWrapWidth: fromWrapWidth,
+                fromOrigin: toOrigin, toOrigin: fromOrigin
+            )
+        case .setTextColors(let hexes):
+            let previous = placedTexts.reduce(into: [UUID: String]()) { acc, placed in
+                if hexes[placed.id] != nil { acc[placed.id] = placed.colorHex }
+            }
+            applyTextColors(hexes)
+            return .setTextColors(hexes: previous)
         }
     }
 
@@ -1850,6 +1867,114 @@ struct BoardCanvasView: View {
         }
     }
 
+    // MARK: - Text Color
+
+    /// Text elements in the current selection, in `placedTexts` order.
+    private func selectedTexts() -> [PlacedText] {
+        placedTexts.filter { selection.selectedIDs.contains($0.id) }
+    }
+
+    /// Color to show in the action bar's color controls, or nil when the
+    /// selection holds no text (which hides them). A mixed-color multi-select
+    /// reports the first element's color — the picker paints uniformly, so
+    /// there's nothing better to show, and the swap is what the user asked for.
+    private func selectionTextColorHex() -> String? {
+        selectedTexts().first?.colorHex
+    }
+
+    /// Apply `hex` to every selected text element, registering one undo step
+    /// for the whole picker session.
+    ///
+    /// Called straight from the picker binding, so it can fire many times a
+    /// second while the user drags in the system color picker. The canvas
+    /// updates live on every call (that's the point — you want to see the
+    /// color you're scrubbing through), but the store write is deferred to
+    /// `commitTextColorEdit` once the picking stops.
+    ///
+    /// The undo step is registered on the first frame that actually changes
+    /// a color, not at commit. A three-finger swipe can arrive during the
+    /// 400 ms debounce and go straight to `UndoManager` without passing
+    /// through our code, so the step has to already be there. Undo only
+    /// needs the originals, which we have on frame one; the redo side is
+    /// read from the live board at undo time (see `perform(_:)`).
+    private func applyTextColor(hex: String) {
+        let targets = selectedTexts()
+        guard !targets.isEmpty else { return }
+
+        // Capture the pre-edit colors on the first call of an edit only, so a
+        // whole picker session undoes back to where it started rather than to
+        // the previous frame's color.
+        if textColorEditOriginals == nil {
+            // Opening the picker can publish the color that's already
+            // applied. Don't start a session (or burn an undo step) for that.
+            // (Scrubbing away and back to the original before the debounce
+            // lands still leaves a no-op step — `UndoManager` can't pop one
+            // entry selectively. Rare enough to live with.)
+            guard targets.contains(where: { $0.colorHex != hex }) else { return }
+            let originals = Dictionary(
+                uniqueKeysWithValues: targets.map { ($0.id, $0.colorHex) }
+            )
+            textColorEditOriginals = originals
+            recordUndo(reverse: .setTextColors(hexes: originals))
+        }
+
+        let ids = Set(targets.map(\.id))
+        for idx in placedTexts.indices where ids.contains(placedTexts[idx].id) {
+            placedTexts[idx].colorHex = hex
+        }
+
+        textColorCommitTask?.cancel()
+        textColorCommitTask = Task { @MainActor in
+            // Long enough to swallow a continuous spectrum drag, short enough
+            // that a deliberate second pick reads as its own undo step.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            commitTextColorEdit()
+        }
+    }
+
+    /// Close out a color edit: record the color as most-recently-used and
+    /// sync the affected elements to the store. No-ops when nothing actually
+    /// changed (e.g. the user re-picked the color already applied). The undo
+    /// step was already registered by `applyTextColor`.
+    private func commitTextColorEdit() {
+        textColorCommitTask?.cancel()
+        textColorCommitTask = nil
+        guard let originals = textColorEditOriginals else { return }
+        textColorEditOriginals = nil
+
+        let changed = placedTexts.filter { placed in
+            guard let original = originals[placed.id] else { return false }
+            return original != placed.colorHex
+        }
+        guard let toHex = changed.first?.colorHex else { return }
+
+        lastTextColorHex = TextColorMemory.recording(toHex, into: lastTextColorHex)
+
+        let elements = changed.map(fallbackTextElement(for:))
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
+        }
+    }
+
+    /// Restore per-element text colors (used by undo/redo of `.setTextColors`).
+    /// Takes a hex per element because undo of a mixed-color selection has to
+    /// put each element back to its own original.
+    private func applyTextColors(_ hexes: [UUID: String]) {
+        var touched: [PlacedText] = []
+        for idx in placedTexts.indices {
+            guard let hex = hexes[placedTexts[idx].id] else { continue }
+            placedTexts[idx].colorHex = hex
+            touched.append(placedTexts[idx])
+        }
+        guard !touched.isEmpty else { return }
+
+        let elements = touched.map(fallbackTextElement(for:))
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
+        }
+    }
+
     private func applyElementSnapshots(_ snapshots: [PlacedElementSnapshot]) {
         guard !snapshots.isEmpty else { return }
 
@@ -1876,7 +2001,7 @@ struct BoardCanvasView: View {
                         parentFrameID: snap.element.header.parentID
                     )
                 }
-            case .text(let content, _, let fontSize, _, let wrapWidth):
+            case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
                 if let index = placedTexts.firstIndex(where: { $0.id == snap.id }) {
                     placedTexts[index] = PlacedText(
                         id: snap.id,
@@ -1884,7 +2009,7 @@ struct BoardCanvasView: View {
                         worldRect: snap.worldRect,
                         zIndex: snap.zIndex,
                         fontSize: CGFloat(fontSize),
-                        color: DesignSystem.Colors.primary,
+                        colorHex: colorHex,
                         wrapWidth: wrapWidth.map { CGFloat($0) },
                         parentFrameID: snap.element.header.parentID
                     )
@@ -1922,14 +2047,14 @@ struct BoardCanvasView: View {
                         parentFrameID: snap.element.header.parentID
                     ))
                 }
-            case .text(let content, _, let fontSize, _, let wrapWidth):
+            case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
                 placedTexts.append(PlacedText(
                     id: snap.id,
                     content: content,
                     worldRect: snap.worldRect,
                     zIndex: snap.zIndex,
                     fontSize: CGFloat(fontSize),
-                    color: DesignSystem.Colors.primary,
+                    colorHex: colorHex,
                     wrapWidth: wrapWidth.map { CGFloat($0) },
                     parentFrameID: snap.element.header.parentID
                 ))
@@ -2051,8 +2176,7 @@ struct BoardCanvasView: View {
                 ))
             }
 
-            commandHistory.push(.delete(snapshots: snapshots))
-            removeElements(snapshots: snapshots)
+            execute(.delete(snapshots: snapshots))
         }
     }
 
@@ -2097,7 +2221,7 @@ struct BoardCanvasView: View {
             content: placed.content,
             fontName: defaultTextFontName,
             fontSize: Double(placed.fontSize),
-            color: defaultTextColorHex,
+            color: placed.colorHex,
             wrapWidth: placed.wrapWidth.map { Double($0) }
         )
         return CMCanvasElement(header: header, payload: payload)
@@ -2187,14 +2311,14 @@ struct BoardCanvasView: View {
             case .image(let url, _):
                 placedImages.append(PlacedImage(id: el.id, url: url, worldRect: rect, zIndex: z, parentFrameID: el.header.parentID))
                 nextZIndex = max(nextZIndex, z + 1)
-            case .text(let content, _, let fontSize, _, let wrapWidth):
+            case .text(let content, _, let fontSize, let colorHex, let wrapWidth):
                 placedTexts.append(PlacedText(
                     id: el.id,
                     content: content,
                     worldRect: rect,
                     zIndex: z,
                     fontSize: CGFloat(fontSize),
-                    color: DesignSystem.Colors.primary,
+                    colorHex: colorHex,
                     wrapWidth: wrapWidth.map { CGFloat($0) },
                     parentFrameID: el.header.parentID
                 ))
@@ -2219,8 +2343,8 @@ struct BoardCanvasView: View {
     }
 
     private func currentViewportRect() -> CMWorldRect {
-        let s = Double(scale)
-        let off = offset
+        let s = Double(camera.scale)
+        let off = camera.offset
         let worldMinX = (-off.width) / CGFloat(s)
         let worldMinY = (-off.height) / CGFloat(s)
         let worldMaxX = (canvasSize.width - off.width) / CGFloat(s)
@@ -2234,14 +2358,13 @@ struct BoardCanvasView: View {
     private func scheduleRefreshVisibleElements() {
         refreshTask?.cancel()
         refreshTask = Task { @MainActor in
-            let delay: UInt64 = isInteracting ? 80_000_000 : 40_000_000
-            try? await Task.sleep(nanoseconds: delay)
+            try? await Task.sleep(for: isInteracting ? .milliseconds(80) : .milliseconds(40))
             await refreshVisibleElements()
         }
     }
 
     private func visibleQueryMargin() -> Double {
-        let zoomAwareMargin = Double(256 * max(scale, 0.25))
+        let zoomAwareMargin = Double(256 * max(camera.scale, 0.25))
         return min(maxVisibleQueryMargin, max(minVisibleQueryMargin, zoomAwareMargin))
     }
 
@@ -2281,13 +2404,14 @@ struct BoardCanvasView: View {
     }
 
     private func screenToWorld(_ p: CGPoint) -> CGPoint {
-        CGPoint(x: (p.x - offset.width) / scale, y: (p.y - offset.height) / scale)
+        CGPoint(x: (p.x - camera.offset.width) / camera.scale,
+                y: (p.y - camera.offset.height) / camera.scale)
     }
 
     private func screenPosition(for rect: CGRect, dx: CGFloat, dy: CGFloat) -> CGPoint {
         CGPoint(
-            x: (rect.midX * scale) + offset.width + dx,
-            y: (rect.midY * scale) + offset.height + dy
+            x: (rect.midX * camera.scale) + camera.offset.width + dx,
+            y: (rect.midY * camera.scale) + camera.offset.height + dy
         )
     }
 
@@ -2365,7 +2489,9 @@ struct BoardCanvasView: View {
 
         guard !snapshots.isEmpty else { return }
 
-        commandHistory.push(.insert(snapshots: snapshots))
+        // Insertion below is chunked, so it can't go through `execute`;
+        // register the reverse by hand.
+        recordUndo(reverse: .delete(snapshots: snapshots))
         nextZIndex += snapshots.count
 
         let chunks = snapshots.chunked(into: insertionChunkSize)
@@ -2509,6 +2635,78 @@ struct BoardCanvasView: View {
         }
     }
 
+    /// Current visible viewport expressed as a world-space CGRect.
+    private func viewportCGRect() -> CGRect {
+        guard camera.scale > 0, canvasSize != .zero else { return .zero }
+        let worldMinX = (-camera.offset.width) / camera.scale
+        let worldMinY = (-camera.offset.height) / camera.scale
+        return CGRect(x: worldMinX, y: worldMinY,
+                      width: canvasSize.width / camera.scale,
+                      height: canvasSize.height / camera.scale)
+    }
+
+    /// World-space rects for every element (images, texts, frames) on the canvas.
+    private func allElementRects() -> [CGRect] {
+        var rects = placedImages.map(\.worldRect)
+        rects.append(contentsOf: placedTexts.map(\.worldRect))
+        rects.append(contentsOf: placedFrames.map(\.worldRect))
+        return rects
+    }
+
+    /// Screen-space margin left around content when fitting, per edge. Keeps
+    /// the outermost elements clear of the toolbar and the screen edges rather
+    /// than flush against them.
+    private var fitPadding: CGFloat { 64 }
+
+    /// Zoom that fits `bounds` (world space) inside the current canvas with
+    /// `fitPadding` on every edge, clamped to the canvas zoom range.
+    ///
+    /// Capped at 1.0 so fitting only ever zooms *out*: a board holding one
+    /// small image would otherwise be magnified past its native size on every
+    /// home press, which just blurs the reference art.
+    private func fitScale(for bounds: CGRect) -> CGFloat {
+        let available = CGSize(
+            width: max(canvasSize.width - fitPadding * 2, 1),
+            height: max(canvasSize.height - fitPadding * 2, 1)
+        )
+        // A degenerate extent on one axis (zero-width/height rect) must not
+        // divide; fall back to the other axis, and to the current scale when
+        // both are degenerate.
+        var candidates: [CGFloat] = []
+        if bounds.width > 0 { candidates.append(available.width / bounds.width) }
+        if bounds.height > 0 { candidates.append(available.height / bounds.height) }
+        guard let fit = candidates.min() else { return camera.scale }
+        return clamp(min(fit, 1.0), minScale, maxScale)
+    }
+
+    /// Fit every element on the canvas into the viewport, centered. Pass
+    /// `animated: false` for instant repositioning (e.g. on board load);
+    /// `true` for the home button's eased zoom-and-pan.
+    private func zoomToFitContent(animated: Bool = true) {
+        guard canvasSize != .zero, camera.scale > 0 else { return }
+        let allRects = allElementRects()
+        guard let bounds = union(of: allRects) else { return }
+        let targetScale = fitScale(for: bounds)
+        // Offset must be derived from the *target* scale, not the current one,
+        // or the content lands off-center by the zoom delta.
+        let target = CGSize(
+            width: canvasSize.width / 2 - bounds.midX * targetScale,
+            height: canvasSize.height / 2 - bounds.midY * targetScale
+        )
+        if animated && !reduceMotion {
+            withAnimation(.easeInOut(duration: 0.4)) {
+                camera.scale = targetScale
+                camera.offset = target
+            } completion: {
+                scheduleRefreshVisibleElements()
+            }
+        } else {
+            camera.scale = targetScale
+            camera.offset = target
+            scheduleRefreshVisibleElements()
+        }
+    }
+
     // Copy a picked URL into the app's Application Support/ImportedImages directory for reliable access
     private func makeSandboxCopyIfNeeded(from url: URL) -> URL? {
         // If it's already in our container, just return it
@@ -2561,19 +2759,26 @@ struct BoardCanvasView: View {
             worldRect: CGRect(origin: worldPoint, size: .zero),
             zIndex: nextZIndex,
             fontSize: defaultTextFontSize,
-            color: DesignSystem.Colors.primary
+            // New text picks up the last color the user chose, so setting a
+            // color once carries forward instead of having to be re-picked
+            // for every element. Before anything has been picked, it starts
+            // in whichever of near-black / white the canvas can actually show.
+            colorHex: TextColorMemory.currentHex(
+                lastTextColorHex,
+                onCanvas: canvasColor.resolve(in: environment)
+            )
         )
         placedTexts.append(text)
         nextZIndex += 1
         pendingTextInserts.insert(id)
         selection.clearSelection()
         editingTextID = id
-        // Auto-swap back to pointer so the next canvas tap doesn't try to
-        // place yet another draft on top of the one we just created. The
-        // skip flag stops the activeTool onChange from committing the new
-        // draft we're still editing.
+        // Auto-swap back to the default tool so the next canvas tap doesn't
+        // try to place yet another draft on top of the one we just created.
+        // The skip flag stops the activeTool onChange from committing the
+        // new draft we're still editing.
         skipNextToolChangeCommit = true
-        activeTool = .pointer
+        activeTool = .group
     }
 
     /// Commits the active text edit for `id`. Handles two paths:
@@ -2624,7 +2829,7 @@ struct BoardCanvasView: View {
                 id: id, url: nil,
                 worldRect: restored.worldRect, zIndex: restored.zIndex, element: element
             )
-            commandHistory.push(.delete(snapshots: [snapshot]))
+            recordUndo(reverse: .insert(snapshots: [snapshot]))
             enqueueStoreMutation { store in
                 await store.delete(elementIDs: [id])
             }
@@ -2637,13 +2842,14 @@ struct BoardCanvasView: View {
                 id: id, url: nil,
                 worldRect: placed.worldRect, zIndex: placed.zIndex, element: element
             )
-            commandHistory.push(.insert(snapshots: [snapshot]))
+            recordUndo(reverse: .delete(snapshots: [snapshot]))
         } else if let originalContent, originalContent != placed.content {
-            // Re-edit produced a real content change — record it for undo.
-            commandHistory.push(.editTextContent(
+            // Re-edit produced a real content change — undo puts the
+            // original content back.
+            recordUndo(reverse: .editTextContent(
                 elementID: id,
-                fromContent: originalContent,
-                toContent: placed.content
+                fromContent: placed.content,
+                toContent: originalContent
             ))
         }
         // Always upsert — covers both new placements and re-edit content
@@ -2707,9 +2913,12 @@ struct BoardCanvasView: View {
             selectedImages.map(\.parentFrameID) +
             selectedTexts.map(\.parentFrameID)
         )
+        // If everything selected sits in the same frame, the new frame goes
+        // inside that frame too, so grouping items within a frame nests
+        // instead of pulling them out. A mixed selection lands at top level.
         let commonParentFrameID = parentCandidates.count == 1 ? parentCandidates.first ?? nil : nil
         let parentFrameID = commonParentFrameID.flatMap { parentID in
-            placedFrames.first(where: { $0.id == parentID })?.parentFrameID
+            placedFrames.contains(where: { $0.id == parentID }) ? parentID : nil
         }
 
         let frameRect = contentBounds.insetBy(dx: -defaultFramePadding, dy: -defaultFramePadding)
@@ -2747,10 +2956,10 @@ struct BoardCanvasView: View {
             placedFrames.filter { selectedIDs.contains($0.id) }.map(snapshot(for:))
         selection.selectedIDs = [frame.id]
         nextZIndex = max(nextZIndex, frame.zIndex + 1)
-        commandHistory.push(.createFrame(
+        recordUndo(reverse: .dissolveFrame(
             frameSnapshot: frameSnapshot,
-            beforeChildSnapshots: beforeChildSnapshots,
-            afterChildSnapshots: afterChildSnapshots
+            groupedChildSnapshots: afterChildSnapshots,
+            ungroupedChildSnapshots: beforeChildSnapshots
         ))
 
         enqueueStoreMutation { store in
@@ -2778,8 +2987,9 @@ struct BoardCanvasView: View {
         let behavior = toolBehavior(for: activeTool)
         let store = canvasStore
         let sel = selection
+        let extending = keyModifiers.isShiftDown
         Task {
-            await behavior.tappedItem(id: id, store: store, selection: sel)
+            await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
             if refreshAfterSelection {
                 await refreshVisibleElements()
             }

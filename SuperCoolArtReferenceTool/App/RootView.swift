@@ -18,6 +18,11 @@ struct RootView: View {
     /// for new boards / legacy v1 files. `ContentView` resolves `nil` to the
     /// system background.
     @State private var initialCanvasColorHex: String?
+    /// Hex (`#RRGGBB`) of the last text color picked on the board being
+    /// opened, or `nil` for new boards / boards where nothing was picked.
+    /// `BoardCanvasView` resolves `nil` by deriving a readable color from
+    /// the canvas background.
+    @State private var initialLastTextColorHex: String?
     @State private var recentsManager = RecentBoardsManager()
 
     var body: some View {
@@ -27,6 +32,7 @@ struct RootView: View {
                 initialElements: initialElements,
                 initialBoardURL: initialBoardURL,
                 initialCanvasColorHex: initialCanvasColorHex,
+                initialLastTextColorHex: initialLastTextColorHex,
                 onBack: { showCanvas = false }
             )
             .environment(recentsManager)
@@ -37,13 +43,15 @@ struct RootView: View {
                     initialURLs = []
                     initialBoardURL = url
                     initialCanvasColorHex = nil
+                    initialLastTextColorHex = nil
                     showCanvas = true
                 },
-                onBoardSelected: { elements, url, colorHex in
+                onBoardSelected: { imported, url in
                     initialURLs = []
-                    initialElements = elements
+                    initialElements = imported.elements
                     initialBoardURL = url
-                    initialCanvasColorHex = colorHex
+                    initialCanvasColorHex = imported.canvasColorHex
+                    initialLastTextColorHex = imported.lastTextColorHex
                     showCanvas = true
                 },
                 onFilesDropped: { urls in
@@ -51,6 +59,7 @@ struct RootView: View {
                     initialURLs = urls
                     initialBoardURL = nil
                     initialCanvasColorHex = nil
+                    initialLastTextColorHex = nil
                     showCanvas = true
                 }
             )
@@ -60,6 +69,7 @@ struct RootView: View {
                     initialURLs = []
                     initialElements = value
                     initialCanvasColorHex = openHandler.importedCanvasColorHex
+                    initialLastTextColorHex = openHandler.importedLastTextColorHex
                     showCanvas = true
                 }
             }

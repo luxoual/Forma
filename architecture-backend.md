@@ -1,55 +1,50 @@
-# Backend Architecture Documentation (Dev B)
+# Backend Architecture (Dev B)
 
 ⚠️ This document is maintained by **Dev B (Data/Persistence/Infrastructure)**.
 
-The purpose of this file is to document **data models, persistence, storage, and system infrastructure** as they become stable during development.
+It describes the data, storage, and file code **as actually built** — not plans, not ideas. If something here isn't in the code, it shouldn't be here.
 
-This file should reflect the **actual implemented system**, not speculative designs.
-
----
-
-# Current Status
-
-Backend architecture has **core data models and persistence layer** implemented, ready for frontend integration.
+**How this doc is written:** plain language first, precise names second. Every section starts with what the thing does in ordinary words, then gets specific. Exact names (`LocalBoardStore`, `CMElementHeader.parentID`), file paths, and numbers are kept literal so you can search for them. See `context.md` → "How to write documentation" for the full rule.
 
 ---
 
-# Recent Changes (Backend Impact)
+## Words we use a lot
 
-- `.refboard` is a **single-file ZIP** export format. The exporter writes a manifest plus copied image assets into one archive.
-- Import accepts both the ZIP-based `.refboard` file and the older directory-style package layout for compatibility.
-- ZIP import/export paths were hardened to avoid path traversal and unstable relative-path generation during archive extraction and creation.
-- Temporary unzip directories are now cleaned up even when archive extraction fails early.
-- Multi-image paste/import placement now arranges images as a square-style batch instead of nudging each image diagonally from the same center point.
-- Batch image insertion shifts the entire grid until it finds a non-overlapping region on the canvas.
-- Board import in the UI is now filtered to `.refboard` only instead of also allowing generic folders and packages.
-- App-open delivery now passes imported `CMCanvasElement` values through the root view into the canvas on first launch/open.
-- `LocalBoardStore` now maintains reverse tile membership per element so move/resize/delete operations can update the spatial index precisely instead of leaving stale tile memberships behind.
-- Visible-image refresh now uses a direct `imagePlacements(...)` query from the store instead of doing a headers query followed by a second payload lookup pass in the canvas.
-- Canvas image loading now uses a shared multilevel thumbnail pipeline with snapped thumbnail levels, request deduplication, bounded decode concurrency, and memory-cost-aware caching to reduce pan/zoom decode churn.
-- Multi-image import preparation now runs off the main actor with bounded concurrency for sandbox copying and metadata probing, then applies canvas insertion in chunks so large pastes do not block interaction in one synchronous spike.
-- Dense-view rendering now uses a count-aware level-of-detail budget: once visible image density rises, only the highest-priority images stay on the detailed thumbnail path while the rest fall back to the cheap overview canvas pass.
-- Visible-image querying now uses a zoom-aware preload margin instead of a constant world-space buffer, and detailed-image membership has hysteresis so pan/zoom motion causes less promotion/demotion churn.
-- **Manifest schema bumped to version 2** with an optional board-level `canvasColor: String?` (`#RRGGBB`) field. v1 files decode cleanly with `canvasColor = nil` via `Codable` synthesis (the second time the manifest has gained an optional field — `text.wrapWidth` was the first — establishing the additive-evolution pattern). `BoardArchiver.importElements(...)` now returns an `ImportResult { elements, canvasColorHex }` struct; `BoardArchiver.export(...)` takes a `canvasColorHex: String?` parameter and writes it (or omits it for `nil`). The SwiftUI layer owns the `Color ↔ String` conversion since it needs an env to resolve adaptive colors; the archiver only deals in hex strings. See `architecture-frontend.md` → "Canvas Color Persistence" for the frontend-side plumbing.
-- **`BoardArchiver` enum marked `nonisolated`** so its helpers don't inherit the project's `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` default. `export` was already `nonisolated` at the method level for off-main autosave; tagging the enum makes that uniform across `importElements`, `importFromZip`, `importFromPackage`, and the manifest types nested inside.
-- Added persistent frame/grouping support. Frames are serialized as first-class canvas elements, child relationships are stored via `CMElementHeader.parentID`, and import/export round-trips image, text, and frame hierarchy together.
-- Frame creation, movement, resizing, parent-frame auto-expansion, and undo/redo now use canvas-element snapshots so persistence stays consistent with the visible asset tree.
+Read this once and the rest of the doc gets easier.
+
+| Word | What it actually means |
+|---|---|
+| **Element** | One thing on the board: an image, a text note, or a frame. In code, a `CMCanvasElement`. |
+| **Header** | The part of an element every type shares: id, position and size (`bounds`), stacking order (`zIndex`), and which frame it belongs to (`parentID`). A `CMElementHeader`. |
+| **Payload** | The part that's specific to the type: an image's file, a text note's words and font, a frame's title. A `CMCanvasElementPayload`. |
+| **World space** | The endless flat surface items live on. Positions here never change when you pan or zoom. The backend works in `SIMD2<Double>` and `CMWorldRect`. |
+| **Tile** | A 1024 × 1024 square of world space. The board is cut into tiles so "what's near here?" can skip everything far away. A `CMTileKey`. |
+| **The store** | `LocalBoardStore`, the in-memory record of every element on the open board. It's the source of truth for saving. |
+| **Manifest** | `manifest.json`, the file that lists every element and board setting. It's what gets read back when a board opens. |
+| **`.refboard`** | A saved board. It's a ZIP file holding the manifest plus copies of every image. |
+| **Asset** | An image file stored inside the `.refboard`, under `assets/`. Text and frames have no asset — they live entirely in the manifest. |
+| **Dirty** | "Has unsaved changes." The store sets its dirty flag on every edit and only clears it after a save actually succeeds. |
+| **Frame** | A labeled box that groups other elements. The children stay what they were (images stay images); they just point at the frame through `parentID`. |
+| **Snapshot** | A frozen copy of an element taken before or after an edit, so undo can put it back exactly. A `PlacedElementSnapshot`. |
+
+**Frontend and backend use different number types for the same world.** The canvas (Dev A) uses `CGFloat` / `CGPoint` / `CGRect`. The backend uses `Double` / `SIMD2<Double>` / `CMWorldRect`. Whenever data crosses between them, it gets converted. That conversion lives in `BoardCanvasView` (see "Where frontend and backend meet" at the bottom).
 
 ---
 
-# System Areas
+## Current status
 
-## Canvas Item Model
+The data model, the in-memory store, and save/open of `.refboard` files are all built and working. Frames (grouping) are saved and loaded, but still in progress (see "Frames").
 
-Decision Status: **Implemented**
+---
 
-**File:** `CanvasModels.swift`
+# What's on a board: the element model
 
-Complete data model system for canvas elements with support for multiple item types, transformations, and spatial indexing.
+**Status: Implemented**
+**File:** `Persistence/CanvasModels.swift`
 
-### Element Types
+Every item on a board is described the same way: a header that says *where* it is, and a payload that says *what* it is. Splitting it like this means the store can sort and search elements by position without caring whether they're images, text, or frames.
 
-**Enum:** `CMElementType`
+## Element types
 
 ```swift
 enum CMElementType: String, Codable, Hashable {
@@ -62,9 +57,9 @@ enum CMElementType: String, Codable, Hashable {
 }
 ```
 
-### Element Payload
+`rectangle`, `ellipse`, and `path` exist in the model but the canvas doesn't create them yet. `image`, `text`, and `frame` are the ones in use.
 
-**Enum:** `CMCanvasElementPayload`
+## Payloads
 
 ```swift
 case rectangle(fillColor: String)
@@ -75,107 +70,195 @@ case image(url: URL, size: SIMD2<Double>)
 case frame(title: String)
 ```
 
-`text.wrapWidth` is `nil` for auto-width text (grows horizontally with content) and a world-units width when the text has been wrap-locked via the side resize handle. The decoder uses `decodeIfPresent` and the encoder uses `encodeIfPresent` so older `.refboard` files predating this field load cleanly with `wrapWidth = nil` (auto-width), and freshly-saved auto-width texts omit the key from disk rather than writing `null`. This is the canonical pattern for additive payload-field evolution — image, path, and other payloads should follow the same shape if they grow new optional fields.
+**Text.** The words, font, and color all live in the manifest. No file is created for text, which is why text never touches the `assets/` folder inside the ZIP. The frontend's `PlacedText` mirrors this payload one-to-one (see `architecture-frontend.md` → Text Elements).
 
-The frontend `PlacedText` mirrors this payload 1:1 (see `architecture-frontend.md` → Text Elements). Text content lives **entirely in the manifest** — no asset file is created or referenced — which is why text round-trips through the import/export paths without touching the `assets/` directory inside the ZIP.
+**`text.wrapWidth`** decides how a text note lays out:
 
-### Frame Hierarchy
+- `nil` — auto-width. The text grows sideways as you type.
+- a number — the user dragged a side handle to fix the width, in world units. Text wraps inside it.
 
-Frames are persisted as normal `CMCanvasElement` records with `type: .frame`, `payload: .frame(title:)`, and bounds stored in `header.bounds`. The hierarchy is represented by `CMElementHeader.parentID` on any child image, text, or nested frame. This keeps grouping orthogonal to payload data: an image remains an image payload, and its membership in a frame is a header relationship.
+Older boards were saved before this field existed. To keep them opening, the decoder uses `decodeIfPresent`, so a missing key just means `nil`. The encoder uses `encodeIfPresent`, so an auto-width text writes no key at all instead of writing `null`. **Any payload that grows a new optional field should copy this pattern.**
 
-Runtime frame state is represented by `PlacedFrame { id, title, worldRect, zIndex, parentFrameID }`, mirroring the manifest data needed for save/load and undo reconstruction. `PlacedImage` and `PlacedText` also carry `parentFrameID` so local canvas mutations can update hierarchy before the store write lands.
+## Frames: grouping without changing what's inside
 
-Frame creation snapshots the selected children before and after reparenting. Undo removes the inserted frame and restores the children to their previous parent IDs; redo restores the child parent IDs and re-adds the frame. This is handled by `CanvasCommand.createFrame(...)` rather than treating frame creation as a plain insert, because grouping changes existing elements in addition to adding a new one.
+**Status: In progress.** This works today, but product owner feedback calls for changes to much of it. Treat the behavior below as a snapshot, not a settled design.
 
-Moving a child outside its parent frame does not detach it. Instead, the parent frame bounds expand to contain its children, and the move command records the pre-expansion frame rects so undo can restore both the child position and frame bounds. Resizing a frame uses the same group-resize snapshot path as multi-selection: the frame and all descendants are scaled together, then persisted as updated element bounds.
+**What a frame is:** a labeled box drawn around a set of elements, so they move and resize together.
+
+**How it's stored:** a frame is just another element — `type: .frame`, `payload: .frame(title:)`, with its box in `header.bounds`. Membership is stored on the *child*, not the frame: each child image, text, or nested frame sets `CMElementHeader.parentID` to its frame's id.
+
+This keeps grouping separate from content. An image inside a frame is still an image payload; only its header changed. That's also why grouped items keep showing everywhere images and text show (the canvas, the minimap, the asset outliner) — nothing about them was converted.
+
+On the canvas side, `PlacedFrame { id, title, worldRect, zIndex, parentFrameID }` holds a frame's live state. `PlacedImage` and `PlacedText` also carry `parentFrameID`, so the canvas can update grouping right away instead of waiting for the store write to land.
+
+### Creating a frame, and undoing it
+
+Making a frame does two things at once: it adds a new frame element, *and* it changes the selected elements by pointing their `parentID` at it. A plain "insert" undo would only remove the frame and leave the children pointing at a frame that no longer exists.
+
+So creation records snapshots of the selected children **before** and **after** they were reparented:
+
+- `CanvasCommand.createFrame(frameSnapshot:beforeChildSnapshots:afterChildSnapshots:)` — re-applies the "after" children, then adds the frame.
+- `CanvasCommand.dissolveFrame(frameSnapshot:groupedChildSnapshots:ungroupedChildSnapshots:)` — removes the frame, then puts the children back to their "before" parents.
+
+Each is the other's reverse. Undo runs `.dissolveFrame`; redo runs `.createFrame`.
+
+**Where a new frame goes.** If every selected element already has the same parent frame, the new frame's `parentID` is that frame, so grouping inside a frame nests. Otherwise it's top-level (`nil`). An earlier version used the parent's *parent* by mistake, so new frames escaped the frame they were made in. Both are routed through the system `UndoManager` like every other canvas edit (see `architecture-frontend.md` for how undo works).
+
+### Moving things inside a frame
+
+Dragging a child past its frame's edge doesn't pull it out of the frame. Instead the frame **grows** to keep holding it, plus `defaultFramePadding` (40 world units) of margin. If that frame is itself inside another frame, the outer one grows too, all the way up.
+
+That growth has to be undoable, which caused a subtle problem. Undoing the move slides the child back, but sliding back doesn't shrink the frame — frames only ever grow on their own. So `.move` carries an extra field:
+
+```swift
+case move(elementIDs: Set<UUID>, delta: CGSize, frameRectsToRestore: [UUID: CGRect]? = nil)
+```
+
+- `frameRectsToRestore == nil` → a real move. Grow parent frames as needed, and remember their old sizes.
+- non-nil → the undo of a move. First set those frames back to their remembered sizes, then slide everything back *without* growing anything.
+
+**The order matters.** The remembered sizes are captured *after* the move, at the moved position. Resetting a frame's size after sliding back would snap the frame to where it was dragged, away from its contents. Each undo/redo cycle would push it further away. Resetting first, then sliding, keeps the frame and its contents together.
+
+### Resizing a frame
+
+Resizing a frame scales the frame and everything inside it together. It reuses the same group-resize path as a multi-selection, then saves the new bounds of every touched element.
+
+### A frame caveat for older builds
+
+The manifest decoder throws on a payload `type` it doesn't recognize. A board that contains a frame, opened in a build from before frames existed, will fail to open rather than open without the frames. The manifest `version` was not bumped for frames (it's still `3`). Since nothing reads `version` today (see "Changing the manifest safely"), a bump wouldn't have prevented this anyway.
 
 ---
-## Export Package (.refboard)
 
-Decision Status: **Implemented**
+# Saving and opening a board: the `.refboard` file
 
+**Status: Implemented**
 **Files:**
-- `SuperCoolArtReferenceTool/App/BoardExportDocument.swift`
-- `SuperCoolArtReferenceTool/App/BoardArchiver.swift`
+- `App/BoardExportDocument.swift`
+- `App/BoardArchiver.swift`
 
-The export pipeline produces a **single-file `.refboard` ZIP** containing:
-- `manifest.json` (currently `version: 2`)
-- `assets/` (copied image files)
+A saved board is one ZIP file with a `.refboard` extension. `BoardArchiver` is the only code that reads or writes it.
 
-The manifest carries element data plus board-level state. As of version 2 it includes an optional `canvasColor: String?` (`#RRGGBB`) — the user's saved canvas background, or omitted when no preference has been set. v1 files have no `canvasColor` key; `Codable` synthesis treats the missing key as `nil`, so old boards decode without any per-version branching.
+## What's inside
 
-`BoardArchiver.export(elements:canvasColorHex:to:)` mutates the archive in place: when the destination already exists it opens the ZIP in `.update` mode, adds only asset entries whose UUIDs weren't already present, removes entries for deleted elements, and rewrites `manifest.json`. Image entries use `.none` compression (already compressed bytes); `manifest.json` uses `.deflate`. This keeps autosave of a "move/resize/add-one-image" change near-free on boards with hundreds of assets. The `canvasColorHex` parameter passes the SwiftUI layer's resolved hex straight into the manifest — `nil` writes no key. `BoardArchiver.importElements(from:copyAssetsToAppSupport:)` accepts either the new ZIP or a legacy package folder, unpacks if needed, decodes `manifest.json`, and resolves image assets. It returns an `ImportResult { elements: [CMCanvasElement], canvasColorHex: String? }`.
+- `manifest.json` — every element, plus board settings. Currently written as `version: 3`.
+- `assets/` — a copy of every image on the board.
 
-The method is `nonisolated` so autosave can run on a detached `.userInitiated` task for off-main saves (back button); force-quit-safe `.inactive` saves still run on the main actor since they must complete before SIGKILL. Save paths coordinate with `LocalBoardStore.peekDirty()` / `markClean()` — the dirty flag is cleared only after a confirmed-successful write, so a cancelled file exporter doesn't silently drop pending changes. Note that `BoardCanvasView`'s `peekDirty()` only tracks the element store; canvas-color-only changes are gated by a parallel `canvasColorDirty` flag in `ContentView` (see `architecture-frontend.md` → "Canvas Color Persistence").
+Besides the element list, the manifest holds two board-level settings. Both are `#RRGGBB` strings, and both are left out entirely when unset:
 
-When `copyAssetsToAppSupport` is enabled, imported image assets are copied into the app container so the canvas can keep stable file URLs after temporary unzip directories are removed.
+- `canvasColor` (added in v2) — the board's background color.
+- `lastTextColor` (added in v3) — the color new text on this board starts in.
 
-### Schema evolution
+`lastTextColor` belongs to the board, not the app, because a dark board and a light board want different text. Picking a color on one shouldn't change the other.
 
-Scope: this section is about the **on-disk `manifest.json` schema** — what gets serialized into the `.refboard` ZIP and read back out. Runtime image caches (see "Thumbnail Loading Pipeline") and tile-index layout (see "Spatial Query Helpers") are separate concerns with their own versioning needs and are not affected by manifest field additions.
+## Saving
 
-The manifest's `version: Int` is bumped when a change is observable, but the on-disk shape evolves via additive optional fields and `Codable` synthesis takes care of the round-trip. So far two fields have followed this pattern:
+`BoardArchiver.export(elements:canvasColorHex:lastTextColorHex:to:)` writes the file.
 
-| Field | Added in | Decoder behavior on older files |
+**It only rewrites what changed.** If the file already exists, export opens the ZIP in `.update` mode. It adds asset entries only for images whose UUIDs aren't in the archive yet, removes entries for deleted elements, and rewrites `manifest.json`. Moving one image on a board of hundreds re-writes a small JSON file, not hundreds of images.
+
+**Compression:** images are stored with `.none`, because JPEG/PNG bytes are already compressed and squeezing them again just burns time. `manifest.json` uses `.deflate`.
+
+**Where saves run:**
+
+- `BoardArchiver` is marked `nonisolated`. The project defaults everything to the main actor (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`); without the marker, every archiver helper would be forced onto the main thread. With it, the back-button autosave can run on a detached `.userInitiated` task and not freeze the UI.
+- The save that runs when the app goes `.inactive` stays on the main actor on purpose. The system may kill the app right after, so that save has to finish before anything else happens.
+
+**The dirty flag.** Save paths ask `LocalBoardStore.peekDirty()` whether there's anything to save, and call `markClean()` only after the write succeeds. "Peek" doesn't clear the flag. That matters because the user can cancel the file exporter: if peeking cleared the flag, a cancelled save would quietly lose the record that changes were pending.
+
+`peekDirty()` only knows about elements. A change to just the canvas color is tracked separately by a `canvasColorDirty` flag in `ContentView` (see `architecture-frontend.md` → "Canvas Color Persistence").
+
+**Colors cross as strings.** The SwiftUI side turns `Color` into a hex string before calling export, because resolving an adaptive color needs a SwiftUI environment. The archiver only ever sees hex strings. `nil` means "write no key."
+
+## Opening
+
+`BoardArchiver.importElements(from:copyAssetsToAppSupport:)` reads a board. It:
+
+1. Accepts either the ZIP `.refboard` or the older folder-style package, for boards saved before the ZIP format.
+2. Unzips to a temporary folder if needed.
+3. Decodes `manifest.json` and resolves each image's file.
+4. Returns an `ImportResult { elements: [CMCanvasElement], canvasColorHex: String?, lastTextColorHex: String? }`.
+
+When `copyAssetsToAppSupport` is on, images are copied into the app's own container. Without that, image URLs would point into the temporary unzip folder, which gets deleted — and every image on the board would break.
+
+`importElements` handles security-scoped access itself (the `startAccessingSecurityScopedResource` / stop pair). Callers must not wrap it in their own pair. `FilePickerView.openBoard` used to, redundantly; that was removed so the archiver is the only owner.
+
+### How an opened board reaches the canvas
+
+**Files:** `App/SuperCoolArtReferenceToolApp.swift`, `App/RootView.swift`, `App/ContentView.swift`, `App/AppOpenHandler.swift`
+
+A board can come in two ways:
+
+- **From inside the app**, through `fileImporter`. The picker only offers `.refboard` files — not generic folders or packages.
+- **From outside**, when another app (like Files) opens a `.refboard` and the system calls `.onOpenURL`.
+
+Both end at `BoardArchiver.importElements(...)`. After that:
+
+- **Outside path:** `AppOpenHandler` holds each piece separately (`importedElements`, `importedCanvasColorHex`, `importedLastTextColorHex`). `RootView` passes them into `ContentView` as `initialElements`, `initialCanvasColorHex`, and `initialLastTextColorHex`.
+- **In-app path:** `FilePickerView.onBoardSelected: (BoardArchiver.ImportResult, URL) -> Void` passes the whole `ImportResult` along instead of splitting it up. Two `String?` hex values side by side in a closure signature are easy to swap by accident; passing the struct avoids that and lets board settings grow without touching every hop.
+
+`ContentView` then hands the elements to `BoardCanvasView` through `loadElements`. It sets its `canvasColor` from the hex, falling back to `Color(uiColor: .systemBackground)` when there isn't one. It binds `lastTextColorHex` into the canvas so a color pick writes straight into the state that gets saved.
+
+## Changing the manifest safely
+
+This is about the **on-disk `manifest.json` format** only. The thumbnail cache and the tile index are in memory and are unaffected by manifest changes.
+
+So far every new field has been an optional that older files simply don't have. `Codable` treats a missing key as `nil`, so old boards open with no migration code:
+
+| Field | Added in | What an older file decodes to |
 |---|---|---|
-| `ManifestPayload.text.wrapWidth: Double?` | text-elements PR | Explicit `decodeIfPresent` / `encodeIfPresent` (custom Codable). Missing key → `nil`. |
-| `BoardManifest.canvasColor: String?` | v2 | Synthesized `Codable` on the manifest struct. Missing key → `nil`. |
+| `ManifestPayload.text.wrapWidth: Double?` | text-elements PR | `nil`, via explicit `decodeIfPresent` / `encodeIfPresent` (hand-written Codable) |
+| `BoardManifest.canvasColor: String?` | v2 | `nil`, via synthesized `Codable` |
+| `BoardManifest.lastTextColor: String?` | v3 | `nil`, via synthesized `Codable` |
+| `CMElementHeader.parentID: UUID?` | frames | `nil` (not in any frame), via synthesized `Codable` |
 
-Custom-coded payloads need the explicit `decodeIfPresent` because their `init(from:)` is written by hand; synthesized structs handle the absent-key case automatically. Either way, the v1 → v2 upgrade requires no migration code.
+Hand-written `init(from:)` needs the explicit `decodeIfPresent`. Synthesized structs handle a missing key on their own.
 
-Adding a new manifest field should follow the same pattern:
-1. Declare it `Optional` on the struct.
-2. If the struct has custom `Codable`, branch via `decodeIfPresent` / `encodeIfPresent`. If synthesized, just add the property.
-3. Bump `version: Int` if downstream consumers might need to switch on it (helps future migration logic dispatch correctly); skip the bump if the change is purely additive and forward-readable.
+**`version` is written but never read.** Nothing on import branches on it. So a version bump documents the format; it doesn't protect anything. One side effect: a v3 file opened in a v2 build just ignores the unknown key and loses that one setting. If a reader ever starts checking `version`, revisit this.
 
-Adding a *breaking* change (rename, type change, mandatory new field) is what would actually demand a version-dispatched migration path. None today.
+**To add a field:**
 
-### Archive Safety
+1. Make it `Optional`.
+2. If the struct has hand-written `Codable`, use `decodeIfPresent` / `encodeIfPresent`. If it's synthesized, just add the property.
+3. Bump `version` if a future reader might need to tell formats apart. Skip it if the change is purely additive and old readers can ignore it.
 
-The archive layer now includes explicit path-safety checks:
-- ZIP entry extraction rejects empty paths, absolute paths, backslash-based paths, and any standardized destination that escapes the intended temp extraction root.
-- ZIP creation derives entry names by stripping only the verified source-root prefix, rather than doing a global string replacement on absolute paths.
-- Temporary extraction directories are deleted via `defer` so failed imports do not leak temp folders.
+A *breaking* change — renaming, changing a type, adding a required field, or adding a new payload `type` (see the frame caveat above) — is what would really need a version check and a migration path. There's no migration path today.
 
-The app uses a custom `UTType.refboard` helper. In code it is resolved from the `refboard` filename extension first, then falls back to the exported identifier `AxI.SuperCoolArtReferenceTool.refboard`.
+## Keeping the ZIP safe
 
-At the moment, `UTType.refboard` still conforms to `public.data` in code rather than `public.zip-archive`. This is a compatibility choice: the project is still building with a generated `Info.plist`, so the custom `.refboard` document type is not fully registered through app metadata yet. Using `.data` preserves current file-picker behavior until the project switches to a real plist-based type declaration.
+A malicious or broken ZIP can contain entry names like `../../something` that try to write outside the folder you're unzipping into ("path traversal"). The archiver guards against that:
 
-### Import/Open Flow
+- On extract, it rejects entry paths that are empty, absolute, contain backslashes, or would land outside the temporary extraction folder once standardized.
+- On create, it builds entry names by stripping the verified source-folder prefix — not by find-and-replace on the full path, which could match in the wrong place.
+- The temporary extraction folder is deleted with `defer`, so a failed import doesn't leave junk behind.
 
-**Files:**
-- `SuperCoolArtReferenceTool/App/SuperCoolArtReferenceToolApp.swift`
-- `SuperCoolArtReferenceTool/App/RootView.swift`
-- `SuperCoolArtReferenceTool/App/ContentView.swift`
-- `SuperCoolArtReferenceTool/App/AppOpenHandler.swift`
+## The `.refboard` file type
 
-`.refboard` files can enter the app through two paths:
-- In-app board import via `fileImporter`
-- External open via the app-level `.onOpenURL`
+The app defines `UTType.refboard` in code. It looks the type up by the `refboard` extension first, then falls back to the identifier `AxI.SuperCoolArtReferenceTool.refboard`.
 
-Both paths converge on `BoardArchiver.importElements(...)`, which returns an `ImportResult { elements, canvasColorHex }`. `AppOpenHandler` exposes both pieces of state (`importedElements: [CMCanvasElement]?` and `importedCanvasColorHex: String?`) for the app-open path; `RootView` promotes them into `ContentView` (`initialElements` + `initialCanvasColorHex`); `ContentView` forwards the elements into `BoardCanvasView` through `loadElements` and seeds its own `canvasColor` state from the hex (falling back to `Color(uiColor: .systemBackground)` when nil).
-
-`BoardArchiver.importElements` owns its own security-scoped access internally (`startAccessingSecurityScopedResource` / stop pair). Callers should not nest their own — `FilePickerView.openBoard` previously wrapped its detached-task body in a redundant pair; that wrap has been removed so the archiver remains the single owner of the scope.
+It currently conforms to `public.data`, not `public.zip-archive`. That's deliberate for now: the project still uses a generated `Info.plist`, so the custom document type isn't fully registered in the app's metadata. Using `.data` keeps the file picker working until the project moves to a real plist type declaration.
 
 ---
 
-## Persistence Diagnostics
+# Diagnostics: logs for save and open
 
-Decision Status: **Implemented**
+**Status: Implemented**
+**Files:** `App/Loggers.swift`, `App/BoardArchiver.swift`
 
-**Files:**
-- `SuperCoolArtReferenceTool/App/Loggers.swift`
-- `SuperCoolArtReferenceTool/App/BoardArchiver.swift`
+When a user reports "my board won't open," these logs are how we narrow it down — without writing their filenames or error text into release logs.
 
-Diagnostics for the import/export/save surface, designed so production logs are useful for narrowing down user-reported failures without leaking sensitive filenames or error text.
+## Logger setup
 
-### Logger setup
+`Loggers.swift` holds every `Logger` and `OSSignposter`. The subsystem is read from `Bundle.main.bundleIdentifier`. That's on purpose: each dev signs with their own Apple ID team, so each dev's build has a different bundle id, and a hard-coded subsystem would break log filtering for everyone but one person.
 
-`Loggers.swift` centralizes Logger / OSSignposter declarations. Subsystem auto-derives from `Bundle.main.bundleIdentifier` so per-dev signing (no shared developer certificate, each dev's Apple ID team produces a different bundle id) doesn't break log filtering. Six categories: `App` (`.onOpenURL`), `Save` (autosave), `RecentBoards` (bookmark I/O), `Archiver` (ZIP open failures + probe), `Importer` (file picker results), `ScenePhase` (lifecycle). Filter via `log stream --predicate 'subsystem == "<bundle-id>" && category == "Save"'` or Console.app's category filter.
+Six categories: `App` (`.onOpenURL`), `Save` (autosave), `RecentBoards` (bookmark reading and writing), `Archiver` (ZIP open failures and the tail probe), `Importer` (file picker results), `ScenePhase` (app lifecycle).
 
-### Log privacy policy
+Filter with `log stream --predicate 'subsystem == "<bundle-id>" && category == "Save"'`, or Console.app's category filter.
 
-`OSLogPrivacy` cannot be extended with custom static values — the OSLog macro performs a compile-time check that only accepts the framework's built-in members. Privacy is therefore baked into wrapper methods on `Logger` (`logSaveSuccess`, `logSaveFailure`, `logURLReceipt`, `logFailure`, `logArchiveOpenFailed`). **Add a new persistence-related log via a wrapper rather than calling `Logger.<category>.info(...)` directly** so the privacy rule stays uniform.
+## What's private in logs
+
+You can't define your own `OSLogPrivacy` values — the logging macro checks at compile time and only accepts the built-in ones. So privacy rules are built into wrapper methods on `Logger`: `logSaveSuccess`, `logSaveFailure`, `logURLReceipt`, `logFailure`, `logArchiveOpenFailed`.
+
+**Add new persistence logs through a wrapper, not `Logger.<category>.info(...)` directly**, so the privacy rule stays the same everywhere.
 
 | Field | DEBUG | Release |
 |---|---|---|
@@ -183,145 +266,141 @@ Diagnostics for the import/export/save surface, designed so production logs are 
 | Error description / failure reason | `.public` | `.private(mask: .hash)` |
 | Provider class, element count, duration, probe result, signpost metadata | `.public` | `.public` |
 
-The hashed-mask in release lets log lines correlate ("save failed for X" → "save retried for X") without leaking the raw filename.
+The hash mask means release logs can still match "save failed for X" to "save retried for X" without showing what X is.
 
-### File-provider attribution
+## Which storage provider was involved
 
-`fileProviderDescription(for:)` returns the broad storage class — `iCloud Drive`, `FileProvider`, `iCloudContainer`, `AppContainer`, `Simulator`, `Other`. DEBUG builds additionally extend `FileProvider` / `iCloudContainer` with the provider's bundle suffix (`FileProvider:WorkingCopy-XYZ`) so we can attribute provider-specific bugs locally; release builds drop the suffix.
+`fileProviderDescription(for:)` reports roughly where the file lives: `iCloud Drive`, `FileProvider`, `iCloudContainer`, `AppContainer`, `Simulator`, or `Other`. DEBUG builds add the provider app's bundle suffix (like `FileProvider:WorkingCopy-XYZ`); release builds leave it off.
 
-The third-party-attribution split exists because a corruption report on `.refboard` files saved through Working Copy (a Files-extension app) needed provider-level resolution to diagnose, but the raw provider name shouldn't ship to release logs.
+This exists because of a real bug report: `.refboard` files saved through Working Copy (an app that adds itself to Files) were getting corrupted. Diagnosing that needed to know *which* provider. Shipping third-party app names in release logs didn't feel right, hence the DEBUG-only suffix.
 
-### `ArchiverError` (formerly `ImportError`)
+## `ArchiverError`
 
-`BoardArchiver.ArchiverError: LocalizedError` covers both import and export paths — the boundary type name reflects the archiver boundary, not one direction across it. Cases:
+`BoardArchiver.ArchiverError: LocalizedError` covers both saving and opening. It was called `ImportError` until export started using it too.
 
-- `unsupportedFileExtension` — wrong file extension (import-only path).
-- `corruptedFile(failingEntryPath: String?)` — package layout invalid, manifest missing, or `unzipItem` rejected a ZIP entry path. Associated value carries the bad path when known.
-- `ioFailure(underlying: Error?)` — `Archive(url:accessMode:)` returned nil for read or write. Associated value reserved for the underlying error if a future ZIPFoundation surface exposes one.
+- `unsupportedFileExtension` — wrong extension (opening only).
+- `corruptedFile(failingEntryPath: String?)` — the package layout is invalid, the manifest is missing, or unzipping rejected an entry path. Carries the bad path when known.
+- `ioFailure(underlying: Error?)` — `Archive(url:accessMode:)` returned nil for reading or writing. The associated value is reserved for when ZIPFoundation exposes an underlying error.
 
-`errorDescription` is plain-language for user alerts; the developer-facing `failureReason` (bad ZIP entry path / underlying error) is folded into log lines via `failureReasonSuffix(for:)` inside the `Logger.log*Failure` wrappers, so the associated-value detail reaches `log stream` without surfacing in the user's alert text.
+`errorDescription` is the plain-language text shown to the user. The developer detail (`failureReason`: bad entry path, underlying error) goes into log lines through `failureReasonSuffix(for:)` inside the `Logger.log*Failure` wrappers, so it shows up in `log stream` but never in the user's alert.
 
-Splitting into separate `ImportError` / `ExportError` types is deferred until a third call site appears or import/export diverge in error data (e.g. export needs `diskFull(bytesRequired:)`). Today there's one call site each and type-level discrimination buys nothing the compiler isn't already giving.
+Separate `ImportError` / `ExportError` types aren't worth it yet. There's one call site each, and the compiler already knows which is which. Split them if a third call site appears, or if the two need different data (e.g. export needing `diskFull(bytesRequired:)`).
 
-### OSSignposter intervals
+## Timing saves and opens
 
-`OSSignposter.archiver` emits begin/end intervals around `BoardArchiver.export` and `.importElements`. Metadata attached to each interval (`provider: <class>`, plus `elements: <count>` on export) is `.public` so it shows in Instruments under `subsystem == "<bundle-id>"` + `category == "Archiver"`. This is the tool for answering "is provider X slow or wrong?" — measure per-provider duration across real saves.
+`OSSignposter.archiver` marks the start and end of every `BoardArchiver.export` and `.importElements`. Each interval carries `provider: <class>`, plus `elements: <count>` on export, all `.public`. In Instruments, filter on `subsystem == "<bundle-id>"` and `category == "Archiver"`. This is how to answer "is provider X slow, or broken?"
 
-### ZIP-tail probe
+## Was the file cut off mid-save?
 
-When `Archive(url:accessMode: .read)` returns nil inside `unzipItem`, `probeZipTail` reads the trailing 64KB of the file and reports whether the ZIP End-of-Central-Directory signature (`PK\x05\x06`) is present:
+When `Archive(url:accessMode: .read)` returns nil inside `unzipItem`, `probeZipTail` reads the last 64KB of the file and looks for the ZIP end marker (the End-of-Central-Directory signature, `PK\x05\x06`). Every valid ZIP ends with one.
 
-- `ZIP probe: NO EOCD found (size=N) — file likely truncated mid-write` — points at killed-during-save (the suspected Working Copy bug shape).
-- `ZIP probe: EOCD found (size=N) — file structurally valid but couldn't open` — points elsewhere (header corruption, permission, ZIPFoundation issue).
-- Diagnostic strings prefixed `ZIP probe:` for intermediate stat/open/seek/read failures.
+- `ZIP probe: NO EOCD found (size=N) — file likely truncated mid-write` — the file was cut off, most likely the app was killed during a save. This is the suspected shape of the Working Copy bug.
+- `ZIP probe: EOCD found (size=N) — file structurally valid but couldn't open` — the file is complete, so look elsewhere (header corruption, permissions, a ZIPFoundation issue).
+- Other `ZIP probe:` lines report failures partway through the probe itself (stat, open, seek, read).
 
-Logged via `Logger.archiver.logArchiveOpenFailed(url:probe:)`.
+Logged through `Logger.archiver.logArchiveOpenFailed(url:probe:)`.
 
 ---
 
-## Spatial Query Helpers
+# The store: finding what's near you, fast
 
-Decision Status: **Implemented**
-
+**Status: Implemented**
 **Files:**
-- `SuperCoolArtReferenceTool/Persistence/CanvasService.swift`
-- `SuperCoolArtReferenceTool/Persistence/LocalCanvasService.swift`
-- `SuperCoolArtReferenceTool/Persistence/LocalBoardStore.swift`
+- `Persistence/LocalBoardStore.swift`
+- `Persistence/CanvasService.swift`
+- `Persistence/LocalCanvasService.swift`
 
-Added viewport and selection helpers to support tile-based culling and hit-testing:
-- `elements(in:margin:layers:limit:)` for viewport-expanded queries.
-- `topmostElement(at:layers:)` for point hit testing.
-- `moveToTop` / `moveToBottom` for absolute z-order operations.
+`LocalBoardStore` is an `actor` that remembers every element on the open board. Its main job is answering "which elements are in this rectangle?" quickly, so the canvas only builds views for what's on screen.
 
-`LocalBoardStore` now acts as the backing spatial index for canvas rendering. It stores:
-- `tileIndex`: tile key -> element IDs
-- `elementTiles`: element ID -> tile keys
-- `elements` / `fullElements`: header and payload storage
+## How it finds things: tiles
 
-That reverse index allows incremental tile maintenance when an image moves or resizes. The store also tracks `minZIndex` / `maxZIndex` so z-order promotions no longer need to scan the full board just to compute the next topmost or bottommost index.
+Checking every element on every pan would get slow on big boards. So the store cuts world space into tiles of `CMTileKey.size = 1024` world units and keeps a lookup from each tile to the elements touching it. To find what's in a rectangle, it checks only the tiles that rectangle covers.
 
-The canvas render path now uses `imagePlacements(in:margin:limit:)` as a specialized query for visible image items. That keeps viewport refresh to a single backend pass that returns only the data needed by the image renderer.
+The store keeps:
 
-The viewport-expanded query margin is no longer effectively constant at the call site. The canvas now computes a zoom-aware preload margin and passes that into `imagePlacements(...)`, which reduces off-screen overfetch at far zoom-out while preserving enough lookahead for normal pan/zoom motion.
+- `tileIndex: [CMTileKey: Set<UUID>]` — tile → elements touching it
+- `elementTiles: [UUID: Set<CMTileKey>]` — element → tiles it touches (the reverse)
+- `elements: [UUID: CMElementHeader]` / `fullElements: [UUID: CMCanvasElement]` — the headers and the full elements
+- `minZIndex` / `maxZIndex` — the current lowest and highest stacking order
 
----
+**Why the reverse lookup exists:** when an image moves, the store needs to remove it from the tiles it *used* to touch. Without `elementTiles` it couldn't know which ones those were, and stale entries would pile up. With it, move, resize, and delete update exactly the right tiles.
 
-## Thumbnail Loading Pipeline
+**Why it tracks min/max z:** "bring to front" needs the current highest `zIndex`. Tracking it means the store doesn't have to scan every element to find it.
 
-Decision Status: **Implemented**
+## The queries
 
-**File:**
-- `SuperCoolArtReferenceTool/Features/BoardCanvas/BoardCanvasView.swift`
+- `imagePlacements(in:margin:limit:)` — the one the canvas calls on every refresh. Returns just what the image renderer needs, in a single pass. It replaced an older two-step "get headers, then look up each payload" approach.
+- `headers(in:limit:)` / `headers(in:margin:limit:)` — headers in a rectangle (used by marquee select).
+- `elements(in:margin:layers:limit:)` — viewport query widened by a margin (on `CanvasService`).
+- `topmostElement(at:layers:)` — the highest element under a point.
+- `moveToTop` / `moveToBottom` — absolute z-order changes.
+- `allElements()`, `replaceAll(with:)`, `upsert(elements:)`, `delete(elementIDs:)` — bulk read/write, used for save, load, and edits.
+- `peekDirty()` / `markClean()` — the dirty flag described under "Saving."
 
-Image presentation now uses a shared thumbnail-loading pipeline instead of per-view ad hoc thumbnail decoding.
-
-Behavior:
-- Requested screen sizes are snapped to discrete thumbnail levels (`128`, `256`, `384`, `512`, `768`, `1024`, `1536`, `2048`).
-- During interaction, requested levels are capped lower so panning and zooming favor cheaper decodes.
-- The pipeline reuses the nearest cached thumbnail level immediately when possible.
-- Duplicate requests for the same `url + level` are deduplicated through an in-flight task map.
-- Thumbnail decode concurrency is bounded by an async limiter.
-- Cached thumbnails are stored in an `NSCache` with both count and total-cost limits, and cache cost is based on decoded pixel size.
-- When visible image density rises, the canvas does not keep every visible image on this detailed thumbnail-backed path. The thumbnail pipeline is now the expensive tier of a broader LOD system; lower-priority images are represented by a lightweight overview pass instead of triggering full per-image thumbnail work.
-
-This is not yet a persistent on-disk thumbnail pyramid. Levels are generated lazily in memory from source files, but the pipeline now behaves like a lightweight multilevel thumbnail system during canvas interaction.
+**The preload margin grows with zoom.** The canvas asks for a bit beyond the visible area, so images are ready before they scroll on screen. That margin isn't a fixed world-space number. A fixed margin wastes a lot of loading when zoomed far out (a few screen points cover huge world distances). So the canvas scales the margin with zoom and passes it into `imagePlacements(...)`.
 
 ---
 
-## Batch Image Placement
+# Loading image thumbnails
 
-Decision Status: **Implemented**
+**Status: Implemented**
+**File:** `Features/BoardCanvas/Elements/ImageCache.swift`
 
-**File:**
-- `SuperCoolArtReferenceTool/Features/BoardCanvas/BoardCanvasView.swift`
+Decoding a full-size photo for a 100-point-wide thumbnail wastes memory and time. And panning would trigger thousands of decodes. So images go through a shared pipeline that decodes only the size needed, and reuses what it can.
 
-Canvas image insertion now treats a paste/import of multiple images as a single batch layout operation.
+- **Fixed sizes.** Requested sizes snap to one of: `128`, `256`, `384`, `512`, `768`, `1024`, `1536`, `2048` pixels. Snapping means two nearly equal requests share one decode.
+- **Cheaper while moving.** During pan or zoom, requested sizes are capped lower so motion stays smooth. Sharper versions load when you stop.
+- **Show something now.** If a different size of the same image is already cached, it's shown immediately while the right size loads.
+- **No duplicate work.** Two requests for the same `url + level` at the same time share one in-flight task.
+- **Limited parallel decodes.** An async limiter caps how many decodes run at once.
+- **Memory-aware cache.** Thumbnails sit in an `NSCache` with both a count limit and a total-cost limit. Cost is the decoded pixel size, so big images count for more.
 
-Behavior:
-- Source file copying into the app sandbox and image metadata probing now happen off the main actor through a bounded-concurrency preparation pipeline.
-- The canvas computes a near-square grid using the number of incoming images.
-- Each image keeps its own aspect ratio and is centered within a shared grid cell size derived from the largest image in the batch.
-- The batch is initially centered around the requested insertion point.
-- If any image in the batch would overlap an existing placed image, the system first searches nearby candidate offsets on coarse and fine grids, then falls back to moving the full batch outside the currently occupied canvas bounds to guarantee a non-overlapping placement.
-- After preparation, insertion is applied in chunks with yields between batches so very large paste/import operations do not monopolize the main actor.
-
-This replaces the older one-by-one diagonal nudge behavior, which could still create visually messy overlaps for larger paste operations.
+This is not a thumbnail cache on disk. Every size is made in memory, on demand, from the original file.
 
 ---
 
-## Canvas Render Support Infrastructure
+# Pasting many images at once
 
-Decision Status: **Implemented**
+**Status: Implemented**
+**File:** `Features/BoardCanvas/BoardCanvasView.swift`
 
-**Files:**
-- `SuperCoolArtReferenceTool/Features/BoardCanvas/BoardCanvasView.swift`
-- `SuperCoolArtReferenceTool/Persistence/LocalBoardStore.swift`
+Pasting or importing several images lays them out as a tidy grid, as one operation. The old approach nudged each image diagonally from the same point, and big pastes ended up as a messy overlapping pile.
 
-The backend-facing canvas support now includes explicit render-budgeting behavior layered on top of tile-based visibility queries.
-
-Behavior:
-- Visible image candidates still come from `LocalBoardStore.imagePlacements(in:margin:limit:)`.
-- If visible count stays below the dense-view threshold, all visible images can remain on the detailed render path.
-- Once visible density rises, the canvas enforces a bounded detailed-image budget and splits rendering into:
-  - a detailed tier backed by the thumbnail pipeline
-  - a cheap overview tier rendered as lightweight canvas primitives
-- Detailed-tier selection is priority-based rather than FIFO:
-  - selected images are always retained
-  - larger on-screen images are favored
-  - images nearer the viewport center are favored
-- Detailed-tier membership has hysteresis (`stickyDetailImageIDs`) so images do not constantly churn between tiers on minor pan deltas.
-
-This keeps total expensive image-render work closer to a capped budget instead of allowing it to scale linearly with every additional visible image in dense zoomed-out views.
+1. **Prepare off the main thread.** Copying files into the app's sandbox and reading each image's size happen off the main actor, a few at a time.
+2. **Pick a grid.** The grid is as close to square as the image count allows. Every cell is the size of the largest image. Each image keeps its own aspect ratio and is centered in its cell.
+3. **Center it** on the paste point.
+4. **Avoid overlap.** If any image would land on an existing image, the whole grid shifts. It tries nearby spots on a coarse grid, then a fine one. If nothing fits, it moves the whole batch past the edge of everything already on the board, which always works.
+5. **Insert in chunks.** Elements are added in chunks of 48, pausing between chunks. A 500-image paste doesn't freeze the app in one long stall.
 
 ---
 
-# Integration Points
+# Keeping dense views fast: level of detail
 
-- `ContentView` collects a snapshot of `CMCanvasElement` from `BoardCanvasView` and exports via `BoardArchiver` (macOS uses a save panel to choose the target URL). Board-level state beyond the element list — currently just the canvas-color hex — also flows through `BoardArchiver.export(elements:canvasColorHex:to:)`.
-- `BoardArchiver` is the single backend entry point for encoding/decoding `.refboard` files (ZIP or legacy package). Returns an `ImportResult { elements, canvasColorHex }` on import; takes the parallel pair on export.
-- `BoardCanvasView` now performs batch image placement for pasted/imported image URLs before writing the resulting `CMCanvasElement` set into `canvasStore`.
-- `CanvasService` provides viewport and selection queries (`elements(in:margin:...)`, `topmostElement(at:...)`) for tile-based culling and hit-testing.
-- `CanvasService` exposes z-order operations (`moveToTop` / `moveToBottom`) for absolute layer adjustments.
-- `LocalBoardStore` provides the specialized `imagePlacements(in:margin:limit:)` query used by the visible-canvas render path.
-- The canvas thumbnail pipeline is currently implemented inside `BoardCanvasView.swift`; it depends on backend file-URL payloads remaining stable after import/export and app-open flows. The v2 manifest's added `canvasColor` field doesn't change that contract — image-asset URLs round-trip the same way they always did, and the new field is orthogonal board-level state.
-- The dense-view LOD budget and sticky-detail behavior depend on `LocalBoardStore` continuing to provide cheap viewport image placement queries as pan/zoom inputs change frequently.
+**Status: Implemented**
+**Files:** `Features/BoardCanvas/BoardCanvasView.swift`, `Persistence/LocalBoardStore.swift`
+
+Zoomed far out on a big board, hundreds of images can be on screen at once, each only a few points wide. Building a real image view with a real thumbnail for each one would bring the iPad to its knees. So past a certain density, most images are drawn as cheap placeholder rectangles, and only the most important ones get real thumbnails.
+
+- Visible images still come from `LocalBoardStore.imagePlacements(in:margin:limit:)`.
+- Below the dense-view threshold, every visible image is drawn in full.
+- Above it, there's a capped budget of full images. The rest go to a cheap overview pass, drawn as simple shapes.
+- Which images get the full treatment is decided by priority, not arrival order:
+  - selected images always do
+  - bigger on-screen images come first
+  - images nearer the middle of the screen come first
+- **No flicker at the boundary.** An image right on the edge of the cutoff could flip between full and placeholder on every tiny pan. `stickyDetailImageIDs` makes images already showing in full a little harder to demote, so they stay put.
+
+The result is that expensive image work stays near a fixed budget, instead of growing with every image you can see.
+
+---
+
+# Where frontend and backend meet
+
+- **Saving.** `ContentView` asks `BoardCanvasView` for a snapshot of `CMCanvasElement`s, then calls `BoardArchiver.export(elements:canvasColorHex:lastTextColorHex:to:)`. Board settings (canvas color, last text color) go through the same call.
+- **Opening.** `BoardArchiver` is the only entry point for reading or writing `.refboard` files (ZIP or legacy folder). It returns an `ImportResult { elements, canvasColorHex, lastTextColorHex }`.
+- **Number types.** The canvas works in `CGFloat` / `CGRect`, the store in `Double` / `CMWorldRect`. `BoardCanvasView` converts at every crossing (for example `fallbackImageElement(for:)`, `fallbackTextElement(for:)`, `fallbackFrameElement(for:)`, and `applyElements(_:)`).
+- **Frames.** The canvas mirrors `CMElementHeader.parentID` as `parentFrameID` on `PlacedImage`, `PlacedText`, and `PlacedFrame`. Frame create, move, resize, auto-grow, and undo all write full element snapshots back to the store, so what gets saved always matches the tree the user sees.
+- **Pasting.** `BoardCanvasView` lays out a batch of pasted or imported images before writing the resulting `CMCanvasElement`s into `canvasStore`.
+- **Queries.** `CanvasService` offers viewport and point queries (`elements(in:margin:...)`, `topmostElement(at:...)`) and z-order changes (`moveToTop` / `moveToBottom`). `LocalBoardStore.imagePlacements(in:margin:limit:)` is the specialized query the visible-canvas render uses.
+- **Stable image URLs.** The thumbnail pipeline assumes an image's file URL keeps working after open, save, and app-open. That's what `copyAssetsToAppSupport` guarantees. Board settings like `canvasColor` don't affect this — image URLs round-trip the same way regardless.
+- **Fast viewport queries.** The level-of-detail budget and sticky detail both re-query on every pan and zoom step, so `imagePlacements(...)` needs to stay cheap.

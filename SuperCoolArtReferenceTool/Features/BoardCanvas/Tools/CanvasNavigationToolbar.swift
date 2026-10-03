@@ -13,18 +13,25 @@ import SwiftUI
 ///
 /// Layout:
 /// - Leading group: back chevron + board name pill (no nested glass).
-/// - Trailing: tools+add / undo-redo / settings, split by `ToolbarSpacer`
+/// - Trailing: tools+add / undo-redo / home+settings, split by `ToolbarSpacer`
 ///   so each group renders as its own glass capsule. Add lives with the
 ///   tools because it's the other put-stuff-on-the-canvas action, not a
-///   settings affordance.
+///   settings affordance. Home lives with settings because both are
+///   view-level navigation, not edit-history actions.
 /// - All buttons use `Label("Title", systemImage: …)` so the system overflow
 ///   menu can populate from titles when the bar collapses.
 struct CanvasNavigationToolbar: ToolbarContent {
     let boardName: String
     @Binding var activeTool: CanvasTool
     let onBack: () -> Void
+    /// Mirrors of `UndoManager.canUndo` / `canRedo`, kept by
+    /// `CanvasCommandHistory`, so the buttons grey out when there's nothing
+    /// to do.
+    let canUndo: Bool
+    let canRedo: Bool
     let onUndo: () -> Void
     let onRedo: () -> Void
+    let onHome: () -> Void
     let onAddItem: () -> Void
     let onSettings: () -> Void
 
@@ -56,8 +63,7 @@ struct CanvasNavigationToolbar: ToolbarContent {
         // here because it's the same kind of "put stuff on the canvas"
         // action as the tools next to it.
         ToolbarItemGroup(placement: .topBarTrailing) {
-            toolButton(.pointer, label: "Pointer", icon: "arrow.up.left")
-            toolButton(.group, label: "Group", icon: "rectangle.dashed")
+            toolButton(.group, label: "Select", icon: "rectangle.dashed")
             toolButton(.text, label: "Text", icon: "textformat")
             Button("Add", systemImage: "plus", action: onAddItem)
         }
@@ -68,14 +74,17 @@ struct CanvasNavigationToolbar: ToolbarContent {
             Button(action: onUndo) {
                 Label("Undo", systemImage: "arrow.uturn.backward")
             }
+            .disabled(!canUndo)
             Button(action: onRedo) {
                 Label("Redo", systemImage: "arrow.uturn.forward")
             }
+            .disabled(!canRedo)
         }
 
         ToolbarSpacer(.fixed, placement: .topBarTrailing)
 
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("Fit to Content", systemImage: "house", action: onHome)
             Button(action: onSettings) {
                 Label("Settings", systemImage: "gear")
             }

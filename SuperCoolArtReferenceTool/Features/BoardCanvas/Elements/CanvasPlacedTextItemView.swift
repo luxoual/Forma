@@ -21,6 +21,7 @@ struct CanvasPlacedTextItemView: View {
         )
         .position(x: position.x, y: position.y)
         .onTapGesture(perform: onTap)
+        .accessibilityAddTraits(.isButton)
         .zIndex(Double(placed.zIndex))
     }
 }

@@ -24,6 +24,7 @@ struct CanvasPlacedImageItemView: View {
                 }
             }
             .onTapGesture(perform: onTap)
+            .accessibilityAddTraits(.isButton)
             .position(x: position.x, y: position.y)
             .shadow(radius: isInteracting ? 0 : 1)
             .zIndex(Double(zIndex))

@@ -19,10 +19,12 @@ struct FilePickerView: View {
     @Environment(RecentBoardsManager.self) private var recentsManager
 
     var onNewBoard: (URL) -> Void
-    /// Called when an existing board is opened. The hex string is the canvas
-    /// color saved in the manifest (`#RRGGBB`), or `nil` for legacy boards
-    /// — the caller resolves `nil` to the system background.
-    var onBoardSelected: ([CMCanvasElement], URL, String?) -> Void
+    /// Called when an existing board is opened, with the decoded manifest and
+    /// the board's URL. The whole `ImportResult` is passed rather than its
+    /// fields so board-level state (canvas color, last text color — both
+    /// `nil` on legacy boards) can grow without every caller in the chain
+    /// gaining another positional `String?`.
+    var onBoardSelected: (BoardArchiver.ImportResult, URL) -> Void
     var onFilesDropped: ([URL]) -> Void
 
     var body: some View {
@@ -144,7 +146,7 @@ struct FilePickerView: View {
                     try BoardArchiver.importElements(from: url, copyAssetsToAppSupport: true)
                 }.value
                 recentsManager.record(url: url)
-                onBoardSelected(imported.elements, url, imported.canvasColorHex)
+                onBoardSelected(imported, url)
             } catch {
                 importErrorMessage = error.localizedDescription
                 showImportError = true
@@ -164,6 +166,6 @@ struct FilePickerView: View {
 }
 
 #Preview {
-    FilePickerView(onNewBoard: { _ in }, onBoardSelected: { _, _, _ in }, onFilesDropped: { _ in })
+    FilePickerView(onNewBoard: { _ in }, onBoardSelected: { _, _ in }, onFilesDropped: { _ in })
         .environment(RecentBoardsManager())
 }
