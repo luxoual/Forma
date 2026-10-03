@@ -87,6 +87,10 @@ enum CanvasCommand {
     /// board at undo time (see `BoardCanvasView.perform(_:)`), which is when
     /// the final picked color is actually known.
     case setTextColors(hexes: [UUID: String])
+    /// Frame background was changed from the selection action bar. Same
+    /// one-sided shape as `.setTextColors`, for the same reason. A nil value
+    /// means "no picked color; follow the canvas".
+    case setFrameFills(fills: [UUID: String?])
     case renameAsset(elementID: UUID, name: String?)
 
     /// Label the system shows in the Undo/Redo pill and the Edit menu
@@ -106,6 +110,7 @@ enum CanvasCommand {
         case .editTextContent: "Edit Text"
         case .resizeText: "Resize Text"
         case .setTextColors: "Text Color"
+        case .setFrameFills: "Frame Color"
         case .renameAsset: "Rename Asset"
         }
     }

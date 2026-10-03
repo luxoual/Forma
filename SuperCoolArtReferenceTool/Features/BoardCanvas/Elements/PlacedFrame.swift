@@ -7,6 +7,9 @@ struct PlacedFrame: Identifiable, Equatable {
     var worldRect: CGRect
     var zIndex: Int
     var parentFrameID: UUID? = nil
+    /// `#RRGGBB` background the user picked, or nil to derive one from the
+    /// canvas color (see `FrameFill`). Mirrors `.frame(title:fillColor:)`.
+    var fillHex: String? = nil
 }
 
 /// An explicit nil parent means the item belongs directly to the board.

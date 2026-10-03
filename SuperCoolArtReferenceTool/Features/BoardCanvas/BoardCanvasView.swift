@@ -116,6 +116,9 @@ struct BoardCanvasView: View {
     /// color on every frame of a spectrum drag; without coalescing, one
     /// visit to the picker would push dozens of undo steps.
     @State private var textColorCommitTask: Task<Void, Never>? = nil
+    /// Same coalescing as the two above, for the frame color picker.
+    @State private var frameFillEditOriginals: [UUID: String?]? = nil
+    @State private var frameFillCommitTask: Task<Void, Never>? = nil
     private let defaultFramePadding: CGFloat = 40
 
     // Zoom bounds
@@ -214,6 +217,7 @@ struct BoardCanvasView: View {
                 frameLayer()
                 imageLayer(renderPlan: renderPlan)
                 textLayer()
+                frameTitleLayer()
 
                 marqueeLayer()
 
@@ -321,6 +325,7 @@ struct BoardCanvasView: View {
                 // window — flush it so the store write happens before, not
                 // after, the snapshot reads the store.
                 commitTextColorEdit()
+                commitFrameFillEdit()
                 let pendingMutation = storeMutationTask
                 Task {
                     // Wait for any in-flight store mutation (especially
@@ -487,9 +492,16 @@ struct BoardCanvasView: View {
                             items.append(contentsOf: placedTexts.map {
                                 HitTestItem(id: $0.id, worldRect: visibleWorldRect(id: $0.id, rect: $0.worldRect), zIndex: $0.zIndex)
                             })
-                            items.append(contentsOf: placedFrames.map {
-                                HitTestItem(id: $0.id, worldRect: visibleWorldRect(id: $0.id, rect: $0.worldRect), zIndex: $0.zIndex, isFrame: true)
-                            })
+                            // A frame's body only counts once the frame is
+                            // selected (Figma convention). Otherwise a drag on
+                            // bare frame area draws a marquee, and the frame
+                            // is grabbed by its name pill.
+                            items.append(contentsOf: placedFrames
+                                .filter { selection.selectedIDs.contains($0.id) }
+                                .map {
+                                    HitTestItem(id: $0.id, worldRect: visibleWorldRect(id: $0.id, rect: $0.worldRect), zIndex: $0.zIndex, isFrame: true)
+                                })
+                            items.append(contentsOf: frameTitleHitItems())
                             let mode = behavior.dragBegan(
                                 worldStart: worldStart,
                                 items: items,
@@ -603,6 +615,7 @@ struct BoardCanvasView: View {
             .onAppear {
                 outliner.nodes = assetOutlineNodes()
                 outliner.onSelect = { selectAssetFromOutliner($0) }
+                outliner.onFocus = { focusAssetFromOutliner($0) }
                 outliner.onRename = { renameAsset(id: $0, title: $1) }
             }
             .accessibilityHidden(true)
@@ -610,6 +623,8 @@ struct BoardCanvasView: View {
 
     @ViewBuilder
     private func frameLayer() -> some View {
+        // Unpicked frames follow the canvas color (see `FrameFill`).
+        let defaultFill = FrameFill.defaultHex(onCanvas: canvasColor.resolve(in: environment))
         let sortedFrames = placedFrames.sorted { $0.zIndex < $1.zIndex }
         let highlightedIDs = expandedElementIDs(for: selection.selectedIDs)
         let movingIDs = selection.isDragging ? expandedElementIDs(for: selection.selectedIDs) : []
@@ -625,13 +640,67 @@ struct BoardCanvasView: View {
             )
 
             CanvasPlacedFrameView(
-                title: frame.title,
                 screenRect: screenRect,
+                fill: Color(hex: frame.fillHex ?? defaultFill) ?? .clear,
                 isSelected: isSelected,
-                zIndex: frame.zIndex,
-                onTap: { handleItemTap(frame.id, refreshAfterSelection: false) }
+                zIndex: frame.zIndex
             )
             .mask(FrameClipShape(boundary: screenFrameClipRect(for: frame.id)))
+        }
+    }
+
+    /// Measured on-screen width of each frame's name pill, so a drag that
+    /// starts on a pill can grab its frame (see `frameTitleHitItems`).
+    @State private var frameTitleWidths: [UUID: CGFloat] = [:]
+
+    /// One hit target per frame name pill, in world space. They rank as
+    /// topmost non-frame items, because the pill is drawn above everything
+    /// and is where the user sees the frame's handle.
+    private func frameTitleHitItems() -> [HitTestItem] {
+        let scale = camera.scale
+        return placedFrames.compactMap { frame in
+            guard let width = frameTitleWidths[frame.id], scale > 0 else { return nil }
+            let rect = CGRect(
+                x: frame.worldRect.minX,
+                y: frame.worldRect.minY - (frameTitleRowHeight + 4) / scale,
+                width: width / scale,
+                height: frameTitleRowHeight / scale
+            )
+            return HitTestItem(id: frame.id, worldRect: rect, zIndex: .max)
+        }
+    }
+
+    /// Height of the strip above each frame that holds its name pill.
+    private let frameTitleRowHeight: CGFloat = 30
+
+    /// Every frame's name pill, drawn above all items so a pill is never
+    /// hidden behind an image and always takes the tap. Each pill sits just
+    /// above its frame, flush with the frame's left edge.
+    @ViewBuilder
+    private func frameTitleLayer() -> some View {
+        let movingIDs = selection.isDragging ? expandedElementIDs(for: selection.selectedIDs) : []
+        ForEach(placedFrames) { frame in
+            let liveDX = movingIDs.contains(frame.id) ? selection.dragOffset.width * camera.scale : 0
+            let liveDY = movingIDs.contains(frame.id) ? selection.dragOffset.height * camera.scale : 0
+            let minX = frame.worldRect.minX * camera.scale + camera.offset.width + liveDX
+            let minY = frame.worldRect.minY * camera.scale + camera.offset.height + liveDY
+            let rowWidth = max(frame.worldRect.width * camera.scale, FrameTitlePill.minWidth)
+
+            FrameTitlePill(
+                title: frame.title,
+                isSelected: selection.selectedIDs.contains(frame.id),
+                onSelect: { handleItemTap(frame.id, refreshAfterSelection: false) },
+                onRename: { renameAsset(id: frame.id, title: $0) }
+            )
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                frameTitleWidths[frame.id] = width
+            }
+            // Offer the pill the frame's width (or the minimum), pinned to
+            // the frame's left edge. Long names truncate instead of running
+            // past the frame.
+            .frame(width: rowWidth, height: frameTitleRowHeight, alignment: .bottomLeading)
+            .position(x: minX + rowWidth / 2, y: minY - frameTitleRowHeight / 2 - 4)
+            .zIndex(Double(Int.max - 3))
         }
     }
 
@@ -719,6 +788,8 @@ struct BoardCanvasView: View {
             isInteracting: isSelectionActionBarInteracting,
             textColorHex: selectionTextColorHex(),
             onPickTextColor: applyTextColor(hex:),
+            frameFillHex: selectionFrameFillHex(),
+            onPickFrameFill: applyFrameFill(hex:),
             onCreateFrame: selectionActionBarCreateFrameAction,
             onRemoveFrame: selectedFrameID == nil ? nil : { removeSelectedFrame() },
             onDelete: { deleteSelection() }
@@ -1576,6 +1647,12 @@ struct BoardCanvasView: View {
                 let bounds = header.bounds
                 let worldRect = CGRect(x: bounds.origin.x, y: bounds.origin.y,
                                        width: bounds.size.x, height: bounds.size.y)
+                // A frame is big and usually under whatever you're boxing,
+                // so touching it isn't enough: the box must hold the whole
+                // frame. Images and text only need to be touched.
+                if header.type == .frame {
+                    return rect.contains(worldRect)
+                }
                 return visibleWorldRect(id: header.id, rect: worldRect).intersects(rect)
             }.map { $0.id })
             selection.selectedIDs = ids
@@ -1624,6 +1701,7 @@ struct BoardCanvasView: View {
         // Land any in-flight color pick first, so an undo mid-drag reverses
         // it rather than racing the debounce.
         commitTextColorEdit()
+        commitFrameFillEdit()
         switch command {
         case .move(let ids, let delta, let memberships):
             let previous = applyMoveDelta(
@@ -1694,6 +1772,13 @@ struct BoardCanvasView: View {
             }
             applyTextColors(hexes)
             return .setTextColors(hexes: previous)
+        case .setFrameFills(let fills):
+            var previous: [UUID: String?] = [:]
+            for frame in placedFrames where fills.keys.contains(frame.id) {
+                previous[frame.id] = frame.fillHex
+            }
+            applyFrameFills(fills)
+            return .setFrameFills(fills: previous)
         }
     }
 
@@ -1867,6 +1952,85 @@ struct BoardCanvasView: View {
         }
     }
 
+    // MARK: - Frame Color
+
+    /// Frames directly in the selection (not frames that are only selected
+    /// because an ancestor is).
+    private func selectedFramesForFill() -> [PlacedFrame] {
+        placedFrames.filter { selection.selectedIDs.contains($0.id) }
+    }
+
+    /// Fill to show in the action bar's frame color well, or nil when no
+    /// frame is selected (which hides it). Unpicked frames report the
+    /// canvas-derived default, since that's what's on screen.
+    private func selectionFrameFillHex() -> String? {
+        guard let frame = selectedFramesForFill().first else { return nil }
+        return frame.fillHex ?? FrameFill.defaultHex(onCanvas: canvasColor.resolve(in: environment))
+    }
+
+    /// Paint every selected frame with `hex`. Works like `applyTextColor`:
+    /// the canvas updates on every picker frame, one undo step is registered
+    /// on the first real change, and the store write waits until picking
+    /// stops.
+    private func applyFrameFill(hex: String) {
+        let targets = selectedFramesForFill()
+        guard !targets.isEmpty else { return }
+
+        if frameFillEditOriginals == nil {
+            guard targets.contains(where: { $0.fillHex != hex }) else { return }
+            var originals: [UUID: String?] = [:]
+            for frame in targets { originals[frame.id] = frame.fillHex }
+            frameFillEditOriginals = originals
+            recordUndo(reverse: .setFrameFills(fills: originals))
+        }
+
+        let ids = Set(targets.map(\.id))
+        for idx in placedFrames.indices where ids.contains(placedFrames[idx].id) {
+            placedFrames[idx].fillHex = hex
+        }
+
+        frameFillCommitTask?.cancel()
+        frameFillCommitTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            commitFrameFillEdit()
+        }
+    }
+
+    /// Close out a frame color edit by writing the changed frames to the
+    /// store. The undo step was already registered by `applyFrameFill`.
+    private func commitFrameFillEdit() {
+        frameFillCommitTask?.cancel()
+        frameFillCommitTask = nil
+        guard let originals = frameFillEditOriginals else { return }
+        frameFillEditOriginals = nil
+
+        let changed = placedFrames.filter { frame in
+            guard let original = originals[frame.id] else { return false }
+            return original != frame.fillHex
+        }
+        guard !changed.isEmpty else { return }
+        let elements = changed.map(fallbackFrameElement(for:))
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
+        }
+    }
+
+    /// Set per-frame fills (used by undo/redo of `.setFrameFills`).
+    private func applyFrameFills(_ fills: [UUID: String?]) {
+        var touched: [PlacedFrame] = []
+        for idx in placedFrames.indices {
+            guard let fill = fills[placedFrames[idx].id] else { continue }
+            placedFrames[idx].fillHex = fill
+            touched.append(placedFrames[idx])
+        }
+        guard !touched.isEmpty else { return }
+        let elements = touched.map(fallbackFrameElement(for:))
+        enqueueStoreMutation { store in
+            await store.upsert(elements: elements)
+        }
+    }
+
     // MARK: - Text Color
 
     /// Text elements in the current selection, in `placedTexts` order.
@@ -2015,14 +2179,15 @@ struct BoardCanvasView: View {
                         parentFrameID: snap.element.header.parentID
                     )
                 }
-            case .frame(let title):
+            case .frame(let title, let fillColor):
                 if let index = placedFrames.firstIndex(where: { $0.id == snap.id }) {
                     placedFrames[index] = PlacedFrame(
                         id: snap.id,
                         title: title,
                         worldRect: snap.worldRect,
                         zIndex: snap.zIndex,
-                        parentFrameID: snap.element.header.parentID
+                        parentFrameID: snap.element.header.parentID,
+                        fillHex: fillColor
                     )
                 }
             default:
@@ -2060,13 +2225,14 @@ struct BoardCanvasView: View {
                     wrapWidth: wrapWidth.map { CGFloat($0) },
                     parentFrameID: snap.element.header.parentID
                 ))
-            case .frame(let title):
+            case .frame(let title, let fillColor):
                 placedFrames.append(PlacedFrame(
                     id: snap.id,
                     title: title,
                     worldRect: snap.worldRect,
                     zIndex: snap.zIndex,
-                    parentFrameID: snap.element.header.parentID
+                    parentFrameID: snap.element.header.parentID,
+                    fillHex: fillColor
                 ))
             default:
                 break
@@ -2246,7 +2412,7 @@ struct BoardCanvasView: View {
             parentID: placed.parentFrameID,
             displayName: assetNames[placed.id]
         )
-        return CMCanvasElement(header: header, payload: .frame(title: placed.title))
+        return CMCanvasElement(header: header, payload: .frame(title: placed.title, fillColor: placed.fillHex))
     }
 
     private func snapshot(for placed: PlacedImage) -> PlacedElementSnapshot {
@@ -2332,13 +2498,14 @@ struct BoardCanvasView: View {
                     parentFrameID: el.header.parentID
                 ))
                 nextZIndex = max(nextZIndex, z + 1)
-            case .frame(let title):
+            case .frame(let title, let fillColor):
                 placedFrames.append(PlacedFrame(
                     id: el.id,
                     title: title,
                     worldRect: rect,
                     zIndex: z,
-                    parentFrameID: el.header.parentID
+                    parentFrameID: el.header.parentID,
+                    fillHex: fillColor
                 ))
                 nextZIndex = max(nextZIndex, z + 1)
             default:
@@ -2692,9 +2859,14 @@ struct BoardCanvasView: View {
     /// `animated: false` for instant repositioning (e.g. on board load);
     /// `true` for the home button's eased zoom-and-pan.
     private func zoomToFitContent(animated: Bool = true) {
+        guard let bounds = union(of: allElementRects()) else { return }
+        zoomCamera(toFit: bounds, animated: animated)
+    }
+
+    /// Center `bounds` (world space) in the viewport at the zoom that fits
+    /// it. Shared by the home button and the outliner's jump-to-item.
+    private func zoomCamera(toFit bounds: CGRect, animated: Bool = true) {
         guard canvasSize != .zero, camera.scale > 0 else { return }
-        let allRects = allElementRects()
-        guard let bounds = union(of: allRects) else { return }
         let targetScale = fitScale(for: bounds)
         // Offset must be derived from the *target* scale, not the current one,
         // or the content lands off-center by the zoom delta.
@@ -2987,6 +3159,17 @@ struct BoardCanvasView: View {
 
     private func selectAssetFromOutliner(_ id: UUID) {
         selection.select(id)
+    }
+
+    /// Select an item from the outliner and move the camera to it, the way
+    /// the home button does for the whole board.
+    private func focusAssetFromOutliner(_ id: UUID) {
+        selection.select(id)
+        let rect = placedImages.first(where: { $0.id == id })?.worldRect
+            ?? placedTexts.first(where: { $0.id == id })?.worldRect
+            ?? placedFrames.first(where: { $0.id == id })?.worldRect
+        guard let rect else { return }
+        zoomCamera(toFit: rect)
     }
 
     private var selectedFrameID: UUID? {

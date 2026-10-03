@@ -28,6 +28,8 @@ struct AssetOutlinerView: View {
     /// knows to close out an in-progress rename.
     let isVisible: Bool
     let onSelect: (UUID) -> Void
+    /// Double-tap on a row (outside its name): select and move the camera there.
+    let onFocus: (UUID) -> Void
     let onRenameAsset: (UUID, String) -> Void
 
     @State private var expandedFrameIDs: Set<UUID> = []
@@ -50,6 +52,9 @@ struct AssetOutlinerView: View {
                     ForEach(nodes) { node in
                         nodeRow(node, depth: 0)
                     }
+                    // Applied once here, not per row: a per-row inset nests
+                    // with each level and narrows deeper rows' highlights.
+                    .padding(.horizontal, 8)
                 }
             }
             .padding(.vertical, 8)
@@ -125,9 +130,24 @@ struct AssetOutlinerView: View {
                                     return .handled
                                 }
                         } else {
+                            // Only the name itself renames on double-tap;
+                            // the rest of the row uses double-tap to jump
+                            // the camera there. A child gesture wins over
+                            // the row's, so the two don't collide.
                             Text(node.title)
                                 .font(.subheadline.weight(.medium))
                                 .lineLimit(1)
+                                .gesture(
+                                    TapGesture(count: 2).exclusively(before: TapGesture())
+                                        .onEnded { gesture in
+                                            commitRename()
+                                            onSelect(node.id)
+                                            if case .first = gesture {
+                                                draftTitle = node.title
+                                                editingAssetID = node.id
+                                            }
+                                        }
+                                )
                         }
 
                         if let subtitle = node.subtitle {
@@ -146,15 +166,10 @@ struct AssetOutlinerView: View {
                 .gesture(
                     TapGesture(count: 2).exclusively(before: TapGesture())
                         .onEnded { gesture in
+                            commitRename()
                             switch gesture {
-                            case .first:
-                                commitRename()
-                                onSelect(node.id)
-                                draftTitle = node.title
-                                editingAssetID = node.id
-                            case .second:
-                                commitRename()
-                                onSelect(node.id)
+                            case .first: onFocus(node.id)
+                            case .second: onSelect(node.id)
                             }
                         },
                     including: editingAssetID == node.id ? .subviews : .all
@@ -170,8 +185,7 @@ struct AssetOutlinerView: View {
                     nodeRow(child, depth: depth + 1)
                 }
             }
-        }
-        .padding(.horizontal, 8))
+        })
     }
 
     private func commitRename() {
@@ -238,7 +252,7 @@ struct AssetOutlinerView: View {
         case .image:
             return DesignSystem.Colors.secondary
         case .text:
-            return DesignSystem.Colors.primary
+            return DesignSystem.Colors.secondary
         }
     }
 }

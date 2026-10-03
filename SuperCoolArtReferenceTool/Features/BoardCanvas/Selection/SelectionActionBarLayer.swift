@@ -18,6 +18,9 @@ struct SelectionActionBarLayer: View {
     /// selection holds no text (the color controls hide then).
     let textColorHex: String?
     let onPickTextColor: (String) -> Void
+    /// Fill of the selected frame(s), or nil when no frame is selected.
+    var frameFillHex: String? = nil
+    var onPickFrameFill: (String) -> Void = { _ in }
     let onCreateFrame: (() -> Void)?
     var onRemoveFrame: (() -> Void)? = nil
     let onDelete: () -> Void
@@ -60,6 +63,8 @@ struct SelectionActionBarLayer: View {
         CanvasSelectionActionBar(
             textColorHex: textColorHex,
             onPickTextColor: onPickTextColor,
+            frameFillHex: frameFillHex,
+            onPickFrameFill: onPickFrameFill,
             onCreateFrame: onCreateFrame,
             onRemoveFrame: onRemoveFrame,
             onDelete: onDelete

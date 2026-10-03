@@ -43,6 +43,7 @@ struct CanvasHUDView: View {
                     maxHeight: maxPanelHeight,
                     isVisible: isOutlinerOpen,
                     onSelect: outliner.onSelect,
+                    onFocus: outliner.onFocus,
                     onRenameAsset: outliner.onRename
                 )
             }

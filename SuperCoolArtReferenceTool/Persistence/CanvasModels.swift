@@ -137,7 +137,11 @@ public enum CMCanvasElementPayload: Codable, Hashable {
     /// load with `wrapWidth = nil` and behave identically to before.
     case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
     case image(url: URL, size: SIMD2<Double>)
-    case frame(title: String)
+    /// Frame payload. `fillColor` is `#RRGGBB`, or nil when the user hasn't
+    /// picked one, in which case the canvas derives a fill from the board's
+    /// canvas color. Optional via `decodeIfPresent` / `encodeIfPresent`, so
+    /// files saved before this field existed load with `fillColor = nil`.
+    case frame(title: String, fillColor: String?)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -189,7 +193,8 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             self = .image(url: url, size: size)
         case .frame:
             let title = try container.decode(String.self, forKey: .title)
-            self = .frame(title: title)
+            let fillColor = try container.decodeIfPresent(String.self, forKey: .fillColor)
+            self = .frame(title: title, fillColor: fillColor)
         }
     }
     
@@ -220,9 +225,10 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             try container.encode(PayloadType.image, forKey: .type)
             try container.encode(url, forKey: .url)
             try container.encode(size, forKey: .size)
-        case .frame(let title):
+        case .frame(let title, let fillColor):
             try container.encode(PayloadType.frame, forKey: .type)
             try container.encode(title, forKey: .title)
+            try container.encodeIfPresent(fillColor, forKey: .fillColor)
         }
     }
 }

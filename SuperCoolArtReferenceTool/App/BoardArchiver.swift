@@ -162,8 +162,8 @@ nonisolated enum BoardArchiver {
                     )
                 )
                 results.append(element)
-            case .frame(let title):
-                results.append(CMCanvasElement(header: m.header, payload: .frame(title: title)))
+            case .frame(let title, let fillColor):
+                results.append(CMCanvasElement(header: m.header, payload: .frame(title: title, fillColor: fillColor)))
             }
         }
         return ImportResult(
@@ -271,11 +271,11 @@ nonisolated enum BoardArchiver {
                         )
                     )
                 )
-            case .frame(let title):
+            case .frame(let title, let fillColor):
                 manifestElements.append(
                     ManifestElement(
                         header: el.header,
-                        payload: .frame(title: title)
+                        payload: .frame(title: title, fillColor: fillColor)
                     )
                 )
             default:
@@ -433,7 +433,9 @@ nonisolated enum BoardArchiver {
         /// `encodeIfPresent` for forward-compat with files written before
         /// the wrap-width field existed.
         case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
-        case frame(title: String)
+        /// `fillColor` is optional for the same reason as `text.wrapWidth`:
+        /// frames saved before it existed have no key and decode as nil.
+        case frame(title: String, fillColor: String?)
 
         private enum CodingKeys: String, CodingKey {
             case type
@@ -441,7 +443,7 @@ nonisolated enum BoardArchiver {
             case relativePath, size
             // text
             case content, fontName, fontSize, color, wrapWidth
-            case title
+            case title, fillColor
         }
         private enum PayloadType: String, Codable { case image, text, frame }
 
@@ -462,7 +464,8 @@ nonisolated enum BoardArchiver {
                 self = .text(content: content, fontName: fontName, fontSize: fontSize, color: color, wrapWidth: wrapWidth)
             case .frame:
                 let title = try container.decode(String.self, forKey: .title)
-                self = .frame(title: title)
+                let fillColor = try container.decodeIfPresent(String.self, forKey: .fillColor)
+                self = .frame(title: title, fillColor: fillColor)
             }
         }
 
@@ -480,9 +483,10 @@ nonisolated enum BoardArchiver {
                 try container.encode(fontSize, forKey: .fontSize)
                 try container.encode(color, forKey: .color)
                 try container.encodeIfPresent(wrapWidth, forKey: .wrapWidth)
-            case .frame(let title):
+            case .frame(let title, let fillColor):
                 try container.encode(PayloadType.frame, forKey: .type)
                 try container.encode(title, forKey: .title)
+                try container.encodeIfPresent(fillColor, forKey: .fillColor)
             }
         }
     }
