@@ -493,7 +493,7 @@ struct BoardCanvasView: View {
                                 HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
                             })
                             items.append(contentsOf: placedFrames.map {
-                                HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex)
+                                HitTestItem(id: $0.id, worldRect: $0.worldRect, zIndex: $0.zIndex, isFrame: true)
                             })
                             let mode = behavior.dragBegan(
                                 worldStart: worldStart,
@@ -1551,10 +1551,14 @@ struct BoardCanvasView: View {
         case .move(let ids, let delta, let frameRectsToRestore):
             let reverseDelta = CGSize(width: -delta.width, height: -delta.height)
             if let frameRectsToRestore {
-                // Undoing a move: slide back without growing frames, then
-                // shrink any frames the original move grew.
-                applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height, expandsParentFrames: false)
+                // Undoing a move. The saved frame sizes were captured *after*
+                // the original move, at the moved position. So shrink the
+                // frames first, while everything is still there, then slide
+                // it all back together. The other order leaves a moved frame
+                // stranded where it was dragged to, and each undo/redo cycle
+                // pushes it further from its contents.
                 applyFrameRects(frameRectsToRestore)
+                applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height, expandsParentFrames: false)
                 return .move(elementIDs: ids, delta: reverseDelta)
             }
             let frameRectsBeforeExpansion = applyMoveDelta(elementIDs: ids, dx: delta.width, dy: delta.height)
@@ -2909,9 +2913,12 @@ struct BoardCanvasView: View {
             selectedImages.map(\.parentFrameID) +
             selectedTexts.map(\.parentFrameID)
         )
+        // If everything selected sits in the same frame, the new frame goes
+        // inside that frame too, so grouping items within a frame nests
+        // instead of pulling them out. A mixed selection lands at top level.
         let commonParentFrameID = parentCandidates.count == 1 ? parentCandidates.first ?? nil : nil
         let parentFrameID = commonParentFrameID.flatMap { parentID in
-            placedFrames.first(where: { $0.id == parentID })?.parentFrameID
+            placedFrames.contains(where: { $0.id == parentID }) ? parentID : nil
         }
 
         let frameRect = contentBounds.insetBy(dx: -defaultFramePadding, dy: -defaultFramePadding)

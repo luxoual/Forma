@@ -98,7 +98,9 @@ So creation records snapshots of the selected children **before** and **after** 
 - `CanvasCommand.createFrame(frameSnapshot:beforeChildSnapshots:afterChildSnapshots:)` — re-applies the "after" children, then adds the frame.
 - `CanvasCommand.dissolveFrame(frameSnapshot:groupedChildSnapshots:ungroupedChildSnapshots:)` — removes the frame, then puts the children back to their "before" parents.
 
-Each is the other's reverse. Undo runs `.dissolveFrame`; redo runs `.createFrame`. Both are routed through the system `UndoManager` like every other canvas edit (see `architecture-frontend.md` for how undo works).
+Each is the other's reverse. Undo runs `.dissolveFrame`; redo runs `.createFrame`.
+
+**Where a new frame goes.** If every selected element already has the same parent frame, the new frame's `parentID` is that frame, so grouping inside a frame nests. Otherwise it's top-level (`nil`). An earlier version used the parent's *parent* by mistake, so new frames escaped the frame they were made in. Both are routed through the system `UndoManager` like every other canvas edit (see `architecture-frontend.md` for how undo works).
 
 ### Moving things inside a frame
 
@@ -111,7 +113,9 @@ case move(elementIDs: Set<UUID>, delta: CGSize, frameRectsToRestore: [UUID: CGRe
 ```
 
 - `frameRectsToRestore == nil` → a real move. Grow parent frames as needed, and remember their old sizes.
-- non-nil → the undo of a move. Slide back *without* growing anything, then set those frames back to their remembered sizes.
+- non-nil → the undo of a move. First set those frames back to their remembered sizes, then slide everything back *without* growing anything.
+
+**The order matters.** The remembered sizes are captured *after* the move, at the moved position. Resetting a frame's size after sliding back would snap the frame to where it was dragged, away from its contents. Each undo/redo cycle would push it further away. Resetting first, then sliding, keeps the frame and its contents together.
 
 ### Resizing a frame
 

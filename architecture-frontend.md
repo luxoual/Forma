@@ -479,20 +479,20 @@ CanvasTool (enum)              -- toolbar identity, UI selection
     |
     v
 CanvasToolBehavior (protocol)  -- gesture interpretation per tool
-    ├── GroupToolBehavior      -- tap=select one (shift-tap=toggle), drag-on-item=move, drag-on-empty=marquee
+    ├── GroupToolBehavior      -- tap=select one (shift-tap=toggle), drag-on-item=select it and move, drag-on-empty=marquee
     └── TextToolBehavior       -- tap-empty=place text (canvas owns this), tap-item=select, drag-on-item=move, drag-on-empty=pan
 ```
 
 **The protocol:**
 
 ```swift
-struct HitTestItem { let id: UUID; let worldRect: CGRect; let zIndex: Int }
+struct HitTestItem { let id: UUID; let worldRect: CGRect; let zIndex: Int; var isFrame: Bool = false }
 
 protocol CanvasToolBehavior {
     func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode
 
     @MainActor
-    func tappedItem(id: UUID, store: LocalBoardStore, selection: CanvasSelectionState) async
+    func tappedItem(id: UUID, extending: Bool, store: LocalBoardStore, selection: CanvasSelectionState) async
 
     @MainActor
     func tappedEmpty(selection: CanvasSelectionState)
@@ -501,7 +501,12 @@ protocol CanvasToolBehavior {
 
 Taps are split into two methods so the view can call the right one based on which `.onTapGesture` fired. `tappedItem` gets the `UUID` directly — SwiftUI already figured out what was tapped, so there's no reason to look it up again by position. Both are `@MainActor` so they can change `CanvasSelectionState` directly instead of hopping through `MainActor.run`.
 
-**`dragBegan` is deliberately synchronous.** It hit-tests against the in-memory `placedImages` (converted to `HitTestItem`) rather than asking the store, which would be `async`. When it was async, a quick flick could finish before the mode decision came back, and the drag did nothing. The `moveToTop` z-order write still happens, but it's fired off afterward as a side effect that nobody waits on.
+**`dragBegan` is deliberately synchronous.** It hit-tests against in-memory items (`visibleImages`, `placedTexts`, and `placedFrames`, converted to `HitTestItem`) rather than asking the store, which would be `async`. When it was async, a quick flick could finish before the mode decision came back, and the drag did nothing. The `moveToTop` z-order write still happens, but it's fired off afterward as a side effect that nobody waits on.
+
+**What a drag grabs.** Frames are big boxes that overlap, and nested ones sit inside each other, so "whatever is topmost under the finger" picked the wrong thing. With an inner frame selected, a drag inside it could grab the outer frame too. Two rules fix it:
+
+1. If anything already selected is under the finger (`pointHitsSelection`), the drag moves the selection as-is. Nothing gets added.
+2. Otherwise `topmostItem(at:in:)` decides. Images and text beat frames, by `zIndex`. On bare frame area, the smallest frame wins, which for nested frames is the innermost one.
 
 **`DragMode`:** `.pan`, `.moveItem`, `.resizeItem`, `.marqueeSelect`, `.none`
 
@@ -518,7 +523,7 @@ Taps are split into two methods so the view can call the right one based on whic
 - Shift-tap an item: toggle it in or out of the selection, and *don't* promote its z-order
 - Drag on empty canvas: `.marqueeSelect` mode — draw a selection rectangle
 - Drag a selected item: `.moveItem` mode — move the whole group
-- Drag an unselected item: add it to the selection (`extending: true`), then `.moveItem`
+- Drag an unselected item: select just that item, then `.moveItem`. This matches Figma and Freeform. It used to *add* the item to the selection, which pulled overlapping frames along unexpectedly. To drag several things, select them first (marquee or shift-tap)
 - Tap empty space: clear the selection
 
 Committing a marquee always **replaces** the selection. `commitMarqueeSelect` assigns `selection.selectedIDs = ids` outright — it never adds to what was already there, Shift or no Shift.
@@ -639,7 +644,8 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 
 | Command | Data stored | Applying it |
 |---------|-------------|-------------|
-| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize` | Move by delta; reverse is `-delta` |
+| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize`, `frameRectsToRestore: [UUID: CGRect]?` | Move by delta (growing parent frames to fit); reverse is `-delta` plus the frame sizes to shrink back to |
+| `.createFrame` / `.dissolveFrame` | frame snapshot, child snapshots before and after grouping | Add the frame and reparent children / remove it and restore old parents; each is the other's reverse |
 | `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Apply toRect; reverse swaps from/to |
 | `.groupResize` | `fromRects`, `toRects`, `fromTextStates`, `toTextStates` | Apply all `to*`; reverse swaps |
 | `.insert` | `snapshots: [PlacedElementSnapshot]` | Add elements; reverse is `.delete` |
@@ -679,7 +685,7 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 **Status: Implemented**
 **Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`, `TextColorWell.swift`
 
-A small floating bar that appears next to whatever you've selected. It holds two controls: delete, which works on any selection, and a text color well that only appears when the selection contains text.
+A small floating bar that appears next to whatever you've selected. It holds up to three controls: a text color well (only when the selection contains text), Create Frame, and delete.
 
 We tried `.contextMenu(menuItems:preview:)` first. Its default preview couldn't lift a whole multi-selection, and a custom preview couldn't blur the items that weren't part of it. So: a floating bar.
 
@@ -755,6 +761,21 @@ SelectionActionBarLayer(
 - `deleteSelection()` fetches the real `CMCanvasElement`s from `LocalBoardStore` via `elements(for:)` before snapshotting. Building them from the view's `placedImages` cache would risk snapshotting stale data, and undo would then restore something subtly wrong
 - Those snapshots become a `.delete(snapshots:)` command, then `removeElements()` applies the change
 - `fallbackImageElement(for:)` and `fallbackTextElement(for:)` cover the rare case where the view and store disagree
+
+---
+
+# Frames
+
+**Status: Implemented**
+**Files:** `PlacedFrame.swift`, `CanvasPlacedFrameView.swift`, `AssetOutlinerView.swift`, `BoardCanvasView.swift`
+
+A frame is a labeled, dashed box that groups items so they move and resize together. Grouping doesn't change the items: an image in a frame is still an image. It just records which frame it's in (`parentFrameID`). How frames are saved and undone is in `architecture-backend.md` → "Frames".
+
+- **Creating.** Select items, then tap Create Frame in the action bar or the outliner. The frame is the selection's bounds plus `defaultFramePadding` (40 world units), drawn just behind its lowest child.
+- **Nesting.** If everything selected is already in the same frame, the new frame goes inside that frame. A selection drawn from different frames gets a top-level frame.
+- **Moving and resizing.** Moving or resizing a frame takes all its descendants with it (`expandedElementIDs(for:)`). Dragging a child past its frame's edge grows the frame instead of pulling the child out.
+- **Picking one.** The frame's body ignores taps, so you can reach the items inside. Tap the title pill to select the frame, or drag from bare frame area (see "What a drag grabs").
+- **Outliner.** `AssetOutlinerView` (top-left) shows the frame tree. Tap a row to select it, or rename a frame there.
 
 ---
 
