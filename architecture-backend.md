@@ -104,24 +104,33 @@ Each is the other's reverse. Undo runs `.dissolveFrame`; redo runs `.createFrame
 
 **Where a new frame goes.** If every selected element already has the same parent frame, the new frame's `parentID` is that frame, so grouping inside a frame nests. Otherwise it's top-level (`nil`). An earlier version used the parent's *parent* by mistake, so new frames escaped the frame they were made in. Both are routed through the system `UndoManager` like every other canvas edit (see `architecture-frontend.md` for how undo works).
 
-### Moving things inside a frame
+### Moving into and out of frames
 
-Dragging a child past its frame's edge doesn't pull it out of the frame. Instead the frame **grows** to keep holding it, plus `defaultFramePadding` (40 world units) of margin. If that frame is itself inside another frame, the outer one grows too, all the way up.
+Membership follows where you drop things. When a drag ends, each moved item joins the innermost visible frame under its center (`FrameGeometry.dropTarget`). If no frame is there, it becomes a board item (`parentID == nil`). Frames never grow to keep their contents.
 
-That growth has to be undoable, which caused a subtle problem. Undoing the move slides the child back, but sliding back doesn't shrink the frame — frames only ever grow on their own. So `.move` carries an extra field:
+Two guards keep the tree sane:
+
+- Only the selection's *roots* get reassigned (`FrameGeometry.selectionRoots`). Items riding along inside a moved frame keep their parent.
+- A moving frame can't be dropped into itself or anything else being moved, so no frame ends up inside its own child.
+
+Undo can't just slide the items back and re-run the drop check, because the old parent might not be the innermost frame at that spot. So `.move` records the exact old parents:
 
 ```swift
-case move(elementIDs: Set<UUID>, delta: CGSize, frameRectsToRestore: [UUID: CGRect]? = nil)
+case move(elementIDs: Set<UUID>, delta: CGSize, memberships: [FrameMembership]? = nil)
 ```
 
-- `frameRectsToRestore == nil` → a real move. Grow parent frames as needed, and remember their old sizes.
-- non-nil → the undo of a move. First set those frames back to their remembered sizes, then slide everything back *without* growing anything.
+- `memberships == nil` → a real move. Work out new parents from the drop position.
+- non-nil → an undo or redo. Apply exactly these parents.
 
-**The order matters.** The remembered sizes are captured *after* the move, at the moved position. Resetting a frame's size after sliding back would snap the frame to where it was dragged, away from its contents. Each undo/redo cycle would push it further away. Resetting first, then sliding, keeps the frame and its contents together.
+Position and `parentID` are written to the store together in one upsert.
 
 ### Resizing a frame
 
-Resizing a frame scales the frame and everything inside it together. It reuses the same group-resize path as a multi-selection, then saves the new bounds of every touched element.
+Resizing changes only the frame's own box. Children keep their positions and sizes. Anything sticking out past the box is hidden on screen, not cut out of the saved data. Nothing extra is stored for this; the hiding is worked out from the frame bounds at draw time.
+
+### Removing a frame
+
+Remove Frame deletes the frame but keeps its children where they are, handing them to the frame's own parent (or the board). It reuses `.dissolveFrame`; the `actionName` field gives the Undo menu the right label.
 
 ### A frame caveat for older builds
 
