@@ -10,23 +10,50 @@ import SwiftUI
 /// whole `NavigationStack`, lined up with an empty placeholder item that
 /// `CanvasNavigationToolbar` reserves in the leading slot. The placeholder
 /// keeps the trailing tool groups where they'd normally be.
+/// Shared column positions for the HUD bar and the outliner rows below it,
+/// so the two read as one aligned list.
+///
+/// Every chevron (back, expand/collapse) has its left edge `chevronInset`
+/// from the panel's edge and sits in a `chevronColumn`-wide slot. What comes
+/// after it starts at `chevronInset + chevronColumn`: the board name in the
+/// bar, the item icon in a top-level row. Each nesting level indents by one
+/// icon plus its gap, so a child's icon lines up under its parent's name.
+enum HUDLayout {
+    static let chevronInset: CGFloat = 16
+    static let chevronColumn: CGFloat = 28
+    static let iconWidth: CGFloat = 14
+    static let iconGap: CGFloat = 8
+    static var indentPerLevel: CGFloat { iconWidth + iconGap }
+}
+
 struct CanvasHUDView: View {
     let boardName: String
     @Binding var isOutlinerOpen: Bool
     let outliner: AssetOutlinerModel
-    /// Size of the reserved toolbar slot. The bar matches it exactly, and the
-    /// open panel keeps its width.
-    let barSize: CGSize
     /// Tallest the list may get before it scrolls.
     let maxPanelHeight: CGFloat
+    /// Longest the board name may get before it truncates. `ContentView`
+    /// shrinks this with the window (see `hudNameMaxWidth` there).
+    let nameMaxWidth: CGFloat
     let onBack: () -> Void
+    /// Reports the closed bar's natural width, so the toolbar can reserve
+    /// exactly that much room for it.
+    let onBarWidthChange: (CGFloat) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Width the bar takes when it just hugs its contents.
+    @State private var naturalWidth: CGFloat = 0
+
+    static let barHeight: CGFloat = 44
+    /// Open, the bar widens to at least this, so the list has room even
+    /// next to a short board name.
+    private let panelMinWidth: CGFloat = 280
 
     /// Half the bar height, so the closed shape is a capsule like the native
     /// toolbar pills. Kept the same when open, which rounds the panel's
     /// bottom corners to match.
-    private var cornerRadius: CGFloat { barSize.height / 2 }
+    private var cornerRadius: CGFloat { Self.barHeight / 2 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,7 +80,20 @@ struct CanvasHUDView: View {
             .allowsHitTesting(isOutlinerOpen)
             .accessibilityHidden(!isOutlinerOpen)
         }
-        .frame(width: barSize.width)
+        // Closed: hug the bar's contents. Open: widen for the list.
+        .frame(width: isOutlinerOpen ? max(naturalWidth, panelMinWidth) : naturalWidth)
+        // Measure the bar's natural width from a hidden copy laid out at its
+        // ideal size, so the measurement doesn't change when the panel
+        // widens the real bar.
+        .background(alignment: .topLeading) {
+            bar
+                .fixedSize()
+                .hidden()
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    naturalWidth = width
+                    onBarWidthChange(width)
+                }
+        }
         // One glass shape for bar and panel. Animating its size is what
         // makes the list look like it grows out of the bar.
         .clipShape(.rect(cornerRadius: cornerRadius))
@@ -65,7 +105,10 @@ struct CanvasHUDView: View {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
                     .font(.body.weight(.semibold))
-                    .frame(width: 44, height: barSize.height)
+                    .frame(width: HUDLayout.chevronColumn, height: Self.barHeight, alignment: .leading)
+                    // The inset is inside the label so the tap target runs
+                    // to the bar's edge.
+                    .padding(.leading, HUDLayout.chevronInset)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Back to home")
@@ -75,13 +118,17 @@ struct CanvasHUDView: View {
                 .foregroundStyle(DesignSystem.Colors.tertiary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: nameMaxWidth, alignment: .leading)
+
+            // Zero when closed; pushes the button to the right edge when the
+            // open panel makes the bar wider than its contents.
+            Spacer(minLength: 0)
 
             Button(action: toggleOutliner) {
                 Image(systemName: "list.bullet.indent")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(isOutlinerOpen ? DesignSystem.Colors.tertiary : .primary)
-                    .frame(width: 44, height: barSize.height)
+                    .frame(width: 44, height: Self.barHeight)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel(isOutlinerOpen ? "Hide assets" : "Show assets")
@@ -89,8 +136,8 @@ struct CanvasHUDView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .padding(.horizontal, 4)
-        .frame(height: barSize.height)
+        .padding(.trailing, 4)
+        .frame(height: Self.barHeight)
     }
 
     private func toggleOutliner() {

@@ -56,37 +56,64 @@ struct CanvasSelectionActionBar: View {
             }
 
             if let onCreateFrame {
-                Button("Create Frame", systemImage: "square.on.square", action: onCreateFrame)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.glass)
-                    .tint(DesignSystem.Colors.tertiary)
-                    .controlSize(.large)
-                    .frame(
-                        width: CanvasActionBarMetrics.buttonSide,
-                        height: CanvasActionBarMetrics.buttonSide
-                    )
+                ActionBarIconButton(
+                    title: "Create Frame",
+                    systemImage: "square.on.square",
+                    iconColor: DesignSystem.Colors.tertiary,
+                    action: onCreateFrame
+                )
             }
 
             if let onRemoveFrame {
-                Button("Remove Frame", systemImage: "rectangle.badge.minus", action: onRemoveFrame)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.glass)
-                    .controlSize(.large)
-                    .help("Remove frame and keep its contents")
+                ActionBarIconButton(
+                    title: "Remove Frame",
+                    systemImage: "rectangle.badge.minus",
+                    action: onRemoveFrame
+                )
+                .help("Remove frame and keep its contents")
             }
 
-            // Title is kept for VoiceOver, then hidden visually so only the
-            // trash icon shows in the button.
-            Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.glass)
-                .tint(.red)
-                .controlSize(.large)
+            ActionBarIconButton(
+                title: "Delete",
+                systemImage: "trash",
+                role: .destructive,
+                iconColor: .red,
+                action: onDelete
+            )
+        }
+    }
+}
+
+/// One icon button in the selection action bar. Every button uses this, so
+/// they share one size, shape, and glass with each other and with
+/// `TextColorWell`.
+///
+/// The size goes on the *label*, not the button. A `.glass` button sizes
+/// itself to its icon plus padding, so a frame applied outside it only
+/// positions it: wide icons came out as capsules while the trash can stayed
+/// a circle.
+struct ActionBarIconButton: View {
+    let title: String
+    let systemImage: String
+    var role: ButtonRole? = nil
+    var iconColor: Color = .primary
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(iconColor)
                 .frame(
                     width: CanvasActionBarMetrics.buttonSide,
                     height: CanvasActionBarMetrics.buttonSide
                 )
+                .contentShape(.circle)
         }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        // The visible label is just the icon; VoiceOver reads the title.
+        .accessibilityLabel(title)
     }
 }
 

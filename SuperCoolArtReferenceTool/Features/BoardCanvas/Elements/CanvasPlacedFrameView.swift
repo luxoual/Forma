@@ -25,7 +25,7 @@ struct CanvasPlacedFrameView: View {
     }
 }
 
-/// The frame's name, sitting just above its top-left corner.
+/// The frame's name as plain text, sitting just above its top-left corner.
 ///
 /// - Tap: select the frame.
 /// - Double-tap: rename it in place. Enter or tapping away saves, Escape
@@ -65,11 +65,18 @@ struct FrameTitlePill: View {
             }
         }
         .font(.caption.weight(.semibold))
-        .foregroundStyle(isSelected ? DesignSystem.Colors.tertiary : .primary)
-        .padding(.horizontal, 10)
+        // Same trick as `EmptyCanvasOverlay`: `.difference` inverts against
+        // whatever is behind, so the name stays readable on any canvas or
+        // frame color. Selected names drop the blend and show the accent,
+        // which would otherwise invert to a different hue.
+        .foregroundStyle(isSelected ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary)
+        .compositingGroup()
+        .blendMode(isSelected ? .normal : .difference)
+        // No leading padding, so the text starts flush with the frame's
+        // left edge. The rest only pads the tap target.
+        .padding(.trailing, 10)
         .padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: Capsule())
-        .contentShape(Capsule())
+        .contentShape(Rectangle())
         .gesture(
             TapGesture(count: 2).exclusively(before: TapGesture())
                 .onEnded { gesture in

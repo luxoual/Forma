@@ -54,7 +54,7 @@ struct AssetOutlinerView: View {
                     }
                     // Applied once here, not per row: a per-row inset nests
                     // with each level and narrows deeper rows' highlights.
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, rowHorizontalInset)
                 }
             }
             .padding(.vertical, 8)
@@ -92,30 +92,34 @@ struct AssetOutlinerView: View {
 
     private func nodeRow(_ node: AssetOutlineNode, depth: Int) -> AnyView {
         AnyView(VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
+            HStack(spacing: 0) {
                 // Disclosure and selection are siblings. The disclosure button
                 // must not sit inside the selection/rename gesture's hit area.
+                // The column carries the row's indent, so its chevron lines
+                // up with the bar's back button at the top level and under
+                // the parent's name when nested (see `HUDLayout`).
                 if node.kind == .frame {
                     Button {
                         toggleExpanded(node.id)
                     } label: {
                         Image(systemName: expandedFrameIDs.contains(node.id) ? "chevron.down" : "chevron.right")
                             .font(.caption2.weight(.bold))
-                            .frame(width: 44, height: 44)
+                            .frame(width: HUDLayout.chevronColumn, height: 44, alignment: .leading)
+                            .padding(.leading, rowInset(depth: depth))
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(expandedFrameIDs.contains(node.id) ? "Collapse \(node.title)" : "Expand \(node.title)")
                 } else {
                     Color.clear
-                        .frame(width: 44, height: 44)
+                        .frame(width: rowInset(depth: depth) + HUDLayout.chevronColumn, height: 44)
                 }
 
-                HStack(spacing: 8) {
+                HStack(spacing: HUDLayout.iconGap) {
                     Image(systemName: iconName(for: node.kind))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(iconColor(for: node.kind))
-                        .frame(width: 14)
+                        .frame(width: HUDLayout.iconWidth)
 
                     VStack(alignment: .leading, spacing: 1) {
                         if editingAssetID == node.id {
@@ -175,7 +179,6 @@ struct AssetOutlinerView: View {
                     including: editingAssetID == node.id ? .subviews : .all
                 )
             }
-            .padding(.leading, CGFloat(depth) * 18 + 2)
             .padding(.trailing, 10)
             .background(rowBackground(for: node.id))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -187,6 +190,15 @@ struct AssetOutlinerView: View {
             }
         })
     }
+
+    /// Space before a row's chevron column. The rows sit 8pt in from the
+    /// panel edge (the highlight inset), so this tops that up to
+    /// `HUDLayout.chevronInset`, then adds one indent per nesting level.
+    private func rowInset(depth: Int) -> CGFloat {
+        HUDLayout.chevronInset - rowHorizontalInset + CGFloat(depth) * HUDLayout.indentPerLevel
+    }
+
+    private let rowHorizontalInset: CGFloat = 8
 
     private func commitRename() {
         guard let id = editingAssetID else { return }
