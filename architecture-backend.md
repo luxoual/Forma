@@ -67,7 +67,7 @@ case ellipse(fillColor: String)
 case path(points: [SIMD2<Double>], strokeColor: String, strokeWidth: Double)
 case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
 case image(url: URL, size: SIMD2<Double>)
-case frame(title: String)
+case frame(title: String, fillColor: String?)
 ```
 
 **Text.** The words, font, and color all live in the manifest. No file is created for text, which is why text never touches the `assets/` folder inside the ZIP. The frontend's `PlacedText` mirrors this payload one-to-one (see `architecture-frontend.md` → Text Elements).
@@ -85,7 +85,7 @@ Older boards were saved before this field existed. To keep them opening, the dec
 
 **What a frame is:** a labeled box drawn around a set of elements, so they move and resize together.
 
-**How it's stored:** a frame is just another element — `type: .frame`, `payload: .frame(title:)`, with its box in `header.bounds`. Membership is stored on the *child*, not the frame: each child image, text, or nested frame sets `CMElementHeader.parentID` to its frame's id.
+**How it's stored:** a frame is just another element — `type: .frame`, `payload: .frame(title:fillColor:)`, with its box in `header.bounds`. `fillColor` is the background the user picked, as `#RRGGBB`, or nil when they haven't picked one. Nil isn't saved as a color: the canvas works one out from the board's canvas color at draw time, so unpicked frames follow the canvas if it changes. Membership is stored on the *child*, not the frame: each child image, text, or nested frame sets `CMElementHeader.parentID` to its frame's id.
 
 This keeps grouping separate from content. An image inside a frame is still an image payload; only its header changed. That's also why grouped items keep showing everywhere images and text show (the canvas, the minimap, the asset outliner) — nothing about them was converted.
 
@@ -106,7 +106,9 @@ Each is the other's reverse. Undo runs `.dissolveFrame`; redo runs `.createFrame
 
 ### Moving into and out of frames
 
-Membership follows where you drop things. When a drag ends, each moved item joins the innermost visible frame under its center (`FrameGeometry.dropTarget`). If no frame is there, it becomes a board item (`parentID == nil`). Frames never grow to keep their contents.
+Membership follows where you drop things. When a drag ends, the whole selection joins the innermost visible frame under the finger (`FrameGeometry.dropTarget`, called from the canvas's `dropMemberships`). If no frame is there, the items become board items (`parentID == nil`). Frames never grow to keep their contents.
+
+One answer for the whole selection is deliberate. An earlier version asked each item where its own center landed, so a selection dropped across a frame edge split: some items left the frame and some stayed.
 
 Two guards keep the tree sane:
 
@@ -219,6 +221,7 @@ So far every new field has been an optional that older files simply don't have. 
 | `BoardManifest.canvasColor: String?` | v2 | `nil`, via synthesized `Codable` |
 | `BoardManifest.lastTextColor: String?` | v3 | `nil`, via synthesized `Codable` |
 | `CMElementHeader.parentID: UUID?` | frames | `nil` (not in any frame), via synthesized `Codable` |
+| `frame.fillColor: String?` | frame colors | `nil` (follow the canvas), via explicit `decodeIfPresent` / `encodeIfPresent` |
 
 Hand-written `init(from:)` needs the explicit `decodeIfPresent`. Synthesized structs handle a missing key on their own.
 
