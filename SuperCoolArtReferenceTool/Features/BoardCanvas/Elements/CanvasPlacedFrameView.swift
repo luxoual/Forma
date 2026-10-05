@@ -103,6 +103,14 @@ struct FrameTitlePill: View {
         }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Frame \(title)")
+        // VoiceOver activation selects; renaming needs its own action since
+        // the double-tap gesture isn't reachable.
+        .accessibilityAction { onSelect() }
+        .accessibilityAction(named: "Rename") {
+            onSelect()
+            draft = title
+            isEditing = true
+        }
     }
 
     private func commit() {

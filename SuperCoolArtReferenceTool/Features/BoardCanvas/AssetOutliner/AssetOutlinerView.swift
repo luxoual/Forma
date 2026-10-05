@@ -178,6 +178,26 @@ struct AssetOutlinerView: View {
                         },
                     including: editingAssetID == node.id ? .subviews : .all
                 )
+                // The row responds only to custom tap gestures, which
+                // VoiceOver can't reach. Expose it as one button whose
+                // activation selects, with named actions for the double-taps.
+                // While renaming, the text field stays its own element.
+                .accessibilityElement(children: editingAssetID == node.id ? .contain : .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    commitRename()
+                    onSelect(node.id)
+                }
+                .accessibilityAction(named: "Show on Canvas") {
+                    commitRename()
+                    onFocus(node.id)
+                }
+                .accessibilityAction(named: "Rename") {
+                    commitRename()
+                    onSelect(node.id)
+                    draftTitle = node.title
+                    editingAssetID = node.id
+                }
             }
             .padding(.trailing, 10)
             .background(rowBackground(for: node.id))

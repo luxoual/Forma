@@ -512,11 +512,10 @@ struct BoardCanvasView: View {
                                 selection.marqueeStartWorld = worldStart
                                 selection.marqueeCurrentWorld = worldStart
                             }
-                            // Fire-and-forget: reorder in store for z-order persistence
+                            // Dragged items come to the front, frames with
+                            // their contents (see `raiseToTop`).
                             if mode == .moveItem {
-                                let store = canvasStore
-                                let ids = Array(selection.selectedIDs)
-                                Task { await store.moveToTop(elementIDs: ids) }
+                                raiseToTop(selection.selectedIDs)
                             }
                             applyDrag(value: value, mode: mode)
                             return
@@ -758,8 +757,10 @@ struct BoardCanvasView: View {
         let selectedIDs = selection.selectedIDs
         let highlightedIDs = expandedElementIDs(for: selectedIDs)
         let movingIDs = selection.isDragging ? expandedElementIDs(for: selectedIDs) : []
-        ForEach(Array(placedTexts.indices), id: \.self) { index in
-            let placed = placedTexts[index]
+        // Keyed by the text's id, with a binding per element. Keying by array
+        // index re-bound views to different texts whenever one was removed,
+        // and a stale index binding can crash.
+        ForEach($placedTexts) { $placed in
             let isSelected = highlightedIDs.contains(placed.id)
             let isMultiSelected = highlightedIDs.count > 1
             let liveDX = (movingIDs.contains(placed.id)) ? selection.dragOffset.width * camera.scale : 0
@@ -770,7 +771,7 @@ struct BoardCanvasView: View {
             let position = screenPosition(for: placed.worldRect, dx: liveDX, dy: liveDY)
 
             CanvasPlacedTextItemView(
-                placed: $placedTexts[index],
+                placed: $placed,
                 scale: camera.scale,
                 position: position,
                 clipRect: screenFrameClipRect(for: placed.id),
@@ -1784,6 +1785,15 @@ struct BoardCanvasView: View {
                 fromOrigin: toOrigin, toOrigin: fromOrigin
             )
         case .renameAsset(let id, let name):
+            // A frame's name is its payload title, not a header label, so it
+            // takes its own path. Same command either way, so frame renames
+            // undo like image and text renames.
+            if let index = placedFrames.firstIndex(where: { $0.id == id }) {
+                let previous = placedFrames[index].title
+                placedFrames[index].title = name ?? previous
+                writeFramePayloads([placedFrames[index]])
+                return .renameAsset(elementID: id, name: previous)
+            }
             let previous = assetNames[id]
             assetNames[id] = name
             enqueueStoreMutation { store in
@@ -2299,6 +2309,11 @@ struct BoardCanvasView: View {
     /// Snapshots are fetched from the store so undo restores the authoritative
     /// element (transform, layerId, etc.) rather than a reconstructed one.
     private func deleteSelection() {
+        // Land any color pick still in its debounce window first, then wait
+        // for queued store writes below. The snapshots are read from the
+        // store, and undo restores exactly what they captured.
+        commitTextColorEdit()
+        commitFrameFillEdit()
         let targetIDs = expandedElementIDs(for: selection.selectedIDs)
         let imagesByID: [UUID: PlacedImage] = Dictionary(
             uniqueKeysWithValues: placedImages
@@ -2319,7 +2334,9 @@ struct BoardCanvasView: View {
 
         let store = canvasStore
         let allIDs = Array(imagesByID.keys) + Array(textsByID.keys) + Array(framesByID.keys)
+        let pendingMutation = storeMutationTask
         Task { @MainActor in
+            _ = await pendingMutation?.result
             let elementsByID = await store.elements(for: allIDs)
             var snapshots: [PlacedElementSnapshot] = []
 
@@ -3242,29 +3259,68 @@ struct BoardCanvasView: View {
     }
 
     private func renameAsset(id: UUID, title: String) {
-        if placedFrames.contains(where: { $0.id == id }) {
-            renameFrame(id: id, title: title)
-        } else if assetNames[id] != title {
-            execute(.renameAsset(elementID: id, name: title))
-        }
-    }
-
-    private func renameFrame(id: UUID, title: String) {
-        guard let index = placedFrames.firstIndex(where: { $0.id == id }) else { return }
-        placedFrames[index].title = title
-        writeFramePayloads([placedFrames[index]])
+        let current = placedFrames.first(where: { $0.id == id })?.title ?? assetNames[id]
+        guard current != title else { return }
+        execute(.renameAsset(elementID: id, name: title))
     }
 
     private func handleItemTap(_ id: UUID, refreshAfterSelection: Bool) {
         let behavior = toolBehavior(for: activeTool)
-        let store = canvasStore
-        let sel = selection
-        let extending = keyModifiers.isShiftDown
-        Task {
-            await behavior.tappedItem(id: id, extending: extending, store: store, selection: sel)
-            if refreshAfterSelection {
-                await refreshVisibleElements()
+        let shouldRaise = behavior.tappedItem(
+            id: id, extending: keyModifiers.isShiftDown, selection: selection
+        )
+        if shouldRaise {
+            raiseToTop([id])
+        } else if refreshAfterSelection {
+            Task { await refreshVisibleElements() }
+        }
+    }
+
+    /// Bring `ids` to the front, each together with everything inside it.
+    ///
+    /// Two things went wrong when this was just `store.moveToTop(ids)`:
+    /// - A raised frame went above its own contents in the store. Frames are
+    ///   opaque, so after a save and reopen the frame covered its children.
+    /// - Only the store changed. The canvas's copies kept their old
+    ///   `zIndex`, and any later write built from them (frame create, undo)
+    ///   put the old stacking order back.
+    ///
+    /// So the new order is worked out here, a frame first and then its
+    /// contents, and written to both the canvas and the store. Ancestors and
+    /// siblings keep their relative order. The store write goes through
+    /// `enqueueStoreMutation` so it can't interleave with other writes.
+    private func raiseToTop(_ ids: Set<UUID>) {
+        var zByID: [UUID: Int] = [:]
+        for image in placedImages { zByID[image.id] = image.zIndex }
+        for text in placedTexts { zByID[text.id] = text.zIndex }
+        for frame in placedFrames { zByID[frame.id] = frame.zIndex }
+        func byZ(_ a: UUID, _ b: UUID) -> Bool { (zByID[a] ?? 0) < (zByID[b] ?? 0) }
+
+        var order: [UUID] = []
+        func visit(_ id: UUID) {
+            order.append(id)
+            for child in directChildIDs(of: id).sorted(by: byZ) { visit(child) }
+        }
+        for root in selectionRoots(ids).sorted(by: byZ) { visit(root) }
+        guard !order.isEmpty else { return }
+
+        var newZ: [UUID: Int] = [:]
+        for (offset, id) in order.enumerated() { newZ[id] = nextZIndex + offset }
+        nextZIndex += order.count
+
+        for i in placedImages.indices { if let z = newZ[placedImages[i].id] { placedImages[i].zIndex = z } }
+        for i in visibleImages.indices { if let z = newZ[visibleImages[i].id] { visibleImages[i].zIndex = z } }
+        for i in placedTexts.indices { if let z = newZ[placedTexts[i].id] { placedTexts[i].zIndex = z } }
+        for i in placedFrames.indices { if let z = newZ[placedFrames[i].id] { placedFrames[i].zIndex = z } }
+
+        enqueueStoreMutation { store in
+            let stored = await store.elements(for: Array(newZ.keys))
+            let updated = stored.values.map { element -> CMCanvasElement in
+                var element = element
+                element.header.zIndex = newZ[element.id] ?? element.header.zIndex
+                return element
             }
+            await store.upsert(elements: updated)
         }
     }
 

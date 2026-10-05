@@ -35,13 +35,17 @@ protocol CanvasToolBehavior {
     /// `extending` is the caller's read of the hardware Shift key at touch-down
     /// (see `KeyModifierMonitor`). Passed in rather than read here so the
     /// behaviors stay pure functions of their inputs.
+    ///
+    /// Returns whether the tapped item should be brought to the front. The
+    /// canvas does the raising (`BoardCanvasView.raiseToTop`), because a
+    /// frame has to rise together with its contents and the canvas's copy
+    /// of the stacking order has to stay in step with the store's.
     @MainActor
     func tappedItem(
         id: UUID,
         extending: Bool,
-        store: LocalBoardStore,
         selection: CanvasSelectionState
-    ) async
+    ) -> Bool
 
     /// Called when the empty canvas was tapped (no item under the tap).
     @MainActor
@@ -105,14 +109,13 @@ struct GroupToolBehavior: CanvasToolBehavior {
     }
 
     @MainActor
-    func tappedItem(id: UUID, extending: Bool, store: LocalBoardStore, selection: CanvasSelectionState) async {
+    func tappedItem(id: UUID, extending: Bool, selection: CanvasSelectionState) -> Bool {
         // `select(extending:)` toggles, so a shift-tap on an already-selected
         // item removes it — the desktop convention.
         selection.select(id, extending: extending)
-        guard !extending else { return }
         // Only a plain tap promotes: raising z-order on every shift-tap would
         // reshuffle the stack while the user is still assembling a selection.
-        await store.moveToTop(elementIDs: [id])
+        return !extending
     }
 
     @MainActor
@@ -144,12 +147,10 @@ struct TextToolBehavior: CanvasToolBehavior {
     func tappedItem(
         id: UUID,
         extending: Bool,
-        store: LocalBoardStore,
         selection: CanvasSelectionState
-    ) async {
+    ) -> Bool {
         selection.select(id, extending: extending)
-        guard !extending else { return }
-        await store.moveToTop(elementIDs: [id])
+        return !extending
     }
 
     @MainActor

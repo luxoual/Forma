@@ -336,7 +336,7 @@ The HUD is the glass bar at the top left: back button, board name, and a toggle 
 - **Height** fits the rows, up to the space above the bottom edge, then scrolls. `onScrollGeometryChange` measures the content, because a `ScrollView` otherwise takes all the height it's offered.
 - **Always built.** Closed, the list is collapsed to zero height rather than removed. Inserting it on open made it measure its height a frame late, outside the open animation, so it jumped open instead of growing. It's a plain `VStack`, not lazy: a lazy stack guesses the height of rows it hasn't built, and that guess made the first open overshoot.
 - **Data** comes through `AssetOutlinerModel`, an `@Observable` shared object. `BoardCanvasView` owns the tree and the actions; it writes `nodes` and `selectedIDs` and installs `onSelect`, `onFocus`, and `onRename`. The tree is rebuilt only when `placedImages`, `placedTexts`, `placedFrames`, or `assetNames` change, coalesced to one rebuild 100ms after the last change. Pans, zooms, and drags redraw constantly but don't touch those arrays.
-- **Gestures.** Tap a row to select it. Double-tap the name to rename it in place. Double-tap anywhere else on the row to select the item and move the camera to it, the way the home button fits the whole board (`zoomCamera(toFit:)`). The name's gesture wins over the row's because a child gesture takes priority. The expand/collapse chevron is its own button, outside both.
+- **Gestures.** Tap a row to select it. VoiceOver sees each row as one button with "Show on Canvas" and "Rename" actions, since it can't reach custom double-taps. Double-tap the name to rename it in place. Double-tap anywhere else on the row to select the item and move the camera to it, the way the home button fits the whole board (`zoomCamera(toFit:)`). The name's gesture wins over the row's because a child gesture takes priority. The expand/collapse chevron is its own button, outside both.
 - **Alignment.** `HUDLayout` holds the column positions the bar and rows share. Every chevron's left edge sits 16pt from the panel edge, so row chevrons line up with the back button. Top-level icons line up under the board name. Each nesting level indents one icon plus its gap (22pt), so a child's icon starts right under its parent's name. Row highlights span the full width at every depth; only the indent shows depth.
 
 ---
@@ -470,7 +470,7 @@ protocol CanvasToolBehavior {
     func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode
 
     @MainActor
-    func tappedItem(id: UUID, extending: Bool, store: LocalBoardStore, selection: CanvasSelectionState) async
+    func tappedItem(id: UUID, extending: Bool, selection: CanvasSelectionState) -> Bool  // true = bring to front
 
     @MainActor
     func tappedEmpty(selection: CanvasSelectionState)
@@ -479,7 +479,9 @@ protocol CanvasToolBehavior {
 
 Taps are split into two methods so the view can call the right one based on which `.onTapGesture` fired. `tappedItem` gets the `UUID` directly — SwiftUI already figured out what was tapped, so there's no reason to look it up again by position. Both are `@MainActor` so they can change `CanvasSelectionState` directly instead of hopping through `MainActor.run`.
 
-**`dragBegan` is deliberately synchronous.** It hit-tests against in-memory items (`visibleImages`, `placedTexts`, selected frames, and frame name labels, converted to `HitTestItem`) rather than asking the store, which would be `async`. When it was async, a quick flick could finish before the mode decision came back, and the drag did nothing. The `moveToTop` z-order write still happens, but it's fired off afterward as a side effect that nobody waits on.
+**Bringing things to the front.** `tappedItem` only says *whether* to raise the item; the canvas does it in `raiseToTop`. Raising used to be `store.moveToTop` called from the behavior, and that broke two ways. A raised frame went above its own contents in the store, so after a save and reopen its opaque fill covered them. And only the store changed: the canvas copies kept their old `zIndex`, so later writes built from them (frame create, undo) put the old order back. `raiseToTop` raises each item together with its contents, frame first, and writes the same numbers to the canvas copies and the store, through the store write queue. Drags use it too.
+
+**`dragBegan` is deliberately synchronous.** It hit-tests against in-memory items (`visibleImages`, `placedTexts`, selected frames, and frame name labels, converted to `HitTestItem`) rather than asking the store, which would be `async`. When it was async, a quick flick could finish before the mode decision came back, and the drag did nothing. Raising the dragged items to the front (`raiseToTop`) happens after the decision and queues its store write.
 
 **What a drag grabs.** Frames are big boxes that overlap, and nested ones sit inside each other, so "whatever is topmost under the finger" picked the wrong thing. With an inner frame selected, a drag inside it could grab the outer frame too. Two rules fix it:
 
@@ -634,7 +636,7 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 | `.resizeText` | `elementID`, from/to fontSize, wrapWidth, origin | Apply `to*`; reverse swaps |
 | `.setTextColors` | `hexes: [UUID: String]` | Apply the colors; reverse is read from the live board first |
 | `.setFrameFills` | `fills: [UUID: String?]` | Same shape as `.setTextColors`, for frame backgrounds; nil means "follow the canvas" |
-| `.renameAsset` | `elementID`, `name` | Set the outliner label; reverse carries the previous name |
+| `.renameAsset` | `elementID`, `name` | Rename an item (a frame's title, or an image or text label); reverse carries the previous name |
 
 `PlacedElementSnapshot` holds everything needed to fully recreate an element: `id`, `url`, `worldRect`, `zIndex`, and the complete `CMCanvasElement`.
 
@@ -1391,7 +1393,7 @@ That closure handles two jobs: tapping the only selected text re-enters editing,
    - Marquee select uses `headers(in: CMWorldRect)`
    - Insert-undo uses `delete(elementIDs:)`
    - Hit testing uses `topmostHeader(at:)`
-   - `moveToTop(elementIDs:)` raises selected items on interaction
+   - Raising on tap or drag goes through `raiseToTop`, which writes `zIndex` with `elements(for:)` + `upsert(elements:)`
 
 4. **Tiles**
    - Backend implements `CMTileKey` spatial indexing
