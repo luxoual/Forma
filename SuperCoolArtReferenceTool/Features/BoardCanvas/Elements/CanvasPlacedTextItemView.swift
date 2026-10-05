@@ -28,6 +28,11 @@ struct CanvasPlacedTextItemView: View {
             onCommitEdit: onCommitEdit
         )
         .position(x: position.x, y: position.y)
+        // Order matters: `.position` makes this view fill the whole canvas,
+        // so the mask and hit shape below work in canvas coordinates, the
+        // same space `clipRect` and `hitRect` are in. Moving them above
+        // `.position` would need a conversion to local space (as
+        // `CanvasPlacedImageItemView.localClip` does).
         .mask(FrameClipShape(boundary: clipRect))
         .contentShape(FrameClipShape(boundary: hitRect))
         .onTapGesture(perform: onTap)
