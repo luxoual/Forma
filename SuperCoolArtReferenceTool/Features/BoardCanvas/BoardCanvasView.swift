@@ -2527,7 +2527,8 @@ struct BoardCanvasView: View {
 
     // MARK: - Snapshot / Load Elements (Backend Bridge)
 
-    private func applyElements(_ elements: [CMCanvasElement]) {
+    private func applyElements(_ loaded: [CMCanvasElement]) {
+        let elements = Self.droppingMissingParents(loaded)
         assetNames = Dictionary(uniqueKeysWithValues: elements.compactMap { element in
             element.header.displayName.map { (element.id, $0) }
         })
@@ -2577,6 +2578,23 @@ struct BoardCanvasView: View {
         Task {
             await canvasStore.replaceAll(with: elements)
             await refreshVisibleElements()
+        }
+    }
+
+    /// Clear any `parentID` that points at a frame the board doesn't have.
+    ///
+    /// Nothing in the app should produce one, but a board saved by an older
+    /// or buggy build could. Left alone, the item would render as top-level
+    /// while still claiming a parent, so grouping code would see a
+    /// membership the user can't. Clearing it on load makes the item
+    /// honestly top-level, and the cleaned copy is what goes into the store.
+    static func droppingMissingParents(_ elements: [CMCanvasElement]) -> [CMCanvasElement] {
+        let frameIDs = Set(elements.filter { $0.header.type == .frame }.map(\.id))
+        return elements.map { element in
+            guard let parent = element.header.parentID, !frameIDs.contains(parent) else { return element }
+            var cleaned = element
+            cleaned.header.parentID = nil
+            return cleaned
         }
     }
 

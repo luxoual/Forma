@@ -136,6 +136,10 @@ struct CanvasHUDView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
+        // The bar is a fixed 44pt tall, like the native toolbar beside it.
+        // Past this size the board name would grow taller than the bar and
+        // clip, so cap it where system bars cap theirs.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .padding(.trailing, 4)
         .frame(height: Self.barHeight)
     }
