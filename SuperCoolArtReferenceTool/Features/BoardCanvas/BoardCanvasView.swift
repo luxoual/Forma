@@ -2036,10 +2036,7 @@ struct BoardCanvasView: View {
             return original != frame.fillHex
         }
         guard !changed.isEmpty else { return }
-        let elements = changed.map(fallbackFrameElement(for:))
-        enqueueStoreMutation { store in
-            await store.upsert(elements: elements)
-        }
+        writeFramePayloads(changed)
     }
 
     /// Set per-frame fills (used by undo/redo of `.setFrameFills`).
@@ -2051,9 +2048,31 @@ struct BoardCanvasView: View {
             touched.append(placedFrames[idx])
         }
         guard !touched.isEmpty else { return }
-        let elements = touched.map(fallbackFrameElement(for:))
+        writeFramePayloads(touched)
+    }
+
+    /// Save each frame's title and fill to the store, leaving the rest of
+    /// its stored record alone.
+    ///
+    /// The canvas's copy of a frame doesn't track everything the store
+    /// does. Its `zIndex`, for one, goes stale when a tap or drag raises the
+    /// frame in the store (`moveToTop`). Rebuilding the whole record from
+    /// the canvas copy would undo that. So this fetches the stored element
+    /// and swaps only the payload, falling back to a rebuilt element only
+    /// if the store has no record of the frame.
+    private func writeFramePayloads(_ frames: [PlacedFrame]) {
+        let payloads = Dictionary(uniqueKeysWithValues: frames.map {
+            ($0.id, CMCanvasElementPayload.frame(title: $0.title, fillColor: $0.fillHex))
+        })
+        let fallbacks = Dictionary(uniqueKeysWithValues: frames.map { ($0.id, fallbackFrameElement(for: $0)) })
         enqueueStoreMutation { store in
-            await store.upsert(elements: elements)
+            let stored = await store.elements(for: Array(payloads.keys))
+            let updated = payloads.compactMap { id, payload -> CMCanvasElement? in
+                guard var element = stored[id] else { return fallbacks[id] }
+                element.payload = payload
+                return element
+            }
+            await store.upsert(elements: updated)
         }
     }
 
@@ -3233,11 +3252,7 @@ struct BoardCanvasView: View {
     private func renameFrame(id: UUID, title: String) {
         guard let index = placedFrames.firstIndex(where: { $0.id == id }) else { return }
         placedFrames[index].title = title
-        let element = fallbackFrameElement(for: placedFrames[index])
-
-        enqueueStoreMutation { store in
-            await store.upsert(elements: [element])
-        }
+        writeFramePayloads([placedFrames[index]])
     }
 
     private func handleItemTap(_ id: UUID, refreshAfterSelection: Bool) {
