@@ -274,23 +274,23 @@ An `@Observable @MainActor final class` (previously `ObservableObject` + `@Publi
 
 ---
 
-# Canvas chrome (the native toolbar)
+# Canvas chrome (the toolbar and HUD)
 
 **Status: Implemented (native iPadOS 26 Liquid Glass)**
-**File:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`
+**Files:** `Features/BoardCanvas/Tools/CanvasNavigationToolbar.swift`, `Features/BoardCanvas/Tools/CanvasHUDView.swift`
 
-Everything around the canvas — back, board name, tools, undo/redo, add, settings — is one native SwiftUI `.toolbar` on the `NavigationStack` wrapping `BoardCanvasView`.
+The controls around the canvas come in two parts. The tools, undo/redo, add, home, and settings are a native SwiftUI `.toolbar` on the `NavigationStack` wrapping `BoardCanvasView`. The back button, board name, and outliner toggle are our own glass bar, the HUD (see "The HUD bar and asset outliner" below).
 
 We used to hand-build this as floating overlays (`CanvasOverlayLayout` + `CanvasToolbar` + `CanvasStatusBar` + `CanvasSettingsButton`). All of that is deleted. The native toolbar gives us press feedback, the glass material, grouped capsules via `ToolbarItemGroup`, separation via `ToolbarSpacer`, and automatic overflow into a `•••` menu on narrow screens — every one of which we were previously writing ourselves, worse.
 
 **Layout:**
 
 ```
-[Leading group]                                                [Trailing items]
-< (back)  |  BoardName pill   [Select | Text | Add] | [Undo | Redo] | [Home | Settings]
+[HUD, drawn over an empty leading slot]                        [Trailing items]
+( < BoardName  ☰ )            [Select | Text | Add] | [Undo | Redo] | [Home | Settings]
 ```
 
-- The **leading group** puts the back chevron and board name in one glass capsule. The name is a non-interactive glass button inside the group, so only the group's outer pill is glass — glass inside glass looks wrong
+- The **leading slot** is an empty, invisible `ToolbarItem` with `.sharedBackgroundVisibility(.hidden)`. It holds the HUD's place so the trailing groups lay out as if the HUD were a real toolbar item
 - **Trailing groups** are separated by `ToolbarSpacer(.fixed)`. That spacer is what makes each group render as its own capsule: tools+add, then history, then home+settings. Home sits next to Settings rather than next to Undo/Redo because Home moves the camera while Undo/Redo change the board itself — grouping buttons by what they touch keeps a "move the view" tap from landing next to a "change my work" tap
 - **Every button carries a title**, written either as `Label("Title", systemImage:)` or as `Button("Title", systemImage:action:)`, so the overflow menu has real text to show when the bar runs out of room
 
@@ -319,47 +319,25 @@ No `matchedGeometryEffect` — the system animates this itself. And separate but
 
 Add lives with the tools because it's the other "put something on the canvas" action. It's not a mode, so it gets no tint and no `.isSelected`. It used to sit next to Settings, where it read like a settings control.
 
-**The board name pill, and the disabled-button trick:**
-
-A bare `Text(boardName).glassEffect()` in a leading toolbar slot gets squeezed to about chevron width — the system doesn't honor `frame(maxWidth:)` on raw text there. Wrapping the text in a button that can't be tapped makes the system treat it as a real control, and real controls get their requested size:
-
-```swift
-Button { } label: {
-    Text(boardName)
-        .font(.headline)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .frame(maxWidth: 220)
-}
-.tint(DesignSystem.Colors.tertiary)
-.allowsHitTesting(false)              // non-tappable
-.accessibilityRemoveTraits(.isButton) // VoiceOver reads it as a label
-```
-
-**How ContentView wires it up:**
-
-```swift
-NavigationStack {
-    BoardCanvasView(...)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            CanvasNavigationToolbar(
-                boardName: boardName,
-                activeTool: $activeTool,
-                onBack: handleBack,
-                canUndo: commandHistory.canUndo,
-                canRedo: commandHistory.canRedo,
-                onUndo: { commandHistory.undo() },
-                onRedo: { commandHistory.redo() },
-                onHome: { homeTrigger = UUID() },
-                onAddItem: openImageImporter,
-                onSettings: { showingSettings = true }
-            )
-        }
-}
-```
-
 The settings sheet is still presented from `ContentView` via `.sheet(isPresented: $showingSettings)`.
+
+## The HUD bar and asset outliner
+
+The HUD is the glass bar at the top left: back button, board name, and a toggle (`list.bullet.indent`) for the asset outliner. Opening the outliner grows the same glass shape downward into the list, so the bar reads as the list's header.
+
+**Why it isn't a toolbar item.** The navigation bar sits above the app's content and takes every touch in its area. A toolbar item can't draw or take touches outside the bar, so the list couldn't hang below it. So `ContentView` floats `CanvasHUDView` over the whole `NavigationStack` and lines it up with the empty slot above. The slot reports its global frame through `onGeometryChange`, and the HUD is offset by the difference between that frame and `ContentView`'s own.
+
+**Width.** Closed, the bar hugs back + name + toggle. A hidden copy laid out at its ideal size measures that width, and the toolbar slot reserves exactly that much. Open, the bar widens to at least 280pt so the list has room. The name truncates at `hudNameMaxWidth`: 220pt in a wide window, shrinking with the window down to 48pt. In split screen the name gives up room first, because if the slot doesn't fit, the system drops it and the HUD loses its anchor.
+
+**In window mode,** iPadOS reserves room at the top left for the window controls even while they're hidden, and pushes leading toolbar items over. The HUD follows the slot, so it moves too. That's the system, and the native toolbar did the same.
+
+**The list (`AssetOutlinerView`).** Frames, images, and text, nested the way they're grouped.
+
+- **Height** fits the rows, up to the space above the bottom edge, then scrolls. `onScrollGeometryChange` measures the content, because a `ScrollView` otherwise takes all the height it's offered.
+- **Always built.** Closed, the list is collapsed to zero height rather than removed. Inserting it on open made it measure its height a frame late, outside the open animation, so it jumped open instead of growing. It's a plain `VStack`, not lazy: a lazy stack guesses the height of rows it hasn't built, and that guess made the first open overshoot.
+- **Data** comes through `AssetOutlinerModel`, an `@Observable` shared object. `BoardCanvasView` owns the tree and the actions; it writes `nodes` and `selectedIDs` and installs `onSelect`, `onFocus`, and `onRename`. The tree is rebuilt only when `placedImages`, `placedTexts`, `placedFrames`, or `assetNames` change, coalesced to one rebuild 100ms after the last change. Pans, zooms, and drags redraw constantly but don't touch those arrays.
+- **Gestures.** Tap a row to select it. VoiceOver sees each row as one button with "Show on Canvas" and "Rename" actions, since it can't reach custom double-taps. Double-tap the name to rename it in place. Double-tap anywhere else on the row to select the item and move the camera to it, the way the home button fits the whole board (`zoomCamera(toFit:)`). The name's gesture wins over the row's because a child gesture takes priority. The expand/collapse chevron is its own button, outside both.
+- **Alignment.** `HUDLayout` holds the column positions the bar and rows share. Every chevron's left edge sits 16pt from the panel edge, so row chevrons line up with the back button. Top-level icons line up under the board name. Each nesting level indents one icon plus its gap (22pt), so a child's icon starts right under its parent's name. Row highlights span the full width at every depth; only the indent shows depth.
 
 ---
 
@@ -479,20 +457,20 @@ CanvasTool (enum)              -- toolbar identity, UI selection
     |
     v
 CanvasToolBehavior (protocol)  -- gesture interpretation per tool
-    ├── GroupToolBehavior      -- tap=select one (shift-tap=toggle), drag-on-item=move, drag-on-empty=marquee
+    ├── GroupToolBehavior      -- tap=select one (shift-tap=toggle), drag-on-item=select it and move, drag-on-empty=marquee
     └── TextToolBehavior       -- tap-empty=place text (canvas owns this), tap-item=select, drag-on-item=move, drag-on-empty=pan
 ```
 
 **The protocol:**
 
 ```swift
-struct HitTestItem { let id: UUID; let worldRect: CGRect; let zIndex: Int }
+struct HitTestItem { let id: UUID; let worldRect: CGRect; let zIndex: Int; var isFrame: Bool = false }
 
 protocol CanvasToolBehavior {
     func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode
 
     @MainActor
-    func tappedItem(id: UUID, store: LocalBoardStore, selection: CanvasSelectionState) async
+    func tappedItem(id: UUID, extending: Bool, selection: CanvasSelectionState) -> Bool  // true = bring to front
 
     @MainActor
     func tappedEmpty(selection: CanvasSelectionState)
@@ -501,7 +479,16 @@ protocol CanvasToolBehavior {
 
 Taps are split into two methods so the view can call the right one based on which `.onTapGesture` fired. `tappedItem` gets the `UUID` directly — SwiftUI already figured out what was tapped, so there's no reason to look it up again by position. Both are `@MainActor` so they can change `CanvasSelectionState` directly instead of hopping through `MainActor.run`.
 
-**`dragBegan` is deliberately synchronous.** It hit-tests against the in-memory `placedImages` (converted to `HitTestItem`) rather than asking the store, which would be `async`. When it was async, a quick flick could finish before the mode decision came back, and the drag did nothing. The `moveToTop` z-order write still happens, but it's fired off afterward as a side effect that nobody waits on.
+**Bringing things to the front.** `tappedItem` only says *whether* to raise the item; the canvas does it in `raiseToTop`. Raising used to be `store.moveToTop` called from the behavior, and that broke two ways. A raised frame went above its own contents in the store, so after a save and reopen its opaque fill covered them. And only the store changed: the canvas copies kept their old `zIndex`, so later writes built from them (frame create, undo) put the old order back. `raiseToTop` raises each item together with its contents, frame first, and writes the same numbers to the canvas copies and the store, through the store write queue. Drags use it too.
+
+**`dragBegan` is deliberately synchronous.** It hit-tests against in-memory items (`visibleImages`, `placedTexts`, selected frames, and frame name labels, converted to `HitTestItem`) rather than asking the store, which would be `async`. When it was async, a quick flick could finish before the mode decision came back, and the drag did nothing. Raising the dragged items to the front (`raiseToTop`) happens after the decision and queues its store write.
+
+**What a drag grabs.** Frames are big boxes that overlap, and nested ones sit inside each other, so "whatever is topmost under the finger" picked the wrong thing. With an inner frame selected, a drag inside it could grab the outer frame too. Two rules fix it:
+
+1. If anything already selected is under the finger (`pointHitsSelection`), the drag moves the selection as-is. Nothing gets added.
+2. Otherwise `topmostItem(at:in:)` decides. Images and text beat frames, by `zIndex`. On bare frame area, the smallest frame wins, which for nested frames is the innermost one.
+
+A frame's body only counts once the frame is selected (Figma's rule). On an unselected frame, a drag on bare frame area draws a marquee instead. Each frame's name label is its own hit target (`frameTitleHitItems`), ranked above everything, so dragging the name moves the frame.
 
 **`DragMode`:** `.pan`, `.moveItem`, `.resizeItem`, `.marqueeSelect`, `.none`
 
@@ -518,7 +505,7 @@ Taps are split into two methods so the view can call the right one based on whic
 - Shift-tap an item: toggle it in or out of the selection, and *don't* promote its z-order
 - Drag on empty canvas: `.marqueeSelect` mode — draw a selection rectangle
 - Drag a selected item: `.moveItem` mode — move the whole group
-- Drag an unselected item: add it to the selection (`extending: true`), then `.moveItem`
+- Drag an unselected item: select just that item, then `.moveItem`. This matches Figma and Freeform. It used to *add* the item to the selection, which pulled overlapping frames along unexpectedly. To drag several things, select them first (marquee or shift-tap)
 - Tap empty space: clear the selection
 
 Committing a marquee always **replaces** the selection. `commitMarqueeSelect` assigns `selection.selectedIDs = ids` outright — it never adds to what was already there, Shift or no Shift.
@@ -639,7 +626,8 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 
 | Command | Data stored | Applying it |
 |---------|-------------|-------------|
-| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize` | Move by delta; reverse is `-delta` |
+| `.move` | `elementIDs: Set<UUID>`, `delta: CGSize`, `memberships: [FrameMembership]?` | Move by delta and update parents on drop; reverse stores the opposite delta and exact previous parents |
+| `.createFrame` / `.dissolveFrame` | frame snapshot, child snapshots before and after grouping | Add the frame and reparent children / remove it and restore old parents; each is the other's reverse |
 | `.resize` | `elementID: UUID`, `fromRect`, `toRect` | Apply toRect; reverse swaps from/to |
 | `.groupResize` | `fromRects`, `toRects`, `fromTextStates`, `toTextStates` | Apply all `to*`; reverse swaps |
 | `.insert` | `snapshots: [PlacedElementSnapshot]` | Add elements; reverse is `.delete` |
@@ -647,12 +635,14 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 | `.editTextContent` | `elementID`, `fromContent`, `toContent` | Apply toContent; reverse swaps |
 | `.resizeText` | `elementID`, from/to fontSize, wrapWidth, origin | Apply `to*`; reverse swaps |
 | `.setTextColors` | `hexes: [UUID: String]` | Apply the colors; reverse is read from the live board first |
+| `.setFrameFills` | `fills: [UUID: String?]` | Same shape as `.setTextColors`, for frame backgrounds; nil means "follow the canvas" |
+| `.renameAsset` | `elementID`, `name` | Rename an item (a frame's title, or an image or text label); reverse carries the previous name |
 
 `PlacedElementSnapshot` holds everything needed to fully recreate an element: `id`, `url`, `worldRect`, `zIndex`, and the complete `CMCanvasElement`.
 
 **How one action becomes undo *and* redo.** `BoardCanvasView.perform(_:)` applies a command and returns the command that reverses it. `CanvasCommandHistory.registerUndo(_:perform:)` hands the reverse to `UndoManager` as a closure. When the user undoes, that closure runs the stored command through `perform`, gets *its* reverse back, and registers that. `UndoManager` knows it is mid-undo at that moment, so the second registration lands on the redo stack. No second stack, no mirrored switch.
 
-**Why `.setTextColors` is the odd one out.** The system color picker publishes a new color on every frame of a drag. The undo step has to be registered on the *first* changed frame, not after the 400 ms debounce, because a three-finger swipe can arrive during the debounce and reach `UndoManager` without passing through our code. On frame one we know the originals but not where the drag will end, so the command carries only "put these elements in these colors." `perform` reads the current colors off `placedTexts` before applying, and that becomes the redo.
+**Why `.setTextColors` (and `.setFrameFills`) are the odd ones out.** The system color picker publishes a new color on every frame of a drag. The undo step has to be registered on the *first* changed frame, not after the 400 ms debounce, because a three-finger swipe can arrive during the debounce and reach `UndoManager` without passing through our code. On frame one we know the originals but not where the drag will end, so the command carries only "put these elements in these colors." `perform` reads the current colors off `placedTexts` before applying, and that becomes the redo.
 
 **Managing history:**
 
@@ -666,7 +656,7 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 
 - `execute(_:)` — run a command and register its reverse. Used when the command *is* the edit: move, resize, group resize, text resize, delete
 - `recordUndo(reverse:)` — register the reverse of an edit other code already applied: chunked image insertion, text commit, the color picker's first frame. The label is a reminder that its argument is the opposite of `execute`'s
-- `perform(_:)` flushes `commitTextColorEdit()` before every command, so a pending pick lands before it can race an undo
+- `perform(_:)` flushes `commitTextColorEdit()` and `commitFrameFillEdit()` before every command, so a pending pick lands before it can race an undo
 
 **To make a new action undoable:** add a case to `CanvasCommand` (and its `undoneEditName` — named for the edit the *reverse* undoes, which is why `.insert` reads "Delete"), handle it in `perform(_:)` returning the reverse, then call `execute` or `recordUndo(reverse:)` from the action's commit function.
 
@@ -679,25 +669,17 @@ ContentView                  — toolbar buttons call commandHistory.undo() / re
 **Status: Implemented**
 **Files:** `CanvasSelectionActionBar.swift`, `SelectionActionBarLayer.swift`, `TextColorWell.swift`
 
-A small floating bar that appears next to whatever you've selected. It holds two controls: delete, which works on any selection, and a text color well that only appears when the selection contains text.
+A small floating bar that appears next to whatever you've selected. Left to right, it can hold: a text color well (when the selection has text), a frame color well (when it has a frame), Create Frame, Remove Frame (one frame selected), and Delete.
 
 We tried `.contextMenu(menuItems:preview:)` first. Its default preview couldn't lift a whole multi-selection, and a custom preview couldn't blur the items that weren't part of it. So: a floating bar.
 
-**The button:**
+**The buttons (`ActionBarIconButton`).** Every icon button in the bar uses this one view, so they're all the same glass circle. Only the icon color varies: blue for Create Frame, the default label color for Remove Frame, red for Delete.
 
-```swift
-Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
-    .labelStyle(.iconOnly)     // visible: just the trash icon
-    .buttonStyle(.glass)       // native Liquid Glass
-    .tint(.red)
-    .controlSize(.large)
-```
+The 52pt size goes on the button's *label*, not the button. An earlier version styled each button with `.buttonStyle(.glass)` and put a fixed frame outside it. A glass button sizes itself to its icon plus padding, and a frame outside it only positions it. So wide icons (`square.on.square`, `rectangle.badge.minus`) came out as capsules while the trash can stayed a circle. Now the icon is framed at 52×52 and wrapped in `.glassEffect(.regular.interactive(), in: .circle)`, the same way the color well is built. The title is set as the accessibility label, so VoiceOver still reads it.
 
-The title still exists for VoiceOver; `.labelStyle(.iconOnly)` just hides it visually. The native glass style brings its own material, press animation, and shape, replacing hand-rolled `RoundedRectangle` + shadow code.
+**The color wells (`TextColorWell`):**
 
-**The text color well (`TextColorWell`):**
-
-Slotted in ahead of the delete button whenever `textColorHex != nil` — that is, whenever the selection contains text. This one *is* conditionally inserted, unlike the bar itself. The stale-glass problem described below only bites at launch, and by the time you've selected a text element the canvas composited long ago.
+The same view serves text color and frame color; its `label` parameter tells VoiceOver which is which. The text well is slotted in whenever `textColorHex != nil` — that is, whenever the selection contains text. This one *is* conditionally inserted, unlike the bar itself. The stale-glass problem described below only bites at launch, and by the time you've selected a text element the canvas composited long ago.
 
 It's the native `ColorPicker` well with `.labelsHidden()`, wrapped in glass. The well *is* the button: tapping it opens the system color picker straight away, with no popover of our own in between.
 
@@ -734,27 +716,37 @@ So the layer's job is to show, hide, and move a view that already exists:
 - **Position tracking** — `@State private var lastCenter` updates via `.onChange(of: liveCenter)`, guarded by `isVisible` so it doesn't drift during interactions. Live center is `boundingBox.midX/maxY * scale + offset`, plus a 32pt gap
 - **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar appears and disappears instantly at drag start and end. Animating opacity and position for 0.2s on top of a starting gesture was the cause of "the first fraction of every drag feels rough"
 
-**Host wiring:**
-
-```swift
-SelectionActionBarLayer(
-    boundingBox: selectionBoundingBox(),
-    scale: scale,
-    offset: offset,
-    isInteracting: selection.isDragging
-        || selection.isResizing
-        || selection.isGroupResizing
-        || selection.isMarqueeing,
-    onDelete: deleteSelection
-)
-.zIndex(Double(Int.max))
-```
+**Host wiring:** `BoardCanvasView.selectionActionBarLayer()` builds the layer with the selection's bounding box, the camera, an `isInteracting` flag (any pan, zoom, drag, resize, or marquee), and the actions. A nil action (`onCreateFrame`, `onRemoveFrame`) or nil color (`textColorHex`, `frameFillHex`) hides that control.
 
 **Deleting:**
 
 - `deleteSelection()` fetches the real `CMCanvasElement`s from `LocalBoardStore` via `elements(for:)` before snapshotting. Building them from the view's `placedImages` cache would risk snapshotting stale data, and undo would then restore something subtly wrong
 - Those snapshots become a `.delete(snapshots:)` command, then `removeElements()` applies the change
-- `fallbackImageElement(for:)` and `fallbackTextElement(for:)` cover the rare case where the view and store disagree
+- `fallbackImageElement(for:)`, `fallbackTextElement(for:)`, and `fallbackFrameElement(for:)` cover the rare case where the view and store disagree
+
+---
+
+# Frames
+
+**Status: In progress.** This works today, but product owner feedback calls for changes to much of it. Treat the behavior below as a snapshot, not a settled design.
+**Files:** `PlacedFrame.swift`, `FrameClipShape.swift`, `FrameFill.swift`, `CanvasPlacedFrameView.swift`, `AssetOutlinerView.swift`, `BoardCanvasView.swift`
+
+A frame is a labeled container. Moving it moves its descendants. Resizing it changes only its boundary, leaving child positions and sizes unchanged. Contents outside that boundary are hidden rather than cropped from the source asset.
+
+- **Creating.** Select items, then tap Create Frame in the action bar. The boundary starts at the selection's bounds plus 40 world units of padding.
+- **Nesting.** Grouping operates only on selected roots: a selected frame keeps all its descendants, even if a marquee also selected those descendants. Grouping roots with a shared parent creates a nested frame. Roots drawn from different parents create a top-level frame. The same root filtering applies to moving and resizing.
+- **Dragging in or out.** At drop time, the whole selection joins the innermost visible frame under the finger, or becomes board items if there is none (`dropMemberships`, Figma's rule). An earlier version checked each item's own center, so a selection dropped across a frame edge split up. Descendants travelling with a moved frame retain their parents. Moving frames cannot target themselves or any other item in the moving set, preventing cycles. Parent frames do not auto-expand.
+- **Drag preview.** Moving roots lift out of their old frame's clipping so they remain visible when dragged out. Their descendants still clip to the moving frame. The new parent's clipping applies on release.
+- **Resizing.** A frame's corners and edges change its boundary without scaling children. Corners allow independent width and height. If a selection includes a frame and its descendants, resizing affects the frame rather than also resizing its descendants.
+- **Overflow.** Images, text, nested frames, and overview image placeholders clip against the intersection of their ancestor frame bounds. Enlarging an image leaves its original content intact behind the boundary. Drag and marquee selection ignore hidden portions; selection handles remain available for editing the full item.
+- **Removing.** Select one frame and tap Remove Frame in the action bar. Its children retain their positions and become children of its parent (or board items). The separate Delete action still deletes the frame and its contents.
+- **Undo/redo.** Moves restore exact parent assignments with positions. Remove Frame restores the frame and original child memberships. Boundary resizing uses the existing resize snapshots without child snapshots.
+- **Look.** A solid border over a filled background. A frame with no picked color (`fillHex == nil`) uses `FrameFill.defaultHex`: the canvas color nudged toward contrast (6% darker on a light canvas, 10% lighter on a dark one). Because nothing is stored, it follows the canvas if the canvas color changes. The frame color well in the action bar sets a color, with one undo step per picker session.
+- **The name label.** Plain text just above the frame, flush with its left edge, drawn above all items (`frameTitleLayer`). It's the frame's only handle: tap to select, double-tap to rename in place, drag to move. Its width is capped at the frame's on-screen width (minimum 64pt); longer names truncate. It uses the same `.difference` blend as the empty-canvas hint, so it reads on any background; when selected it shows the accent color instead. A rename ends when the frame loses selection, because tapping the canvas doesn't take keyboard focus.
+- **The body ignores taps** (Figma's rule). A tap there reaches the canvas and clears the selection, and a drag there draws a marquee unless the frame is already selected. A marquee selects a frame only if it fully contains it; images and text only need to be touched. Otherwise a small marquee inside a frame selected the whole frame.
+- **Picking and naming.** A single click on an Assets row selects the frame and highlights its descendants in both the canvas and tree. Descendants are highlighted without becoming separate selections, so the frame retains its resize handles and Remove Frame action. Double-tap any Assets row's name (frame, image, or text) to edit it; Enter or focus loss commits, and Escape cancels. Image and text names are separate labels stored in `CMElementHeader.displayName`, leaving filenames and note content unchanged. Renaming these assets supports undo/redo, and snapshot restoration preserves the label. Names render as ordinary text until editing starts. Tree updates preserve collapsed rows. The disclosure chevron has its own 44-point button, outside the name row’s selection and rename gesture area; expanding or collapsing does not select the frame.
+
+`tests/FrameGeometryChecks.swift` exercises drop targets, ancestor clipping, excluded moving frames, and malformed ancestor cycles. Compile it with `PlacedFrame.swift` using the command at the top of the test file. The app also builds for the iOS simulator; touch interactions still need device review.
 
 ---
 
@@ -1401,7 +1393,7 @@ That closure handles two jobs: tapping the only selected text re-enters editing,
    - Marquee select uses `headers(in: CMWorldRect)`
    - Insert-undo uses `delete(elementIDs:)`
    - Hit testing uses `topmostHeader(at:)`
-   - `moveToTop(elementIDs:)` raises selected items on interaction
+   - Raising on tap or drag goes through `raiseToTop`, which writes `zIndex` with `elements(for:)` + `upsert(elements:)`
 
 4. **Tiles**
    - Backend implements `CMTileKey` spatial indexing

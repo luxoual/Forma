@@ -54,6 +54,27 @@ struct ContentView: View {
     // Undo/redo/home
     @State private var commandHistory = CanvasCommandHistory()
     @State private var homeTrigger: UUID?
+
+    // Top-left HUD and its asset outliner panel (see `CanvasHUDView`).
+    @State private var outliner = AssetOutlinerModel()
+    @State private var isOutlinerOpen = false
+    /// The reserved toolbar slot and this view, both in global coordinates.
+    /// The HUD is placed at their difference so it lands on the slot.
+    @State private var hudSlotFrame: CGRect = .zero
+    @State private var contentFrame: CGRect = .zero
+    /// Width the HUD bar needs, measured by `CanvasHUDView`. The toolbar
+    /// reserves exactly this much. Starts at a rough guess until measured.
+    @State private var hudBarWidth: CGFloat = 200
+    /// How long the board name in the HUD may get. A narrow window
+    /// (split screen) also has to fit the window controls and the trailing
+    /// toolbar, and if the HUD's toolbar slot doesn't fit, the system drops
+    /// it and the HUD loses its position. So the name gives up room first:
+    /// up to 220pt in a wide window, shrinking with the window down to 48pt.
+    /// The 330pt is a rough budget for everything else in the bar's row.
+    private var hudNameMaxWidth: CGFloat {
+        min(220, max(48, contentFrame.width - 330))
+    }
+    private var hudSize: CGSize { CGSize(width: hudBarWidth, height: CanvasHUDView.barHeight) }
     @State private var markCleanTrigger: UUID?
 
     @State private var importerPresented = false
@@ -130,6 +151,7 @@ struct ContentView: View {
                 snapshotTrigger: $snapshotToken,
                 loadElements: $elementsToLoad,
                 commandHistory: commandHistory,
+                outliner: outliner,
                 homeTrigger: $homeTrigger,
                 markCleanTrigger: $markCleanTrigger,
                 onInsertURLs: { _ in },
@@ -146,9 +168,9 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 CanvasNavigationToolbar(
-                    boardName: boardName,
+                    hudSize: hudSize,
+                    onHUDFrameChange: { hudSlotFrame = $0 },
                     activeTool: $activeTool,
-                    onBack: handleBack,
                     canUndo: canUndo,
                     canRedo: canRedo,
                     onUndo: { commandHistory.undo() },
@@ -158,6 +180,30 @@ struct ContentView: View {
                     onSettings: { showingSettings = true }
                 )
             }
+        }
+        // Floated above the whole NavigationStack, not inside the canvas:
+        // the navigation bar would otherwise swallow touches on the HUD.
+        .overlay(alignment: .topLeading) {
+            if hudSlotFrame != .zero {
+                CanvasHUDView(
+                    boardName: boardName,
+                    isOutlinerOpen: $isOutlinerOpen,
+                    outliner: outliner,
+                    // Down to just above the bottom edge, like the old
+                    // always-visible panel.
+                    maxPanelHeight: max(contentFrame.maxY - hudSlotFrame.maxY - 24, 120),
+                    nameMaxWidth: hudNameMaxWidth,
+                    onBack: handleBack,
+                    onBarWidthChange: { hudBarWidth = $0 }
+                )
+                .offset(
+                    x: hudSlotFrame.minX - contentFrame.minX,
+                    y: hudSlotFrame.minY - contentFrame.minY
+                )
+            }
+        }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            contentFrame = frame
         }
         .fileImporter(
             isPresented: $importerPresented,

@@ -8,6 +8,7 @@ public enum CMElementType: String, Codable, Hashable {
     case path
     case text
     case image
+    case frame
 }
 
 /// Represents a rectangular area in the world coordinate space.
@@ -99,14 +100,28 @@ public struct CMElementHeader: Codable, Hashable, Identifiable {
     public var bounds: CMWorldRect
     public var layerId: CMLayerID
     public var zIndex: Int
+    public var parentID: UUID?
+    /// Optional outliner label; older boards decode this as nil.
+    public var displayName: String?
 
-    public init(id: UUID, type: CMElementType, transform: CMAffineTransform2D, bounds: CMWorldRect, layerId: CMLayerID, zIndex: Int) {
+    public init(
+        id: UUID,
+        type: CMElementType,
+        transform: CMAffineTransform2D,
+        bounds: CMWorldRect,
+        layerId: CMLayerID,
+        zIndex: Int,
+        parentID: UUID? = nil,
+        displayName: String? = nil
+    ) {
         self.id = id
         self.type = type
         self.transform = transform
         self.bounds = bounds
         self.layerId = layerId
         self.zIndex = zIndex
+        self.parentID = parentID
+        self.displayName = displayName
     }
 }
 
@@ -122,6 +137,11 @@ public enum CMCanvasElementPayload: Codable, Hashable {
     /// load with `wrapWidth = nil` and behave identically to before.
     case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
     case image(url: URL, size: SIMD2<Double>)
+    /// Frame payload. `fillColor` is `#RRGGBB`, or nil when the user hasn't
+    /// picked one, in which case the canvas derives a fill from the board's
+    /// canvas color. Optional via `decodeIfPresent` / `encodeIfPresent`, so
+    /// files saved before this field existed load with `fillColor = nil`.
+    case frame(title: String, fillColor: String?)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -136,10 +156,11 @@ public enum CMCanvasElementPayload: Codable, Hashable {
         case wrapWidth
         case url
         case size
+        case title
     }
     
     private enum PayloadType: String, Codable {
-        case rectangle, ellipse, path, text, image
+        case rectangle, ellipse, path, text, image, frame
     }
     
     public init(from decoder: Decoder) throws {
@@ -170,6 +191,10 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             let url = try container.decode(URL.self, forKey: .url)
             let size = try container.decode(SIMD2<Double>.self, forKey: .size)
             self = .image(url: url, size: size)
+        case .frame:
+            let title = try container.decode(String.self, forKey: .title)
+            let fillColor = try container.decodeIfPresent(String.self, forKey: .fillColor)
+            self = .frame(title: title, fillColor: fillColor)
         }
     }
     
@@ -200,6 +225,10 @@ public enum CMCanvasElementPayload: Codable, Hashable {
             try container.encode(PayloadType.image, forKey: .type)
             try container.encode(url, forKey: .url)
             try container.encode(size, forKey: .size)
+        case .frame(let title, let fillColor):
+            try container.encode(PayloadType.frame, forKey: .type)
+            try container.encode(title, forKey: .title)
+            try container.encodeIfPresent(fillColor, forKey: .fillColor)
         }
     }
 }

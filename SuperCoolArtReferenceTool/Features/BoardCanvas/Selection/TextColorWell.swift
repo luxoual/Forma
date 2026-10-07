@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Text-color affordance for the selection action bar: the native `ColorPicker`
+/// Color affordance for the selection action bar (text color, frame fill):
+/// the native `ColorPicker`
 /// well, wrapped in glass at the same documented button size as its neighbours
 /// so the bar reads as one set of controls.
 ///
@@ -16,6 +17,8 @@ struct TextColorWell: View {
     /// continuously while dragging inside the system picker — the host
     /// coalesces before writing history.
     let onPick: (String) -> Void
+    /// Names the well for VoiceOver ("Text color", "Frame color").
+    var label: String = "Text color"
 
     @Environment(\.self) private var environment
 
@@ -30,9 +33,9 @@ struct TextColorWell: View {
     }
 
     var body: some View {
-        ColorPicker("Text Color", selection: pickerBinding, supportsOpacity: false)
+        ColorPicker(label, selection: pickerBinding, supportsOpacity: false)
             .labelsHidden()
-            .accessibilityLabel("Text color")
+            .accessibilityLabel(label)
             // `ColorPicker` sizes its well itself and ignores `controlSize`,
             // so the surrounding glass is sized explicitly to the same metric
             // the glass buttons use.
