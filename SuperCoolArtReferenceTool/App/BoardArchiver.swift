@@ -162,6 +162,8 @@ nonisolated enum BoardArchiver {
                     )
                 )
                 results.append(element)
+            case .frame(let title, let fillColor):
+                results.append(CMCanvasElement(header: m.header, payload: .frame(title: title, fillColor: fillColor)))
             }
         }
         return ImportResult(
@@ -249,7 +251,7 @@ nonisolated enum BoardArchiver {
             switch el.payload {
             case .image(let url, let size):
                 let ext = url.pathExtension.isEmpty ? "png" : url.pathExtension
-                let assetPath = "assets/\(el.id.uuidString).\(ext)"
+                let assetPath = "assets/\(el.header.id.uuidString).\(ext)"
                 desiredAssetPaths.insert(assetPath)
                 if archive[assetPath] == nil {
                     plannedCopies.append((assetPath, url))
@@ -267,6 +269,13 @@ nonisolated enum BoardArchiver {
                             content: content, fontName: fontName,
                             fontSize: fontSize, color: color, wrapWidth: wrapWidth
                         )
+                    )
+                )
+            case .frame(let title, let fillColor):
+                manifestElements.append(
+                    ManifestElement(
+                        header: el.header,
+                        payload: .frame(title: title, fillColor: fillColor)
                     )
                 )
             default:
@@ -424,6 +433,9 @@ nonisolated enum BoardArchiver {
         /// `encodeIfPresent` for forward-compat with files written before
         /// the wrap-width field existed.
         case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
+        /// `fillColor` is optional for the same reason as `text.wrapWidth`:
+        /// frames saved before it existed have no key and decode as nil.
+        case frame(title: String, fillColor: String?)
 
         private enum CodingKeys: String, CodingKey {
             case type
@@ -431,8 +443,9 @@ nonisolated enum BoardArchiver {
             case relativePath, size
             // text
             case content, fontName, fontSize, color, wrapWidth
+            case title, fillColor
         }
-        private enum PayloadType: String, Codable { case image, text }
+        private enum PayloadType: String, Codable { case image, text, frame }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -449,6 +462,10 @@ nonisolated enum BoardArchiver {
                 let color = try container.decode(String.self, forKey: .color)
                 let wrapWidth = try container.decodeIfPresent(Double.self, forKey: .wrapWidth)
                 self = .text(content: content, fontName: fontName, fontSize: fontSize, color: color, wrapWidth: wrapWidth)
+            case .frame:
+                let title = try container.decode(String.self, forKey: .title)
+                let fillColor = try container.decodeIfPresent(String.self, forKey: .fillColor)
+                self = .frame(title: title, fillColor: fillColor)
             }
         }
 
@@ -466,6 +483,10 @@ nonisolated enum BoardArchiver {
                 try container.encode(fontSize, forKey: .fontSize)
                 try container.encode(color, forKey: .color)
                 try container.encodeIfPresent(wrapWidth, forKey: .wrapWidth)
+            case .frame(let title, let fillColor):
+                try container.encode(PayloadType.frame, forKey: .type)
+                try container.encode(title, forKey: .title)
+                try container.encodeIfPresent(fillColor, forKey: .fillColor)
             }
         }
     }

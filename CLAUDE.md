@@ -123,6 +123,10 @@ Names of types, functions, files, and properties stay exact and literal — some
 
 If plain language would make something ambiguous, keep the precise version and put a plain-language sentence in front of it. Simple and wrong is worse than dense and right.
 
+## Response Length
+
+Keep every response to the user at **150 words or less**. Code blocks, file contents, and tool output don't count toward the limit. If more detail is needed, give the short answer and offer to go deeper.
+
 ## Known Issues
 
 _None currently tracked here — see the GitHub issue tracker._

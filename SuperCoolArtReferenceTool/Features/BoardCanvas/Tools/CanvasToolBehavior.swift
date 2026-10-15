@@ -13,6 +13,10 @@ struct HitTestItem {
     let id: UUID
     let worldRect: CGRect
     let zIndex: Int
+    /// Frames are big boxes drawn *behind* their contents and often nested
+    /// inside each other, so they're ranked differently from images and
+    /// text when working out what's under a finger (see `topmostItem`).
+    var isFrame: Bool = false
 }
 
 protocol CanvasToolBehavior {
@@ -31,24 +35,49 @@ protocol CanvasToolBehavior {
     /// `extending` is the caller's read of the hardware Shift key at touch-down
     /// (see `KeyModifierMonitor`). Passed in rather than read here so the
     /// behaviors stay pure functions of their inputs.
+    ///
+    /// Returns whether the tapped item should be brought to the front. The
+    /// canvas does the raising (`BoardCanvasView.raiseToTop`), because a
+    /// frame has to rise together with its contents and the canvas's copy
+    /// of the stacking order has to stay in step with the store's.
     @MainActor
     func tappedItem(
         id: UUID,
         extending: Bool,
-        store: LocalBoardStore,
         selection: CanvasSelectionState
-    ) async
+    ) -> Bool
 
     /// Called when the empty canvas was tapped (no item under the tap).
     @MainActor
     func tappedEmpty(selection: CanvasSelectionState)
 }
 
-/// Topmost (highest `zIndex`) item whose world rect contains `point`.
-/// Shared by every behavior — hit-testing doesn't vary per tool.
+/// The item a finger at `point` is grabbing. Shared by every behavior —
+/// hit-testing doesn't vary per tool.
+///
+/// Images and text win over frames, and the topmost (highest `zIndex`) of
+/// those wins. Only when the point is on bare frame area does a frame get
+/// picked, and then it's the smallest one. Nested frames sit inside each
+/// other, so the smallest frame under the finger is the innermost one, which
+/// is what the user sees as "the frame I'm touching." Ranking frames by
+/// `zIndex` instead would sometimes grab the outer frame.
 func topmostItem(at point: CGPoint, in items: [HitTestItem]) -> HitTestItem? {
-    items.filter { $0.worldRect.contains(point) }
-         .max(by: { $0.zIndex < $1.zIndex })
+    let hits = items.filter { $0.worldRect.contains(point) }
+    if let item = hits.filter({ !$0.isFrame }).max(by: { $0.zIndex < $1.zIndex }) {
+        return item
+    }
+    return hits.filter(\.isFrame).min(by: {
+        $0.worldRect.width * $0.worldRect.height < $1.worldRect.width * $1.worldRect.height
+    })
+}
+
+/// True when the finger at `point` is on something already selected.
+/// Starting a drag there should move the selection as-is — not pull in
+/// whatever else happens to overlap that spot (like the outer frame around a
+/// selected inner frame).
+@MainActor
+func pointHitsSelection(_ point: CGPoint, in items: [HitTestItem], selection: CanvasSelectionState) -> Bool {
+    items.contains { selection.selectedIDs.contains($0.id) && $0.worldRect.contains(point) }
 }
 
 /// The canvas's single general-purpose selection tool.
@@ -57,7 +86,10 @@ func topmostItem(at point: CGPoint, in items: [HitTestItem]) -> HitTestItem? {
 /// - Shift-tap an item: toggle it in or out of the current selection. Requires
 ///   a hardware keyboard; on touch alone the marquee is the multi-select path.
 /// - Drag from empty canvas: marquee select (always replaces).
-/// - Drag from an item: move the selection.
+/// - Drag from a selected item: move the whole selection.
+/// - Drag from an unselected item: select just that item and move it. This
+///   matches Figma and Freeform; build a multi-selection first (marquee or
+///   shift-tap) to drag several things at once.
 ///
 /// Two-finger pan is installed at the canvas level and stays live throughout,
 /// which is what makes it fine for a one-finger drag on empty canvas to marquee
@@ -65,10 +97,11 @@ func topmostItem(at point: CGPoint, in items: [HitTestItem]) -> HitTestItem? {
 struct GroupToolBehavior: CanvasToolBehavior {
     @MainActor
     func dragBegan(worldStart: CGPoint, items: [HitTestItem], selection: CanvasSelectionState) -> DragMode {
+        if pointHitsSelection(worldStart, in: items, selection: selection) {
+            return .moveItem
+        }
         if let hit = topmostItem(at: worldStart, in: items) {
-            if !selection.selectedIDs.contains(hit.id) {
-                selection.select(hit.id, extending: true)
-            }
+            selection.select(hit.id)
             return .moveItem
         } else {
             return .marqueeSelect
@@ -76,14 +109,13 @@ struct GroupToolBehavior: CanvasToolBehavior {
     }
 
     @MainActor
-    func tappedItem(id: UUID, extending: Bool, store: LocalBoardStore, selection: CanvasSelectionState) async {
+    func tappedItem(id: UUID, extending: Bool, selection: CanvasSelectionState) -> Bool {
         // `select(extending:)` toggles, so a shift-tap on an already-selected
         // item removes it — the desktop convention.
         selection.select(id, extending: extending)
-        guard !extending else { return }
         // Only a plain tap promotes: raising z-order on every shift-tap would
         // reshuffle the stack while the user is still assembling a selection.
-        await store.moveToTop(elementIDs: [id])
+        return !extending
     }
 
     @MainActor
@@ -99,6 +131,9 @@ struct TextToolBehavior: CanvasToolBehavior {
         items: [HitTestItem],
         selection: CanvasSelectionState
     ) -> DragMode {
+        if pointHitsSelection(worldStart, in: items, selection: selection) {
+            return .moveItem
+        }
         if let hit = topmostItem(at: worldStart, in: items) {
             if !selection.selectedIDs.contains(hit.id) {
                 selection.select(hit.id)
@@ -112,12 +147,10 @@ struct TextToolBehavior: CanvasToolBehavior {
     func tappedItem(
         id: UUID,
         extending: Bool,
-        store: LocalBoardStore,
         selection: CanvasSelectionState
-    ) async {
+    ) -> Bool {
         selection.select(id, extending: extending)
-        guard !extending else { return }
-        await store.moveToTop(elementIDs: [id])
+        return !extending
     }
 
     @MainActor

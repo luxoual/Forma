@@ -22,6 +22,13 @@ struct CanvasSelectionActionBar: View {
     /// selection contains no text elements (color controls hide then).
     let textColorHex: String?
     let onPickTextColor: (String) -> Void
+    /// Current fill of the selected frame(s) as `#RRGGBB`, or nil when no
+    /// frame is selected (the frame color well hides then).
+    var frameFillHex: String? = nil
+    var onPickFrameFill: (String) -> Void = { _ in }
+    /// Nil hides the Create Frame button (e.g. nothing frameable selected).
+    let onCreateFrame: (() -> Void)?
+    var onRemoveFrame: (() -> Void)? = nil
     let onDelete: () -> Void
 
     var body: some View {
@@ -40,18 +47,73 @@ struct CanvasSelectionActionBar: View {
                 )
             }
 
-            // Title is kept for VoiceOver, then hidden visually so only the
-            // trash icon shows in the button.
-            Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.glass)
-                .tint(.red)
-                .controlSize(.large)
+            if let frameFillHex {
+                TextColorWell(
+                    currentHex: frameFillHex,
+                    onPick: onPickFrameFill,
+                    label: "Frame color"
+                )
+            }
+
+            if let onCreateFrame {
+                ActionBarIconButton(
+                    title: "Create Frame",
+                    systemImage: "square.on.square",
+                    iconColor: DesignSystem.Colors.tertiary,
+                    action: onCreateFrame
+                )
+            }
+
+            if let onRemoveFrame {
+                ActionBarIconButton(
+                    title: "Remove Frame",
+                    systemImage: "rectangle.badge.minus",
+                    action: onRemoveFrame
+                )
+                .help("Remove frame and keep its contents")
+            }
+
+            ActionBarIconButton(
+                title: "Delete",
+                systemImage: "trash",
+                role: .destructive,
+                iconColor: .red,
+                action: onDelete
+            )
+        }
+    }
+}
+
+/// One icon button in the selection action bar. Every button uses this, so
+/// they share one size, shape, and glass with each other and with
+/// `TextColorWell`.
+///
+/// The size goes on the *label*, not the button. A `.glass` button sizes
+/// itself to its icon plus padding, so a frame applied outside it only
+/// positions it: wide icons came out as capsules while the trash can stayed
+/// a circle.
+struct ActionBarIconButton: View {
+    let title: String
+    let systemImage: String
+    var role: ButtonRole? = nil
+    var iconColor: Color = .primary
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(iconColor)
                 .frame(
                     width: CanvasActionBarMetrics.buttonSide,
                     height: CanvasActionBarMetrics.buttonSide
                 )
+                .contentShape(.circle)
         }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        // The visible label is just the icon; VoiceOver reads the title.
+        .accessibilityLabel(title)
     }
 }
 
@@ -59,6 +121,7 @@ struct CanvasSelectionActionBar: View {
     CanvasSelectionActionBar(
         textColorHex: "#3977F8",
         onPickTextColor: { _ in },
+        onCreateFrame: {},
         onDelete: {}
     )
     .padding()
@@ -69,6 +132,7 @@ struct CanvasSelectionActionBar: View {
     CanvasSelectionActionBar(
         textColorHex: nil,
         onPickTextColor: { _ in },
+        onCreateFrame: {},
         onDelete: {}
     )
     .padding()

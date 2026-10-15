@@ -22,7 +22,9 @@ struct TextResizeSnapshot {
 
 /// A reversible canvas operation.
 enum CanvasCommand {
-    case move(elementIDs: Set<UUID>, delta: CGSize)
+    /// A drag changes position and membership together. Undo supplies the
+    /// exact old parents instead of guessing from geometry again.
+    case move(elementIDs: Set<UUID>, delta: CGSize, memberships: [FrameMembership]? = nil)
     case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
     /// Resize of a multi-element selection. `fromRects`/`toRects` cover
     /// image elements (which use a worldRect as authoritative state).
@@ -39,6 +41,24 @@ enum CanvasCommand {
     )
     case insert(snapshots: [PlacedElementSnapshot])
     case delete(snapshots: [PlacedElementSnapshot])
+    /// Creating a frame inserts the frame and reparents the selected
+    /// children into it. Undo must restore the children to their previous
+    /// parents, not just remove the frame shell.
+    case createFrame(
+        frameSnapshot: PlacedElementSnapshot,
+        beforeChildSnapshots: [PlacedElementSnapshot],
+        afterChildSnapshots: [PlacedElementSnapshot],
+        actionName: String = "Create Frame"
+    )
+    /// The reverse of `.createFrame`: removes the frame and puts its
+    /// children back under the parents they had before it was created.
+    /// Also used by Remove Frame, which keeps every child in place.
+    case dissolveFrame(
+        frameSnapshot: PlacedElementSnapshot,
+        groupedChildSnapshots: [PlacedElementSnapshot],
+        ungroupedChildSnapshots: [PlacedElementSnapshot],
+        actionName: String = "Create Frame"
+    )
     /// Text content was changed during a re-edit. Body of the text element
     /// is the only authoritative state being touched — `worldRect` is
     /// downstream-derived from rendered geometry, so this command doesn't
@@ -67,6 +87,11 @@ enum CanvasCommand {
     /// board at undo time (see `BoardCanvasView.perform(_:)`), which is when
     /// the final picked color is actually known.
     case setTextColors(hexes: [UUID: String])
+    /// Frame background was changed from the selection action bar. Same
+    /// one-sided shape as `.setTextColors`, for the same reason. A nil value
+    /// means "no picked color; follow the canvas".
+    case setFrameFills(fills: [UUID: String?])
+    case renameAsset(elementID: UUID, name: String?)
 
     /// Label the system shows in the Undo/Redo pill and the Edit menu
     /// ("Undo Move", "Redo Delete").
@@ -81,9 +106,12 @@ enum CanvasCommand {
         case .resize, .groupResize: "Resize"
         case .insert: "Delete"
         case .delete: "Add"
+        case .createFrame(_, _, _, let name), .dissolveFrame(_, _, _, let name): name
         case .editTextContent: "Edit Text"
         case .resizeText: "Resize Text"
         case .setTextColors: "Text Color"
+        case .setFrameFills: "Frame Color"
+        case .renameAsset: "Rename Asset"
         }
     }
 }

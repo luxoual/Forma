@@ -401,20 +401,6 @@ If plain language would make something ambiguous, keep the precise version and p
 
 ---
 
-# TEMPORARY: Backend doc still needs this treatment
-
-> **Delete this entire section once the work below is done.**
-
-`architecture-frontend.md` has been rewritten in the Feynman style described above (glossary up front, plain-language section openers, cause-and-effect explanations, all identifiers and numbers preserved). Use it as the reference for tone and structure.
-
-`architecture-backend.md` has **not** been rewritten yet. It was deliberately left alone because it's Dev B's file and a full-file rewrite would conflict with any work in flight.
-
-**Plan:** rewrite `architecture-backend.md` in the same style once Dev B's latest branch is created and merged, so the rewrite lands on a settled file instead of fighting an open branch. Coordinate with Dev B before starting.
-
-Then delete this section.
-
----
-
 ## Avoiding Merge Conflicts
 
 **By separating architecture documentation:**

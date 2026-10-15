@@ -12,7 +12,10 @@ import SwiftUI
 /// the parent body and inflates type-check time).
 ///
 /// Layout:
-/// - Leading group: back chevron + board name pill (no nested glass).
+/// - Leading: an empty, invisible slot. The back button, board name, and
+///   outliner toggle are drawn by `CanvasHUDView`, floated over this slot by
+///   `ContentView` (see that type for why). The slot reports its on-screen
+///   frame through `onHUDFrameChange` so the HUD can line up with it.
 /// - Trailing: tools+add / undo-redo / home+settings, split by `ToolbarSpacer`
 ///   so each group renders as its own glass capsule. Add lives with the
 ///   tools because it's the other put-stuff-on-the-canvas action, not a
@@ -21,9 +24,11 @@ import SwiftUI
 /// - All buttons use `Label("Title", systemImage: …)` so the system overflow
 ///   menu can populate from titles when the bar collapses.
 struct CanvasNavigationToolbar: ToolbarContent {
-    let boardName: String
+    /// Size reserved for `CanvasHUDView` in the leading slot.
+    let hudSize: CGSize
+    /// Called with the slot's frame in global coordinates whenever it moves.
+    let onHUDFrameChange: (CGRect) -> Void
     @Binding var activeTool: CanvasTool
-    let onBack: () -> Void
     /// Mirrors of `UndoManager.canUndo` / `canRedo`, kept by
     /// `CanvasCommandHistory`, so the buttons grey out when there's nothing
     /// to do.
@@ -36,25 +41,16 @@ struct CanvasNavigationToolbar: ToolbarContent {
     let onSettings: () -> Void
 
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarLeading) {
-            Button(action: onBack) {
-                Label("Back to home", systemImage: "chevron.left")
-            }
-
-            // Disabled glass button as a board-name label — the system
-            // treats it as a real toolbar control so it respects `maxWidth`,
-            // where a bare `Text` is squeezed to chevron width.
-            Button { } label: {
-                Text(boardName)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 220)
-            }
-            .tint(DesignSystem.Colors.tertiary)
-            .allowsHitTesting(false)
-            .accessibilityRemoveTraits(.isButton)
+        ToolbarItem(placement: .topBarLeading) {
+            Color.clear
+                .frame(width: hudSize.width, height: hudSize.height)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    onHUDFrameChange(frame)
+                }
+                .accessibilityHidden(true)
         }
+        // No glass pill behind the empty slot; the HUD brings its own.
+        .sharedBackgroundVisibility(.hidden)
 
         // Tools + add — discrete Buttons in a single group so they share one
         // glass capsule. Active tool gets a tertiary tint *and* the
