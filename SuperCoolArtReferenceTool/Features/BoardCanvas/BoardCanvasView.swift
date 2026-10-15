@@ -647,7 +647,7 @@ struct BoardCanvasView: View {
             // `CanvasPlacedFrameView` ends in `.position`, which fills the
             // canvas, so this mask is in canvas coordinates, the same space
             // `screenFrameClipRect` returns. No local conversion needed.
-            .mask(FrameClipShape(boundary: screenFrameClipRect(for: frame.id)))
+            .mask(FrameClipShape(boundary: screenFrameClipRect(for: frame.id), clipsToBounds: false))
         }
     }
 

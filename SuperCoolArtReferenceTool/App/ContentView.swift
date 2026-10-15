@@ -128,11 +128,25 @@ struct ContentView: View {
         self.initialLastTextColorHex = initialLastTextColorHex
         self.onBack = onBack
         let initial = initialCanvasColorHex.flatMap(Color.init(hex:))
-            ?? Color(uiColor: .systemBackground)
+            ?? Self.defaultCanvasColor
         _canvasColor = State(initialValue: initial)
         _savedCanvasColorHex = State(initialValue: initialCanvasColorHex)
         _lastTextColorHex = State(initialValue: initialLastTextColorHex)
     }
+
+    /// The canvas color for boards with no saved pick: the system
+    /// background, still following light and dark mode.
+    ///
+    /// Plain `.systemBackground` also changes with the window's
+    /// "elevation". A window that isn't fullscreen (split screen, Stage
+    /// Manager) counts as elevated, so the color shifted to a lighter gray
+    /// whenever the app wasn't fullscreen. Pinning the level to `.base`
+    /// keeps the canvas the same color in every window size.
+    static let defaultCanvasColor = Color(uiColor: UIColor { traits in
+        UIColor.systemBackground.resolvedColor(
+            with: traits.modifyingTraits { $0.userInterfaceLevel = .base }
+        )
+    })
 
     var body: some View {
         // Read these here, not inside `.toolbar { }`. That closure runs
@@ -284,7 +298,7 @@ struct ContentView: View {
     }
     
     private var boardName: String {
-        currentBoardURL?.deletingPathExtension().lastPathComponent ?? "Untitled Board"
+        currentBoardURL?.deletingPathExtension().lastPathComponent ?? BoardExportDocument.newBoardName
     }
 
     private func openImageImporter() {
