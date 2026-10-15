@@ -658,22 +658,39 @@ struct BoardCanvasView: View {
     /// One hit target per frame name pill, in world space. They rank as
     /// topmost non-frame items, because the pill is drawn above everything
     /// and is where the user sees the frame's handle.
+    ///
+    /// Two pills can overlap, such as a nested frame near its parent's top
+    /// edge. A tap goes to the pill drawn last, and `frameTitleLayer` draws
+    /// them in `zIndex` order. So the hit items rank the same way: the
+    /// frame with the highest `zIndex` gets the highest rank. Before, every
+    /// pill had the same rank, so a drag could grab a different frame from
+    /// the one a tap on the same spot selected.
     private func frameTitleHitItems() -> [HitTestItem] {
         let scale = camera.scale
-        return placedFrames.compactMap { frame in
+        let frames = framesInTitleOrder()
+        return frames.enumerated().compactMap { index, frame in
             guard let width = frameTitleWidths[frame.id], scale > 0 else { return nil }
             let rect = CGRect(
                 x: frame.worldRect.minX,
-                y: frame.worldRect.minY - (frameTitleRowHeight + 4) / scale,
+                y: frame.worldRect.minY - frameTitleRowHeight / scale,
                 width: width / scale,
                 height: frameTitleRowHeight / scale
             )
-            return HitTestItem(id: frame.id, worldRect: rect, zIndex: .max)
+            let rank = Int.max - (frames.count - 1 - index)
+            return HitTestItem(id: frame.id, worldRect: rect, zIndex: rank)
         }
     }
 
-    /// Height of the strip above each frame that holds its name pill.
-    private let frameTitleRowHeight: CGFloat = 30
+    /// Frames in the order their name pills are drawn, bottom to top.
+    private func framesInTitleOrder() -> [PlacedFrame] {
+        placedFrames.sorted { $0.zIndex < $1.zIndex }
+    }
+
+    /// Height of the strip above each frame that holds its name pill. It
+    /// runs from the frame's top edge up, and matches the pill's tap
+    /// target, so the drag hit area in `frameTitleHitItems` covers the same
+    /// strip as the tap.
+    private let frameTitleRowHeight: CGFloat = FrameTitlePill.tapHeight
 
     /// Every frame's name pill, drawn above all items so a pill is never
     /// hidden behind an image and always takes the tap. Each pill sits just
@@ -681,7 +698,7 @@ struct BoardCanvasView: View {
     @ViewBuilder
     private func frameTitleLayer() -> some View {
         let movingIDs = selection.isDragging ? expandedElementIDs(for: selection.selectedIDs) : []
-        ForEach(placedFrames) { frame in
+        ForEach(framesInTitleOrder()) { frame in
             let liveDX = movingIDs.contains(frame.id) ? selection.dragOffset.width * camera.scale : 0
             let liveDY = movingIDs.contains(frame.id) ? selection.dragOffset.height * camera.scale : 0
             let minX = frame.worldRect.minX * camera.scale + camera.offset.width + liveDX
@@ -701,7 +718,7 @@ struct BoardCanvasView: View {
             // the frame's left edge. Long names truncate instead of running
             // past the frame.
             .frame(width: rowWidth, height: frameTitleRowHeight, alignment: .bottomLeading)
-            .position(x: minX + rowWidth / 2, y: minY - frameTitleRowHeight / 2 - 4)
+            .position(x: minX + rowWidth / 2, y: minY - frameTitleRowHeight / 2)
             .zIndex(Double(Int.max - 3))
         }
     }
