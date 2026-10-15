@@ -739,6 +739,7 @@ A frame is a labeled container. Moving it moves its descendants. Resizing it cha
 - **Drag preview.** Moving roots lift out of their old frame's clipping so they remain visible when dragged out. Their descendants still clip to the moving frame. The new parent's clipping applies on release.
 - **Resizing.** A frame's corners and edges change its boundary without scaling children. Corners allow independent width and height. If a selection includes a frame and its descendants, resizing affects the frame rather than also resizing its descendants.
 - **Overflow.** Images, text, nested frames, and overview image placeholders clip against the intersection of their ancestor frame bounds. Enlarging an image leaves its original content intact behind the boundary. Drag and marquee selection ignore hidden portions; selection handles remain available for editing the full item.
+- **Sliding under the toolbar.** Frames and text must stay visible where they pass under the top toolbar, just like images. Images apply their clip mask in their own local space, so the mask is as big as the image. Frames and text apply theirs after `.position`, in canvas space. There the shape's bounds are the canvas, and the canvas stops at the toolbar's safe-area edge. `FrameClipShape` used to clip to those bounds too, so frames got cut off at the toolbar while their images slid under it. Canvas-space masks now pass `clipsToBounds: false`: a frame boundary is used as-is, and no boundary grows the mask by the canvas's own size on every side. Hit shapes keep the default `clipsToBounds: true`, so a tap never lands outside an item.
 - **Removing.** Select one frame and tap Remove Frame in the action bar. Its children retain their positions and become children of its parent (or board items). The separate Delete action still deletes the frame and its contents.
 - **Undo/redo.** Moves restore exact parent assignments with positions. Remove Frame restores the frame and original child memberships. Boundary resizing uses the existing resize snapshots without child snapshots.
 - **Look.** A solid border over a filled background. A frame with no picked color (`fillHex == nil`) uses `FrameFill.defaultHex`: the canvas color nudged toward contrast (6% darker on a light canvas, 10% lighter on a dark one). Because nothing is stored, it follows the canvas if the canvas color changes. The frame color well in the action bar sets a color, with one undo step per picker session.
@@ -1070,7 +1071,7 @@ NavigationStack {
 
 **The two settings that do something:**
 
-1. **Canvas Color** — `@Binding var canvasColor: Color`, applied as `.background(canvasColor)` on the canvas ZStack. New boards and old v1 files default to `Color(uiColor: .systemBackground)`, so the canvas follows the system light/dark setting until you pick something. Once picked, it's saved as `#RRGGBB` in the board file
+1. **Canvas Color** — `@Binding var canvasColor: Color`, applied as `.background(canvasColor)` on the canvas ZStack. New boards and old v1 files default to `ContentView.defaultCanvasColor`, so the canvas follows the system light/dark setting until you pick something. Once picked, it's saved as `#RRGGBB` in the board file
 2. **Show Grid** — `@Binding var showGrid: Bool`, controls the grid layer. Defaults to `true`
 
 ---
@@ -1091,7 +1092,7 @@ manifest.json:canvasColor (String?)
     ↓ FilePickerView.onBoardSelected callback (elements, url, hex)  — or AppOpenHandler.importedCanvasColorHex on .onOpenURL
     ↓ RootView.initialCanvasColorHex (String?)
     ↓ ContentView.init(initialCanvasColorHex:)
-    ↓ @State canvasColor (Color)  ← initialCanvasColorHex.flatMap(Color.init(hex:)) ?? Color(uiColor: .systemBackground)
+    ↓ @State canvasColor (Color)  ← initialCanvasColorHex.flatMap(Color.init(hex:)) ?? ContentView.defaultCanvasColor
     ↓ ColorPicker + .background(canvasColor) on canvas ZStack
 ```
 
@@ -1104,11 +1105,13 @@ manifest.json:canvasColor (String?)
 
 init(..., initialCanvasColorHex: String? = nil, ...) {
     let initial = initialCanvasColorHex.flatMap(Color.init(hex:))
-        ?? Color(uiColor: .systemBackground)
+        ?? Self.defaultCanvasColor
     _canvasColor = State(initialValue: initial)
     _savedCanvasColorHex = State(initialValue: initialCanvasColorHex)
 }
 ```
+
+**Why not plain `.systemBackground`:** it changes with the window's "elevation" as well as light/dark mode. iPadOS treats a window that isn't fullscreen (split screen, Stage Manager) as elevated, and the elevated shade is a lighter gray. So boards on the default color changed shade whenever the app wasn't fullscreen, while a picked hex never did. `defaultCanvasColor` is a dynamic `UIColor` that resolves `.systemBackground` with `userInterfaceLevel` pinned to `.base`. It still follows light/dark, but is the same in every window size.
 
 Three instead of one, because each answers a different question:
 
@@ -1193,7 +1196,9 @@ The same goes for any other design primitive that lives (or should live) in the 
 
 Three ways into the canvas, plus a recent boards list.
 
-1. **"New Board"** (main action) — `.buttonStyle(.glassProminent)` with a blue tint. Opens a `.fileExporter` for `Untitled Board.refboard`. On success you get an empty canvas whose `currentBoardURL` is already set, so the back button has somewhere to save to
+1. **"New Board"** (main action) — `.buttonStyle(.glassProminent)` with a blue tint. Opens a `.fileExporter` suggesting `New Board.refboard`, or `New Board (1)`, `New Board (2)`, … when a board in the recents list already has that name (`FilePickerView.nextNewBoardName(taken:)`). The sheet can't look inside the folder you'll pick, so a clash there falls to the system's replace/keep-both prompt. On success you get an empty canvas whose `currentBoardURL` is already set, so the back button has somewhere to save to
+
+   **Where the suggested name comes from:** the save sheet shows the name of the file SwiftUI hands it, not `defaultFilename` or `FileWrapper.preferredFilename`. `BoardExportDocument` used to write its temp file as `BoardExport-<UUID>.refboard`, so that's what users saw. It now writes `<tmp>/BoardExport-<UUID>/<filename>.refboard`: the file carries the board's name, and the UUID folder keeps exports from colliding
 2. **"Open Board"** — `.buttonStyle(.glass)` with a blue tint. Opens a `.fileImporter` for `.refboard` files, imports through `BoardArchiver.importElements` on a detached task, records it in recents, and hands the elements and URL to `ContentView`
 3. **Drag and drop** — drop images or GIFs onto the dashed rectangle. `.contentShape(.rect)` makes the whole padded area a drop target, not just the icon and text
 
