@@ -33,7 +33,7 @@ struct CanvasPlacedTextItemView: View {
         // same space `clipRect` and `hitRect` are in. Moving them above
         // `.position` would need a conversion to local space (as
         // `CanvasPlacedImageItemView.localClip` does).
-        .mask(FrameClipShape(boundary: clipRect))
+        .mask(FrameClipShape(boundary: clipRect, clipsToBounds: false))
         .contentShape(FrameClipShape(boundary: hitRect))
         .onTapGesture(perform: onTap)
         .accessibilityAddTraits(.isButton)
