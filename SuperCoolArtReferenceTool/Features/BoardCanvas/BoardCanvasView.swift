@@ -383,6 +383,11 @@ struct BoardCanvasView: View {
                 }
             }
             .onChange(of: selection.selectedIDs) { _, newIDs in
+                // Save any color pick in progress before it can drift onto
+                // the new selection. A pick remembers which items it started
+                // on, and only those get saved and undone.
+                commitTextColorEdit()
+                commitFrameFillEdit()
                 // Tapping or marquee-selecting any other element while a text
                 // is being edited should commit the edit — TextField's
                 // `@FocusState` only fires on focus changes between focusable

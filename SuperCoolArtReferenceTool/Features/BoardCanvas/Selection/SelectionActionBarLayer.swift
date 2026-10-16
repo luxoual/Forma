@@ -63,7 +63,7 @@ struct SelectionActionBarLayer: View {
     /// that starts the fade-out. Without the saved copy, the fading bar
     /// would jump to the new spot, or shrink as its buttons winked out one
     /// by one.
-    private struct Slot: Equatable {
+    private struct Slot {
         var key: Set<UUID>? = nil
         var center: CGPoint = .zero
         var controls: Controls = .empty
@@ -96,9 +96,12 @@ struct SelectionActionBarLayer: View {
     /// should be showing. Only that slot tracks live values and takes taps;
     /// the other shows its saved copy.
     ///
-    /// On the update where the selection changes, *neither* slot matches
-    /// yet: the old one starts fading, and the new one is assigned by the
-    /// `onChange` right after, so its fade-in starts one update later.
+    /// On the update where the selection changes, usually *neither* slot
+    /// matches yet: the old one starts fading, and the new one is assigned by
+    /// the `onChange` right after, so its fade-in starts one update later.
+    /// (Going back to the selection the other slot still holds — A→B→A, or
+    /// an undo — makes that slot live at once. It shows live values, so
+    /// that's fine.)
     private func isLive(_ i: Int) -> Bool {
         isVisible && slots[i].key == selectionKey
     }
@@ -119,9 +122,8 @@ struct SelectionActionBarLayer: View {
 
     var body: some View {
         ZStack {
-            ForEach(slots.indices, id: \.self) { i in
-                slotBar(i)
-            }
+            slotBar(0)
+            slotBar(1)
         }
         // A new selection takes the slot that isn't in use, starting at its
         // live spot and controls.
@@ -149,20 +151,22 @@ struct SelectionActionBarLayer: View {
     }
 
     /// One bar. Live, it shows the current selection's spot and controls
-    /// with their real actions. Otherwise it shows its saved copy, with
-    /// do-nothing actions for buttons that are gone — it takes no taps then.
+    /// with their real actions. Otherwise it shows its saved copy, and every
+    /// action does nothing. Blocking taps isn't enough on its own: a finger
+    /// already pressing Delete, or a color picker opened from this bar, would
+    /// otherwise act on the *new* selection.
     private func slotBar(_ i: Int) -> some View {
         let live = isLive(i)
         let controls = live ? liveControls : slots[i].controls
         let center = live ? (liveCenter ?? slots[i].center) : slots[i].center
         return CanvasSelectionActionBar(
             textColorHex: controls.textColorHex,
-            onPickTextColor: onPickTextColor,
+            onPickTextColor: live ? onPickTextColor : { _ in },
             frameFillHex: controls.frameFillHex,
-            onPickFrameFill: onPickFrameFill,
-            onCreateFrame: controls.showsCreateFrame ? (onCreateFrame ?? {}) : nil,
-            onRemoveFrame: controls.showsRemoveFrame ? (onRemoveFrame ?? {}) : nil,
-            onDelete: onDelete
+            onPickFrameFill: live ? onPickFrameFill : { _ in },
+            onCreateFrame: controls.showsCreateFrame ? ((live ? onCreateFrame : nil) ?? {}) : nil,
+            onRemoveFrame: controls.showsRemoveFrame ? ((live ? onRemoveFrame : nil) ?? {}) : nil,
+            onDelete: live ? onDelete : {}
         )
             .position(center)
             // Moves always land instantly, even when they happen in the same
