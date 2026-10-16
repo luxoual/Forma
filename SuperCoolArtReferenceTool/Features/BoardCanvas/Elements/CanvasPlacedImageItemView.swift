@@ -26,7 +26,7 @@ struct CanvasPlacedImageItemView: View {
             .mask(FrameClipShape(boundary: localClip))
             .overlay {
                 if isSelected && !isMultiSelected {
-                    SelectionOverlay(activeHandle: activeHandle)
+                    SelectionOverlay(handles: HandlePosition.corners, activeHandle: activeHandle)
                 } else if isSelected && isMultiSelected {
                     Rectangle()
                         .strokeBorder(DesignSystem.Colors.tertiary.opacity(0.5), lineWidth: 1)

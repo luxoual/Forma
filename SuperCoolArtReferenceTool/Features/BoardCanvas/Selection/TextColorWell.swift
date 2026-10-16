@@ -11,14 +11,19 @@ import SwiftUI
 /// saved-swatch row, which is where favorites live; see `TextColorMemory` for
 /// why we don't draw a recents row alongside it).
 struct TextColorWell: View {
-    /// Current color of the selection, as `#RRGGBB`.
+    /// Current color of the selection, as `#RRGGBB` (or `#RRGGBBAA` when
+    /// `supportsOpacity` is on and the color is see-through).
     let currentHex: String
-    /// Called with a `#RRGGBB` string each time the user picks. Fires
+    /// Called with a hex string each time the user picks. Fires
     /// continuously while dragging inside the system picker — the host
     /// coalesces before writing history.
     let onPick: (String) -> Void
     /// Names the well for VoiceOver ("Text color", "Frame color").
     var label: String = "Text color"
+    /// Shows the system picker's opacity slider. On for frame fills, so a
+    /// frame can tint what's behind it; off for text, which stays solid so
+    /// it stays readable.
+    var supportsOpacity: Bool = false
 
     @Environment(\.self) private var environment
 
@@ -28,12 +33,17 @@ struct TextColorWell: View {
     private var pickerBinding: Binding<Color> {
         Binding(
             get: { Color(hex: currentHex) ?? DesignSystem.Colors.primary },
-            set: { onPick(canvasColorHexString(from: $0.resolve(in: environment))) }
+            set: {
+                onPick(canvasColorHexString(
+                    from: $0.resolve(in: environment),
+                    includeOpacity: supportsOpacity
+                ))
+            }
         )
     }
 
     var body: some View {
-        ColorPicker(label, selection: pickerBinding, supportsOpacity: false)
+        ColorPicker(label, selection: pickerBinding, supportsOpacity: supportsOpacity)
             .labelsHidden()
             .accessibilityLabel(label)
             // `ColorPicker` sizes its well itself and ignores `controlSize`,

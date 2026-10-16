@@ -2,6 +2,10 @@ import SwiftUI
 
 /// Positions `CanvasSelectionActionBar` beneath the current selection.
 ///
+/// The bar fades in and out, but never slides. It always appears already in
+/// place under the new selection, instead of gliding over from wherever the
+/// last one was.
+///
 /// Kept permanently mounted (stable view identity) and shown via
 /// opacity rather than inserted with `if`: a Liquid Glass backdrop filter on a
 /// freshly inserted view samples its backdrop before the canvas beneath it has
@@ -50,11 +54,11 @@ struct SelectionActionBarLayer: View {
         isVisible ? (liveCenter ?? lastCenter) : lastCenter
     }
 
-    /// Animate selection appear/disappear, but **snap** on transitions into
+    /// Fade on selection appear/disappear, but **snap** on transitions into
     /// or out of interaction. Without this gate, the gesture-start moment
-    /// kicks off a 0.2s opacity *and* position animation on the (invisible)
-    /// bar; both eat frame budget for the drag's first ~0.2s, which shows
-    /// up as visible jitter in the element being dragged.
+    /// kicks off a 0.2s opacity animation on the (invisible) bar, which eats
+    /// frame budget for the drag's first ~0.2s and shows up as visible
+    /// jitter in the element being dragged.
     private var transitionAnimation: Animation? {
         isInteracting ? nil : .snappy(duration: 0.2)
     }
@@ -70,10 +74,16 @@ struct SelectionActionBarLayer: View {
             onDelete: onDelete
         )
             .position(displayCenter)
-            .opacity(isVisible ? 1 : 0)
+            // Moves always land instantly, even when they happen in the same
+            // update as the fade-in, or inside someone else's `withAnimation`.
+            // A plain `.animation(_:value: isVisible)` would also animate this
+            // position, which is the slide from the old selection we don't want.
+            .animation(nil, value: displayCenter)
+            // Scoped so the fade animates opacity and nothing else.
+            .animation(transitionAnimation) { content in
+                content.opacity(isVisible ? 1 : 0)
+            }
             .allowsHitTesting(isVisible)
-            .animation(transitionAnimation, value: isVisible)
-            .animation(transitionAnimation, value: displayCenter)
             .onChange(of: liveCenter) { _, new in
                 if isVisible, let new { lastCenter = new }
             }

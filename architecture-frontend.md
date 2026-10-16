@@ -553,8 +553,10 @@ Reading that Shift state is the awkward part. SwiftUI's `.onTapGesture` reports 
 **Files:** `SelectionOverlay.swift` (views), `HandlePosition.swift` (model)
 
 - `ResizeHandleView` — one shared 10×10pt rounded square, white fill, blue border. Used by both overlay types
-- `SelectionOverlay` — solid 2pt blue border + 8 handles, for a single selected item
-- `GroupSelectionOverlay` — solid 2pt blue border + 8 handles around the group's bounding box. Same weight as the single version on purpose, so multi-select doesn't look like a different feature. (It used to be dashed.)
+- `SelectionOverlay` — solid 2pt blue border + handles, for a single selected item. Images and text pass `handles: HandlePosition.corners`, so they show only the 4 corners
+- `GroupSelectionOverlay` — solid 2pt blue border + handles around the group's bounding box (or a single selected frame). Same weight as the single version on purpose, so multi-select doesn't look like a different feature. (It used to be dashed.)
+
+**Which handles show.** A corner drag keeps an item's shape; an edge drag stretches it along one axis. Stretching squashes an image and reflows text, so images and text get corners only. A frame is an empty box, so stretching it is fine, and it keeps all 8. A multi-selection gets all 8 only when every item being resized is a frame (`BoardCanvasView.groupResizeHandles()`); one image or text in the mix drops it to corners. Items inside a selected frame don't count, because a frame never resizes its contents. `hitTestHandleOnRect(screenPoint:screenRect:allowed:)` takes the same set the overlay draws, so a hidden handle can't be grabbed.
 - Individually selected items inside a group show a faint border instead of full handles
 - `MarqueeOverlayView` — solid 1.5pt blue rectangle with an 8%-opacity blue fill. (Also used to be dashed.)
 
@@ -562,7 +564,7 @@ Reading that Shift state is the awkward part. SwiftUI's `.onTapGesture` reports 
 
 Both overlays take an `activeHandle: HandlePosition?`. While you drag one handle, the other seven disappear so they don't compete with what you're doing; the border stays. `CanvasSelectionState.resizeHandle` is the one source of "which handle is live" across single-image, single-text, and group resize — all three call sites in `BoardCanvasView` pass `selection.resizeHandle`. `nil` means "not resizing" and everything renders.
 
-`HandlePosition` (in its own file, to keep `CanvasSelectionState` free of view concerns) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`, plus helpers: `anchorPosition` (the opposite handle), `isCorner`, `isLeftSide`, `isTopSide`.
+`HandlePosition` (in its own file, to keep `CanvasSelectionState` free of view concerns) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`, plus helpers: `anchorPosition` (the opposite handle), `isCorner`, `isLeftSide`, `isTopSide`, and the `corners` set.
 
 ## Moving
 
@@ -577,14 +579,14 @@ Both overlays take an `activeHandle: HandlePosition?`. While you drag one handle
 `hitTestHandle(screenPoint:)` is a pure question with no side effects. It returns a `HandleHitResult` (`.singleItem` or `.group`), and the caller sets up whichever resize state that implies.
 
 **One item selected:**
-1. `hitTestHandle` measures screen distance to the item's 8 handles (30pt hit radius — generous, because fingers are)
+1. `hitTestHandle` measures screen distance to the item's handles — the 4 corners for an image, all 8 for a frame (30pt hit radius — generous, because fingers are)
 2. A hit means `.resizeItem` mode and single-resize state
 3. `applyResize(translation:)` calls the shared `computeResizedRect()`
 4. The live rectangle lives in `selection.resizeCurrentRect`
 5. `commitResize()` ignores no-op resizes and records a `.resize` command
 
 **Two or more selected:**
-1. `hitTestHandle` checks the handles on the group's bounding box
+1. `hitTestHandle` checks the handles on the group's bounding box (corners only unless every resized item is a frame — see "Which handles show")
 2. A hit means `.resizeItem` mode, and every selected item's rectangle is snapshotted into `groupResizeStartRects`
 3. `applyGroupResize(translation:)` runs `computeResizedRect()` on the bounding box
 4. Each item's new rectangle comes from `scaledRect(original:bboxStart:bboxCurrent:)`, which scales position and size relative to the box's origin:
@@ -679,12 +681,12 @@ The 52pt size goes on the button's *label*, not the button. An earlier version s
 
 **The color wells (`TextColorWell`):**
 
-The same view serves text color and frame color; its `label` parameter tells VoiceOver which is which. The text well is slotted in whenever `textColorHex != nil` — that is, whenever the selection contains text. This one *is* conditionally inserted, unlike the bar itself. The stale-glass problem described below only bites at launch, and by the time you've selected a text element the canvas composited long ago.
+The same view serves text color and frame color; its `label` parameter tells VoiceOver which is which, and `supportsOpacity` decides whether the system picker shows its opacity slider. The frame well turns it on, so a frame can be see-through; the text well leaves it off, so text stays solid and readable. The text well is slotted in whenever `textColorHex != nil` — that is, whenever the selection contains text. This one *is* conditionally inserted, unlike the bar itself. The stale-glass problem described below only bites at launch, and by the time you've selected a text element the canvas composited long ago.
 
 It's the native `ColorPicker` well with `.labelsHidden()`, wrapped in glass. The well *is* the button: tapping it opens the system color picker straight away, with no popover of our own in between.
 
 ```swift
-ColorPicker("Text Color", selection: pickerBinding, supportsOpacity: false)
+ColorPicker(label, selection: pickerBinding, supportsOpacity: supportsOpacity)
     .labelsHidden()
     .frame(width: CanvasActionBarMetrics.buttonSide,
            height: CanvasActionBarMetrics.buttonSide)
@@ -709,12 +711,13 @@ ColorPicker("Text Color", selection: pickerBinding, supportsOpacity: false)
 
 The reason is a Liquid Glass quirk. A glass view that's freshly inserted at the top `zIndex` and positioned with `.position()` samples what's behind it *before* the canvas underneath has settled in that compositing pass. It caches the wrong light/dark appearance and keeps it until something unrelated forces a re-sample. That's the "tap it again and it looks right" bug. A view that's always mounted, with stable identity, never takes that bad first sample.
 
-So the layer's job is to show, hide, and move a view that already exists:
+So the layer's job is to show, hide, and move a view that already exists. It fades but never slides: the bar appears already sitting under the new selection.
 
 - **Show/hide** — opacity 1 or 0, driven by `isVisible = boundingBox != nil && !isInteracting`, where `isInteracting = isDragging || isResizing || isGroupResizing || isMarqueeing`
 - **Position** — `displayCenter = isVisible ? liveCenter : lastCenter`. Parking at `lastCenter` during interaction matters: publishing a moving position every frame would start a fresh `.snappy` animation every frame on an invisible view. Invisible, but still spending real frame budget — it showed up as jitter while resizing text
 - **Position tracking** — `@State private var lastCenter` updates via `.onChange(of: liveCenter)`, guarded by `isVisible` so it doesn't drift during interactions. Live center is `boundingBox.midX/maxY * scale + offset`, plus a 32pt gap
-- **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar appears and disappears instantly at drag start and end. Animating opacity and position for 0.2s on top of a starting gesture was the cause of "the first fraction of every drag feels rough"
+- **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar appears and disappears instantly at drag start and end. Animating for 0.2s on top of a starting gesture was the cause of "the first fraction of every drag feels rough"
+- **No slide** — the bar used to glide from the last selection to the new one, because `.animation(_:value: isVisible)` animates *every* change in the same update, position included. Now the fade is scoped with `.animation(transitionAnimation) { $0.opacity(...) }`, and `.animation(nil, value: displayCenter)` sits right after `.position`, so a move always lands instantly — even inside someone else's `withAnimation`
 
 **Host wiring:** `BoardCanvasView.selectionActionBarLayer()` builds the layer with the selection's bounding box, the camera, an `isInteracting` flag (any pan, zoom, drag, resize, or marquee), and the actions. A nil action (`onCreateFrame`, `onRemoveFrame`) or nil color (`textColorHex`, `frameFillHex`) hides that control.
 
@@ -742,7 +745,7 @@ A frame is a labeled container. Moving it moves its descendants. Resizing it cha
 - **Sliding under the toolbar.** Frames and text must stay visible where they pass under the top toolbar, just like images. Images apply their clip mask in their own local space, so the mask is as big as the image. Frames and text apply theirs after `.position`, in canvas space. There the shape's bounds are the canvas, and the canvas stops at the toolbar's safe-area edge. `FrameClipShape` used to clip to those bounds too, so frames got cut off at the toolbar while their images slid under it. Canvas-space masks now pass `clipsToBounds: false`: a frame boundary is used as-is, and no boundary grows the mask by the canvas's own size on every side. Hit shapes keep the default `clipsToBounds: true`, so a tap never lands outside an item.
 - **Removing.** Select one frame and tap Remove Frame in the action bar. Its children retain their positions and become children of its parent (or board items). The separate Delete action still deletes the frame and its contents.
 - **Undo/redo.** Moves restore exact parent assignments with positions. Remove Frame restores the frame and original child memberships. Boundary resizing uses the existing resize snapshots without child snapshots.
-- **Look.** A solid border over a filled background. A frame with no picked color (`fillHex == nil`) uses `FrameFill.defaultHex`: the canvas color nudged toward contrast (6% darker on a light canvas, 10% lighter on a dark one). Because nothing is stored, it follows the canvas if the canvas color changes. The frame color well in the action bar sets a color, with one undo step per picker session.
+- **Look.** A solid border over a filled background. A frame with no picked color (`fillHex == nil`) uses `FrameFill.defaultHex`: the canvas color nudged toward contrast (6% darker on a light canvas, 10% lighter on a dark one). Because nothing is stored, it follows the canvas if the canvas color changes. The frame color well in the action bar sets a color, with one undo step per picker session. Its opacity slider makes the fill see-through: `fillHex` is then stored as `#RRGGBBAA`, and `Color(hex:)` reads the last two digits as opacity. A solid pick still stores `#RRGGBB`, so existing boards don't change.
 - **The name label.** Plain text just above the frame, flush with its left edge, drawn above all items (`frameTitleLayer`). It's the frame's only handle: tap to select, double-tap to rename in place, drag to move. Its width is capped at the frame's on-screen width (minimum 64pt); longer names truncate. The tap target is at least 44pt wide (`FrameTitlePill.minTapWidth`), so a one-letter name isn't a sliver. It is 36pt tall (`FrameTitlePill.tapHeight`), runs down to the frame's top edge with no dead gap, and centers the name inside. It stops short of 44pt tall on purpose. The strip is in screen points, so zooming out doesn't shrink it, while the gaps between items do. A taller strip would take taps and drags from items just above the frame. Text is capped at `.xxxLarge` Dynamic Type so it can't outgrow the fixed row. When two pills overlap (a nested frame near its parent's top edge), the pill of the frame with the higher `zIndex` wins both the tap and the drag. Pills are drawn in `zIndex` order, and `frameTitleHitItems` ranks them the same way. Before, every pill had the same rank, so a drag could grab a different frame from the one a tap selected. It uses the same `.difference` blend as the empty-canvas hint, so it reads on any background; when selected it shows the accent color instead. A rename ends when the frame loses selection, because tapping the canvas doesn't take keyboard focus.
 - **The body ignores taps** (Figma's rule). A tap there reaches the canvas and clears the selection, and a drag there draws a marquee unless the frame is already selected. A marquee selects a frame only if it fully contains it; images and text only need to be touched. Otherwise a small marquee inside a frame selected the whole frame.
 - **Picking and naming.** A single click on an Assets row selects the frame and highlights its descendants in both the canvas and tree. Descendants are highlighted without becoming separate selections, so the frame retains its resize handles and Remove Frame action. Double-tap any Assets row's name (frame, image, or text) to edit it; Enter or focus loss commits, and Escape cancels. Image and text names are separate labels stored in `CMElementHeader.displayName`, leaving filenames and note content unchanged. Renaming these assets supports undo/redo, and snapshot restoration preserves the label. Names render as ordinary text until editing starts. Tree updates preserve collapsed rows. The disclosure chevron has its own 44-point button, outside the name row’s selection and rename gesture area; expanding or collapsing does not select the frame.
@@ -923,17 +926,15 @@ Two reasons, both good:
 
 ## Resizing text: corners change size, sides change width
 
-A single selected text shows handles at the four corners plus the left and right edge centers. Top and bottom are hidden because text height comes from its content — there's nothing meaningful to drag. `SelectionOverlay` takes a `Set<HandlePosition>` so text can pass a restricted set; `TextElementView.textHandles` is `fileprivate` so the canvas-level chrome can use the same set.
+A single selected text shows handles at the four corners only. `TextElementView.textHandles` is `HandlePosition.corners`, and the canvas-level chrome draws the same set. Text used to have left/right edge handles that set `wrapWidth`; they were removed so text, like images, can only be resized with its shape kept. Text that already has a `wrapWidth` keeps it, and corner drags scale it.
 
-`hitTestHandle` returns a `.singleTextItem(handle, text)` case for solo-text hits and refuses top/bottom edges. Multi-selections fall through to `.group`, which now understands text.
+`hitTestHandle` returns a `.singleTextItem(handle, text)` case for solo-text hits, and only ever for a corner. Multi-selections fall through to `.group`, which now understands text.
 
-`applyTextResize(translation:)` handles three cases:
+`applyTextResize(translation:)` handles one case:
 
 - **Corner drag** → scales the font, Freeform-style. It reuses the aspect-locked `computeResizedRect` to get a width ratio, then multiplies the starting `fontSize` by it. If `wrapWidth` was set, it scales too. The origin follows the new rect, keeping the opposite corner pinned. Font can't go below 8pt.
 
   `computeResizedRect` takes an optional `minDimension` (defaulting to `minImageDimensionWorld`, 64). Text overrides it with `startRect.width * (minTextFontSize / startFontSize)` so the rectangle's floor lines up with the font's own 8pt floor. Without the override, the rectangle stops shrinking at 64pt while the font still has room to go — which feels like the text "snapping" and refusing to get smaller
-- **Right-edge drag** → sets `wrapWidth`, left edge pinned. Reference width is the existing `wrapWidth`, or the current `worldRect.width` for auto-width text. Minimum 40pt
-- **Left-edge drag** → sets `wrapWidth` *and* shifts `origin.x = startRect.maxX - newWrap`, so the right edge stays put (Figma convention)
 
 Changing `placed.fontSize` / `wrapWidth` / `origin` directly during the drag is fine here: the view re-renders, `onGeometryChange` re-derives `worldRect.size`, and undo already captured the starting state.
 
@@ -1013,7 +1014,7 @@ Now the snapshot includes everything typed, no matter how fast you hit back.
 | Re-edit cleared everything | `.delete` | Snapshot rebuilds from original content, so undo restores the text |
 | Move text | `.move` | Same command as images; `applyMoveDelta` walks both arrays |
 | Change text color | `.setTextColors(hexes)` | Per-element, since a multi-text selection can start out mixed. Registered on the first changed frame; the store write is debounced, so a picker drag is one step |
-| Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin |
+| Resize text (corner) | `.resizeText` | Captures fontSize + wrapWidth + origin |
 | Group resize including text | `.groupResize` | Extended with text-state dictionaries |
 | Delete via action bar | `.delete` | `deleteSelection` snapshots both kinds; `applyResizeRects` filters out text ids defensively |
 

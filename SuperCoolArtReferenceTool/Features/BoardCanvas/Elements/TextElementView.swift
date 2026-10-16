@@ -22,16 +22,11 @@ struct TextElementView: View {
     /// element — visible width is `editingMinWorldWidth * scale`.
     private static let editingMinWorldWidth: CGFloat = 80
 
-    /// Solo-text selections show only the corners + left/right edges.
-    /// Top/bottom edge handles are hidden because text height is
-    /// always content-derived; there's no meaningful "stretch height
-    /// independently" gesture for text. Exposed so BoardCanvasView's
-    /// body can render the same set externally at screen coordinates
-    /// (handles stay touch-friendly under zoom).
-    static let textHandles: Set<HandlePosition> = [
-        .topLeft, .topRight, .bottomLeft, .bottomRight,
-        .leftCenter, .rightCenter
-    ]
+    /// Solo-text selections show only the four corners. A corner drag
+    /// scales the font, so the text keeps its shape. Exposed so
+    /// BoardCanvasView's body can render the same set externally at screen
+    /// coordinates (handles stay touch-friendly under zoom).
+    static let textHandles: Set<HandlePosition> = HandlePosition.corners
 
     var body: some View {
         sizedContent

@@ -18,10 +18,9 @@ private struct ResizeHandleView: View {
 struct SelectionOverlay: View {
     private let borderWidth: CGFloat = 2
 
-    /// Which handles to render. Defaults to all 8; text elements pass a
-    /// restricted set (corners + left/right) since top/bottom edge drags
-    /// have no meaningful semantic for text — height is always
-    /// content-derived.
+    /// Which handles to render. Defaults to all 8; images and text pass
+    /// `HandlePosition.corners` so they can only be resized with their
+    /// shape kept.
     var handles: Set<HandlePosition> = Set(HandlePosition.allCases)
     /// The handle the user is currently dragging. While non-nil, only that
     /// handle is shown — the other seven hide so they don't visually
@@ -57,6 +56,10 @@ struct SelectionOverlay: View {
 struct GroupSelectionOverlay: View {
     private let borderWidth: CGFloat = 2
 
+    /// Which handles to render. All 8 when only frames are being resized;
+    /// corners only once an image or text is part of it, matching
+    /// `SelectionOverlay.handles`.
+    var handles: Set<HandlePosition> = Set(HandlePosition.allCases)
     /// The handle currently being dragged for the group resize. See
     /// `SelectionOverlay.activeHandle` for the same idea — only that handle
     /// renders during the gesture, the rest hide.
@@ -75,7 +78,10 @@ struct GroupSelectionOverlay: View {
     }
 
     private var visibleHandles: [HandlePosition] {
-        if let activeHandle { return [activeHandle] }
-        return HandlePosition.allCases
+        let baseline = HandlePosition.allCases.filter { handles.contains($0) }
+        if let activeHandle, baseline.contains(activeHandle) {
+            return [activeHandle]
+        }
+        return baseline
     }
 }
