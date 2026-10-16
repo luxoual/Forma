@@ -33,6 +33,25 @@ struct SelectionActionBarLayer: View {
     /// to the origin once the selection (and its bounding box) is gone.
     @State private var lastCenter: CGPoint = .zero
 
+    /// Which controls the bar shows. Kept as plain values so the last
+    /// visible set can be remembered (closures aren't `Equatable`).
+    private struct Controls: Equatable {
+        var textColorHex: String?
+        var frameFillHex: String?
+        var showsCreateFrame: Bool
+        var showsRemoveFrame: Bool
+    }
+
+    /// The controls from the last time the bar was visible. A deselect or
+    /// delete clears the selection in the same update that starts the
+    /// fade-out, so the live controls vanish at once. Left alone, the bar
+    /// would shrink and its buttons would wink out one by one while it
+    /// faded. Showing this frozen set while hidden makes it fade out whole.
+    @State private var lastControls = Controls(
+        textColorHex: nil, frameFillHex: nil,
+        showsCreateFrame: false, showsRemoveFrame: false
+    )
+
     private var isVisible: Bool { boundingBox != nil && !isInteracting }
 
     /// Live center for the *current* selection — `nil` when there's nothing
@@ -67,14 +86,31 @@ struct SelectionActionBarLayer: View {
         return .easeOut(duration: isVisible ? 0.2 : 0.15)
     }
 
-    var body: some View {
-        CanvasSelectionActionBar(
+    private var liveControls: Controls {
+        Controls(
             textColorHex: textColorHex,
-            onPickTextColor: onPickTextColor,
             frameFillHex: frameFillHex,
+            showsCreateFrame: onCreateFrame != nil,
+            showsRemoveFrame: onRemoveFrame != nil
+        )
+    }
+
+    /// Live controls while visible, the frozen set while hidden. A hidden
+    /// bar takes no taps, so the frozen buttons get do-nothing actions when
+    /// the live ones are gone.
+    private var displayControls: Controls {
+        isVisible ? liveControls : lastControls
+    }
+
+    var body: some View {
+        let controls = displayControls
+        CanvasSelectionActionBar(
+            textColorHex: controls.textColorHex,
+            onPickTextColor: onPickTextColor,
+            frameFillHex: controls.frameFillHex,
             onPickFrameFill: onPickFrameFill,
-            onCreateFrame: onCreateFrame,
-            onRemoveFrame: onRemoveFrame,
+            onCreateFrame: controls.showsCreateFrame ? (onCreateFrame ?? {}) : nil,
+            onRemoveFrame: controls.showsRemoveFrame ? (onRemoveFrame ?? {}) : nil,
             onDelete: onDelete
         )
             .position(displayCenter)
@@ -99,6 +135,10 @@ struct SelectionActionBarLayer: View {
             // jumped back there.
             .onChange(of: isVisible ? liveCenter : nil, initial: true) { _, new in
                 if let new { lastCenter = new }
+            }
+            // Same pattern for the controls: remember them only while visible.
+            .onChange(of: isVisible ? liveControls : nil, initial: true) { _, new in
+                if let new { lastControls = new }
             }
     }
 }
