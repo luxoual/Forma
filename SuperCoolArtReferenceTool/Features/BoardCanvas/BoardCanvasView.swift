@@ -13,6 +13,11 @@ struct BoardCanvasView: View {
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
     @State private var isInteracting: Bool = false
+    /// True while `zoomCamera(toFit:)` glides the camera. Only the selection
+    /// action bar reads it. It's kept apart from `isInteracting` because
+    /// that flag also switches images to low detail, which rebuilds some of
+    /// them mid-glide so they jump to the end spot instead of gliding.
+    @State private var isCameraGliding: Bool = false
     @State private var interactionEndTask: Task<Void, Never>? = nil
 
     // Grid options
@@ -830,6 +835,7 @@ struct BoardCanvasView: View {
 
     private var isSelectionActionBarInteracting: Bool {
         isInteracting ||
+        isCameraGliding ||
         selection.isDragging ||
         selection.isResizing ||
         selection.isTextResizing ||
@@ -3000,17 +3006,16 @@ struct BoardCanvasView: View {
             height: canvasSize.height / 2 - bounds.midY * targetScale
         )
         if animated && !reduceMotion {
-            // Count the glide as an interaction, like a pan. The selection
-            // action bar never animates its position, so without this it
-            // would land on the end spot at once while the items it belongs
-            // to are still gliding there. Instead it hides, then fades back
-            // in once the camera stops.
-            startInteraction()
+            // Hide the selection action bar for the glide. It never animates
+            // its position, so otherwise it would land on the end spot at
+            // once while the items it belongs to are still gliding there.
+            // Instead it hides, then fades back in once the camera stops.
+            isCameraGliding = true
             withAnimation(.easeInOut(duration: 0.4)) {
                 camera.scale = targetScale
                 camera.offset = target
             } completion: {
-                endInteraction()
+                isCameraGliding = false
                 scheduleRefreshVisibleElements()
             }
         } else {
