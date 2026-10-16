@@ -553,10 +553,10 @@ Reading that Shift state is the awkward part. SwiftUI's `.onTapGesture` reports 
 **Files:** `SelectionOverlay.swift` (views), `HandlePosition.swift` (model)
 
 - `ResizeHandleView` — one shared 10×10pt rounded square, white fill, blue border. Used by both overlay types
-- `SelectionOverlay` — solid 2pt blue border + handles, for a single selected item. Images and text pass `handles: HandlePosition.corners`, so they show only the 4 corners
+- `SelectionOverlay` — solid 2pt blue border + handles, for a single selected item. Images pass `handles: HandlePosition.corners`, so they show only the 4 corners. Text passes `TextElementView.textHandles`: the corners plus left/right edges
 - `GroupSelectionOverlay` — solid 2pt blue border + handles around the group's bounding box (or a single selected frame). Same weight as the single version on purpose, so multi-select doesn't look like a different feature. (It used to be dashed.)
 
-**Which handles show.** A corner drag keeps an item's shape; an edge drag stretches it along one axis. Stretching squashes an image and reflows text, so images and text get corners only. A frame is an empty box, so stretching it is fine, and it keeps all 8. A multi-selection gets all 8 only when every item being resized is a frame (`BoardCanvasView.groupResizeHandles()`); one image or text in the mix drops it to corners. Items inside a selected frame don't count, because a frame never resizes its contents. `hitTestHandleOnRect(screenPoint:screenRect:allowed:)` takes the same set the overlay draws, so a hidden handle can't be grabbed.
+**Which handles show.** A corner drag keeps an item's shape; an edge drag stretches it along one axis. Stretching squashes an image, so images get corners only. Text keeps its left/right edges, because there they set the wrap width instead of stretching (see "Text resize"). A frame is an empty box, so stretching it is fine, and it keeps all 8. A multi-selection gets all 8 only when every item being resized is a frame (`BoardCanvasView.groupResizeHandles()`); one image or text in the mix drops it to corners, since a group edge drag would stretch them. Items inside a selected frame don't count, because a frame never resizes its contents. `hitTestHandleOnRect(screenPoint:screenRect:allowed:)` takes the same set the overlay draws, so a hidden handle can't be grabbed.
 - Individually selected items inside a group show a faint border instead of full handles
 - `MarqueeOverlayView` — solid 1.5pt blue rectangle with an 8%-opacity blue fill. (Also used to be dashed.)
 
@@ -579,7 +579,7 @@ Both overlays take an `activeHandle: HandlePosition?`. While you drag one handle
 `hitTestHandle(screenPoint:)` is a pure question with no side effects. It returns a `HandleHitResult` (`.singleItem` or `.group`), and the caller sets up whichever resize state that implies.
 
 **One item selected:**
-1. `hitTestHandle` measures screen distance to the item's handles — the 4 corners for an image, all 8 for a frame (30pt hit radius — generous, because fingers are)
+1. `hitTestHandle` measures screen distance to the item's handles — the 4 corners for an image, corners plus left/right for text, all 8 for a frame (30pt hit radius — generous, because fingers are)
 2. A hit means `.resizeItem` mode and single-resize state
 3. `applyResize(translation:)` calls the shared `computeResizedRect()`
 4. The live rectangle lives in `selection.resizeCurrentRect`
@@ -928,15 +928,17 @@ Two reasons, both good:
 
 ## Resizing text: corners change size, sides change width
 
-A single selected text shows handles at the four corners only. `TextElementView.textHandles` is `HandlePosition.corners`, and the canvas-level chrome draws the same set. Text used to have left/right edge handles that set `wrapWidth`; they were removed so text, like images, can only be resized with its shape kept. Text that already has a `wrapWidth` keeps it, and corner drags scale it.
+A single selected text shows handles at the four corners plus the left and right edge centers. Top and bottom are hidden because text height comes from its content — there's nothing meaningful to drag. `SelectionOverlay` takes a `Set<HandlePosition>` so text can pass a restricted set; `TextElementView.textHandles` is `HandlePosition.corners` plus `.leftCenter` and `.rightCenter`, and the canvas-level chrome and `hitTestHandle` both use that one set.
 
-`hitTestHandle` returns a `.singleTextItem(handle, text)` case for solo-text hits, and only ever for a corner. Multi-selections fall through to `.group`, which now understands text.
+`hitTestHandle` returns a `.singleTextItem(handle, text)` case for solo-text hits and refuses top/bottom edges. Multi-selections fall through to `.group`, which now understands text.
 
-`applyTextResize(translation:)` handles one case:
+`applyTextResize(translation:)` handles three cases:
 
 - **Corner drag** → scales the font, Freeform-style. It reuses the aspect-locked `computeResizedRect` to get a width ratio, then multiplies the starting `fontSize` by it. If `wrapWidth` was set, it scales too. The origin follows the new rect, keeping the opposite corner pinned. Font can't go below 8pt.
 
   `computeResizedRect` takes an optional `minDimension` (defaulting to `minImageDimensionWorld`, 64). Text overrides it with `startRect.width * (minTextFontSize / startFontSize)` so the rectangle's floor lines up with the font's own 8pt floor. Without the override, the rectangle stops shrinking at 64pt while the font still has room to go — which feels like the text "snapping" and refusing to get smaller
+- **Right-edge drag** → sets `wrapWidth`, left edge pinned. Reference width is the existing `wrapWidth`, or the current `worldRect.width` for auto-width text. Minimum 40pt
+- **Left-edge drag** → sets `wrapWidth` *and* shifts `origin.x = startRect.maxX - newWrap`, so the right edge stays put (Figma convention)
 
 Changing `placed.fontSize` / `wrapWidth` / `origin` directly during the drag is fine here: the view re-renders, `onGeometryChange` re-derives `worldRect.size`, and undo already captured the starting state.
 
@@ -951,7 +953,7 @@ case resizeText(
 )
 ```
 
-It captures everything one resize gesture can touch, including the origin shift from a corner drag. `applyTextResizeState(elementID:fontSize:wrapWidth:origin:)` is the shared restore helper used by commit, undo, and redo alike.
+It captures everything one resize gesture can touch, including the origin shift from a left-edge drag. `applyTextResizeState(elementID:fontSize:wrapWidth:origin:)` is the shared restore helper used by commit, undo, and redo alike.
 
 ## Text inside a group resize
 
@@ -1016,7 +1018,7 @@ Now the snapshot includes everything typed, no matter how fast you hit back.
 | Re-edit cleared everything | `.delete` | Snapshot rebuilds from original content, so undo restores the text |
 | Move text | `.move` | Same command as images; `applyMoveDelta` walks both arrays |
 | Change text color | `.setTextColors(hexes)` | Per-element, since a multi-text selection can start out mixed. Registered on the first changed frame; the store write is debounced, so a picker drag is one step |
-| Resize text (corner) | `.resizeText` | Captures fontSize + wrapWidth + origin |
+| Resize text (corner / side) | `.resizeText` | Captures fontSize + wrapWidth + origin |
 | Group resize including text | `.groupResize` | Extended with text-state dictionaries |
 | Delete via action bar | `.delete` | `deleteSelection` snapshots both kinds; `applyResizeRects` filters out text ids defensively |
 

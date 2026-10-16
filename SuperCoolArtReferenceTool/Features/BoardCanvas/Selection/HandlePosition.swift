@@ -5,9 +5,10 @@ enum HandlePosition: CaseIterable {
     case leftCenter, rightCenter
     case bottomLeft, bottomCenter, bottomRight
 
-    /// The four corner handles. Images and text offer only these: a corner
-    /// drag keeps the item's shape, while an edge drag would squash an
-    /// image or reflow text. Frames are empty boxes, so they keep all 8.
+    /// The four corner handles. Images offer only these: a corner drag keeps
+    /// the image's shape, while an edge drag would squash it. Text adds its
+    /// left/right edges for wrap width (`TextElementView.textHandles`).
+    /// Frames are empty boxes, so they keep all 8.
     static let corners: Set<HandlePosition> = [.topLeft, .topRight, .bottomLeft, .bottomRight]
 
     func point(in size: CGSize) -> CGPoint {

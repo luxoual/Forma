@@ -1013,8 +1013,9 @@ struct BoardCanvasView: View {
     private func hitTestHandle(screenPoint: CGPoint) -> HandleHitResult? {
         let textIDs = Set(placedTexts.map(\.id))
         let frameIDs = Set(placedFrames.map(\.id))
-        // Solo text selection — corners scale the font (Freeform-style).
-        // Edges never hit, matching the overlay, which draws only corners.
+        // Solo text selection — corners scale font (Freeform-style),
+        // left/right edges set wrap width. Top/bottom never hit, matching
+        // the overlay, which doesn't draw them for text.
         if selection.selectedIDs.count == 1,
            let selectedID = selection.selectedIDs.first,
            textIDs.contains(selectedID),
@@ -1091,7 +1092,7 @@ struct BoardCanvasView: View {
     /// Handles a multi-selection offers. An edge drag stretches the group's
     /// box along one axis, and every item inside stretches with it. That's
     /// fine for frames, which are empty boxes. It would squash images and
-    /// reflow text, so as soon as one of those is being resized, only the
+    /// distort text, so as soon as one of those is being resized, only the
     /// corners remain. (Items riding along inside a selected frame don't
     /// count — a frame never resizes its contents.)
     ///
@@ -1563,10 +1564,11 @@ struct BoardCanvasView: View {
     // MARK: - Text Resize
     //
     // Text uses fontSize (and optionally wrapWidth + origin) as authoritative
-    // state instead of a worldRect like images. Only corner handles exist
-    // for text (`TextElementView.textHandles`); they scale fontSize — and
-    // wrapWidth, when set — uniformly (Freeform-style), so the text keeps
-    // its shape. Height is always content-derived.
+    // state instead of a worldRect like images. Corners scale fontSize
+    // uniformly (Freeform-style); left/right edges set wrapWidth (Figma-
+    // style fixed-wrap text). Top/bottom edges are filtered out at hit-test
+    // time and visually hidden in the selection overlay — height is always
+    // content-derived.
     //
     // Direct mutation of `placedTexts[idx]` during drag is fine: the view
     // re-renders, `onGeometryChange` measures the new screen size, and the
@@ -1588,7 +1590,6 @@ struct BoardCanvasView: View {
 
         let startWrapWidth = selection.textResizeStartWrapWidth
 
-        // Text only offers corner handles; anything else is a no-op.
         if handle.isCorner {
             // Reuse the aspect-locked corner math from image resize to get a
             // proportional new rect; derive scale factor from width ratio.
@@ -1613,6 +1614,24 @@ struct BoardCanvasView: View {
             // Origin shifts from corner drag the same way as image resize:
             // the *opposite* corner is the anchor, so origin tracks newRect.
             placedTexts[idx].worldRect.origin = newRect.origin
+        } else if handle == .rightCenter {
+            // Right edge drag → set wrap width, left edge anchored.
+            // Reference width: existing wrapWidth if set, else current
+            // measured worldRect.width (auto-width text).
+            let baseWidth = startWrapWidth ?? startRect.width
+            let worldDX = translation.width / camera.scale
+            let newWrap = max(minTextWrapWidth, baseWidth + worldDX)
+            placedTexts[idx].wrapWidth = newWrap
+            // Origin unchanged — left edge is anchor.
+        } else if handle == .leftCenter {
+            // Left edge drag → set wrap width AND shift origin so the right
+            // edge stays anchored (Figma convention).
+            let baseWidth = startWrapWidth ?? startRect.width
+            let worldDX = translation.width / camera.scale
+            let newWrap = max(minTextWrapWidth, baseWidth - worldDX)
+            placedTexts[idx].wrapWidth = newWrap
+            // Right edge anchored at startRect.maxX; origin = right - newWrap.
+            placedTexts[idx].worldRect.origin.x = startRect.maxX - newWrap
         }
     }
 

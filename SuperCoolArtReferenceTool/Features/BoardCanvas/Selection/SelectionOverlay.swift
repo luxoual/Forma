@@ -18,9 +18,10 @@ private struct ResizeHandleView: View {
 struct SelectionOverlay: View {
     private let borderWidth: CGFloat = 2
 
-    /// Which handles to render. Defaults to all 8; images and text pass
-    /// `HandlePosition.corners` so they can only be resized with their
-    /// shape kept.
+    /// Which handles to render. Defaults to all 8. Images pass
+    /// `HandlePosition.corners` so they can only be resized with their shape
+    /// kept; text passes `TextElementView.textHandles` (corners plus
+    /// left/right edges for wrap width).
     var handles: Set<HandlePosition> = Set(HandlePosition.allCases)
     /// The handle the user is currently dragging. While non-nil, only that
     /// handle is shown — the other seven hide so they don't visually
@@ -57,8 +58,8 @@ struct GroupSelectionOverlay: View {
     private let borderWidth: CGFloat = 2
 
     /// Which handles to render. All 8 when only frames are being resized;
-    /// corners only once an image or text is part of it, matching
-    /// `SelectionOverlay.handles`.
+    /// corners only once an image or text is part of it (see
+    /// `BoardCanvasView.groupResizeHandles()`).
     var handles: Set<HandlePosition> = Set(HandlePosition.allCases)
     /// The handle currently being dragged for the group resize. See
     /// `SelectionOverlay.activeHandle` for the same idea — only that handle
