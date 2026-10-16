@@ -44,7 +44,9 @@ extension Color {
     nonisolated init?(hex: String) {
         var s = hex
         if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 6 || s.count == 8, let v = UInt32(s, radix: 16) else { return nil }
+        // `UInt32(_:radix:)` alone would accept a sign, like "+FFFFFFF".
+        guard s.count == 6 || s.count == 8, s.allSatisfy(\.isHexDigit),
+              let v = UInt32(s, radix: 16) else { return nil }
         // Shift a 6-digit value up a byte and give it solid opacity, so both
         // forms decode through the same `RRGGBBAA` layout below.
         let rgba = s.count == 6 ? (v << 8) | 0xFF : v

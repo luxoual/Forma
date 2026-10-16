@@ -59,8 +59,13 @@ struct SelectionActionBarLayer: View {
     /// kicks off a 0.2s opacity animation on the (invisible) bar, which eats
     /// frame budget for the drag's first ~0.2s and shows up as visible
     /// jitter in the element being dragged.
+    ///
+    /// Ease-out rather than a spring: a spring's overshoot is clipped at
+    /// opacity 1, so the fade-in ended abruptly. The fade-out is a little
+    /// shorter, because things leaving should get out of the way.
     private var transitionAnimation: Animation? {
-        isInteracting ? nil : .snappy(duration: 0.2)
+        if isInteracting { return nil }
+        return .easeOut(duration: isVisible ? 0.2 : 0.15)
     }
 
     var body: some View {
@@ -84,8 +89,17 @@ struct SelectionActionBarLayer: View {
                 content.opacity(isVisible ? 1 : 0)
             }
             .allowsHitTesting(isVisible)
-            .onChange(of: liveCenter) { _, new in
-                if isVisible, let new { lastCenter = new }
+            // An invisible bar still holds a Delete button. Keep VoiceOver
+            // and keyboard focus from landing on it.
+            .accessibilityHidden(!isVisible)
+            // Watch the live center only while the bar is visible, so the
+            // value also changes when the bar *becomes* visible. Watching
+            // `liveCenter` alone missed this: a pan moves the selection while
+            // the bar is hidden, then the pan ends without moving it again,
+            // so `lastCenter` kept the pre-pan spot and the next fade-out
+            // jumped back there.
+            .onChange(of: isVisible ? liveCenter : nil) { _, new in
+                if let new { lastCenter = new }
             }
     }
 }

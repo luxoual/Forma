@@ -1094,9 +1094,16 @@ struct BoardCanvasView: View {
     /// reflow text, so as soon as one of those is being resized, only the
     /// corners remain. (Items riding along inside a selected frame don't
     /// count — a frame never resizes its contents.)
+    ///
+    /// Runs on every body pass while a multi-selection is showing, so the two
+    /// common cases skip `selectionRoots`, which walks every frame's parents.
     private func groupResizeHandles() -> Set<HandlePosition> {
         let frameIDs = Set(placedFrames.map(\.id))
-        let onlyFrames = selectionRoots(selection.selectedIDs).allSatisfy(frameIDs.contains)
+        let ids = selection.selectedIDs
+        let selectedFrameCount = ids.filter(frameIDs.contains).count
+        if selectedFrameCount == ids.count { return Set(HandlePosition.allCases) }
+        if selectedFrameCount == 0 { return HandlePosition.corners }
+        let onlyFrames = selectionRoots(ids).allSatisfy(frameIDs.contains)
         return onlyFrames ? Set(HandlePosition.allCases) : HandlePosition.corners
     }
 

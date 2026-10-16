@@ -9,11 +9,25 @@ struct CanvasPlacedFrameView: View {
     let isSelected: Bool
     let zIndex: Int
 
+    @Environment(\.self) private var environment
+
+    /// Opacity of the unselected border. A solid fill already shows where
+    /// the frame is, so the border can stay faint (0.55). A see-through fill
+    /// leaves the border as the only edge, so it darkens as the fill fades,
+    /// up to 0.9 at a fully clear fill. It changes smoothly with the fill,
+    /// so dragging the opacity slider doesn't make the border jump.
+    private var idleStrokeOpacity: Double {
+        let fillOpacity = Double(fill.resolve(in: environment).opacity)
+        return 0.55 + 0.35 * (1 - fillOpacity)
+    }
+
     var body: some View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
             .fill(fill)
             .strokeBorder(
-                isSelected ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary.opacity(0.55),
+                isSelected
+                    ? DesignSystem.Colors.tertiary
+                    : DesignSystem.Colors.secondary.opacity(idleStrokeOpacity),
                 lineWidth: isSelected ? 2 : 1
             )
             .frame(width: screenRect.width, height: screenRect.height)
