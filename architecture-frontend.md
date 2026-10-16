@@ -556,7 +556,7 @@ Reading that Shift state is the awkward part. SwiftUI's `.onTapGesture` reports 
 - `SelectionOverlay` — solid 2pt blue border + handles, for a single selected item. Images pass `handles: HandlePosition.corners`, so they show only the 4 corners. Text passes `TextElementView.textHandles`: the corners plus left/right edges
 - `GroupSelectionOverlay` — solid 2pt blue border + handles around the group's bounding box (or a single selected frame). Same weight as the single version on purpose, so multi-select doesn't look like a different feature. (It used to be dashed.)
 
-**Which handles show.** A corner drag keeps an item's shape; an edge drag stretches it along one axis. Stretching squashes an image, so images get corners only. Text keeps its left/right edges, because there they set the wrap width instead of stretching (see "Text resize"). A frame is an empty box, so stretching it is fine, and it keeps all 8. A multi-selection gets all 8 only when every item being resized is a frame (`BoardCanvasView.groupResizeHandles()`); one image or text in the mix drops it to corners, since a group edge drag would stretch them. Items inside a selected frame don't count, because a frame never resizes its contents. `hitTestHandleOnRect(screenPoint:screenRect:allowed:)` takes the same set the overlay draws, so a hidden handle can't be grabbed.
+**Which handles show.** A corner drag keeps an item's shape; an edge drag stretches it along one axis. Stretching squashes an image, so images get corners only. Text keeps its left/right edges, because there they set the wrap width instead of stretching (see "Text resize"). A frame is an empty box, so stretching it is fine, and it keeps all 8. A multi-selection always gets corners only, whatever it holds — one rule that's easy to predict, and a group edge drag would stretch everything inside. `hitTestHandleOnRect(screenPoint:screenRect:allowed:)` takes the same set the overlay draws, so a hidden handle can't be grabbed.
 - Individually selected items inside a group show a faint border instead of full handles
 - `MarqueeOverlayView` — solid 1.5pt blue rectangle with an 8%-opacity blue fill. (Also used to be dashed.)
 
@@ -586,7 +586,7 @@ Both overlays take an `activeHandle: HandlePosition?`. While you drag one handle
 5. `commitResize()` ignores no-op resizes and records a `.resize` command
 
 **Two or more selected:**
-1. `hitTestHandle` checks the handles on the group's bounding box (corners only unless every resized item is a frame — see "Which handles show")
+1. `hitTestHandle` checks the handles on the group's bounding box (corners only — see "Which handles show")
 2. A hit means `.resizeItem` mode, and every selected item's rectangle is snapshotted into `groupResizeStartRects`
 3. `applyGroupResize(translation:)` runs `computeResizedRect()` on the bounding box
 4. Each item's new rectangle comes from `scaledRect(original:bboxStart:bboxCurrent:)`, which scales position and size relative to the box's origin:

@@ -57,9 +57,8 @@ struct SelectionOverlay: View {
 struct GroupSelectionOverlay: View {
     private let borderWidth: CGFloat = 2
 
-    /// Which handles to render. All 8 when only frames are being resized;
-    /// corners only once an image or text is part of it (see
-    /// `BoardCanvasView.groupResizeHandles()`).
+    /// Which handles to render. All 8 for a single selected frame; a
+    /// multi-selection passes `HandlePosition.corners`.
     var handles: Set<HandlePosition> = Set(HandlePosition.allCases)
     /// The handle currently being dragged for the group resize. See
     /// `SelectionOverlay.activeHandle` for the same idea — only that handle

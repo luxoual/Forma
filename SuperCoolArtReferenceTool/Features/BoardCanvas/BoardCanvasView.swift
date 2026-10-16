@@ -928,7 +928,7 @@ struct BoardCanvasView: View {
                     height: bbox.height * camera.scale
                 )
                 GroupSelectionOverlay(
-                    handles: groupResizeHandles(),
+                    handles: HandlePosition.corners,
                     activeHandle: selection.resizeHandle
                 )
                     .frame(width: screenRect.width, height: screenRect.height)
@@ -1072,6 +1072,8 @@ struct BoardCanvasView: View {
                 return .singleItem(handle: handle, item: item)
             }
         } else if selection.selectedIDs.count > 1, let bbox = groupBoundingBox() {
+            // Multi-selections resize from the corners only. An edge drag
+            // would stretch everything inside along one axis.
             let bboxScreenRect = CGRect(
                 x: bbox.origin.x * camera.scale + camera.offset.width,
                 y: bbox.origin.y * camera.scale + camera.offset.height,
@@ -1081,31 +1083,12 @@ struct BoardCanvasView: View {
             if let handle = hitTestHandleOnRect(
                 screenPoint: screenPoint,
                 screenRect: bboxScreenRect,
-                allowed: groupResizeHandles()
+                allowed: HandlePosition.corners
             ) {
                 return .group(handle: handle, bbox: bbox)
             }
         }
         return nil
-    }
-
-    /// Handles a multi-selection offers. An edge drag stretches the group's
-    /// box along one axis, and every item inside stretches with it. That's
-    /// fine for frames, which are empty boxes. It would squash images and
-    /// distort text, so as soon as one of those is being resized, only the
-    /// corners remain. (Items riding along inside a selected frame don't
-    /// count — a frame never resizes its contents.)
-    ///
-    /// Runs on every body pass while a multi-selection is showing, so the two
-    /// common cases skip `selectionRoots`, which walks every frame's parents.
-    private func groupResizeHandles() -> Set<HandlePosition> {
-        let frameIDs = Set(placedFrames.map(\.id))
-        let ids = selection.selectedIDs
-        let selectedFrameCount = ids.filter(frameIDs.contains).count
-        if selectedFrameCount == ids.count { return Set(HandlePosition.allCases) }
-        if selectedFrameCount == 0 { return HandlePosition.corners }
-        let onlyFrames = selectionRoots(ids).allSatisfy(frameIDs.contains)
-        return onlyFrames ? Set(HandlePosition.allCases) : HandlePosition.corners
     }
 
     /// Shared helper: find the handle on a screen-space rect closest to a
