@@ -4,7 +4,14 @@ import SwiftUI
 ///
 /// The bar fades in and out, but never slides. It always appears already in
 /// place under the new selection, instead of gliding over from wherever the
-/// last one was.
+/// last one was. When the selection changes from one item to another, the
+/// old bar fades out where it was while the new one fades in under the new
+/// selection.
+///
+/// That cross-fade needs two bars on screen at once, so the layer holds two
+/// (`slots`) and they take turns. Each new selection goes to the slot that
+/// isn't in use. The slot it replaces keeps the old selection's spot and
+/// controls frozen while it fades out.
 ///
 /// Kept permanently mounted (stable view identity) and shown via
 /// opacity rather than inserted with `if`: a Liquid Glass backdrop filter on a
@@ -18,6 +25,10 @@ struct SelectionActionBarLayer: View {
     let offset: CGSize
     /// True while a drag/resize/marquee is in progress — the bar hides then.
     let isInteracting: Bool
+    /// Which items are selected. A change here is what counts as "a new
+    /// selection" and moves the bar to the other slot. Moves, pans, and
+    /// zooms change `boundingBox` but not this, so the bar just follows.
+    let selectionKey: Set<UUID>
     /// Current text color of the selection as `#RRGGBB`, or nil when the
     /// selection holds no text (the color controls hide then).
     let textColorHex: String?
@@ -29,61 +40,47 @@ struct SelectionActionBarLayer: View {
     var onRemoveFrame: (() -> Void)? = nil
     let onDelete: () -> Void
 
-    /// Last visible center, so the bar fades out in place instead of snapping
-    /// to the origin once the selection (and its bounding box) is gone.
-    @State private var lastCenter: CGPoint = .zero
-
-    /// Which controls the bar shows. Kept as plain values so the last
-    /// visible set can be remembered (closures aren't `Equatable`).
+    /// Which controls the bar shows. Kept as plain values so a slot can
+    /// remember them after the selection is gone (closures aren't
+    /// `Equatable`).
     private struct Controls: Equatable {
         var textColorHex: String?
         var frameFillHex: String?
         var showsCreateFrame: Bool
         var showsRemoveFrame: Bool
+
+        static let empty = Controls(
+            textColorHex: nil, frameFillHex: nil,
+            showsCreateFrame: false, showsRemoveFrame: false
+        )
     }
 
-    /// The controls from the last time the bar was visible. A deselect or
-    /// delete clears the selection in the same update that starts the
-    /// fade-out, so the live controls vanish at once. Left alone, the bar
-    /// would shrink and its buttons would wink out one by one while it
-    /// faded. Showing this frozen set while hidden makes it fade out whole.
-    @State private var lastControls = Controls(
-        textColorHex: nil, frameFillHex: nil,
-        showsCreateFrame: false, showsRemoveFrame: false
-    )
+    /// One of the two bars. `key` is the selection it belongs to; `center`
+    /// and `controls` are what it showed the last time it was visible.
+    ///
+    /// Remembering them matters on the way out. A deselect, a delete, or a
+    /// switch to another item changes the live values in the same update
+    /// that starts the fade-out. Without the saved copy, the fading bar
+    /// would jump to the new spot, or shrink as its buttons winked out one
+    /// by one.
+    private struct Slot: Equatable {
+        var key: Set<UUID>? = nil
+        var center: CGPoint = .zero
+        var controls: Controls = .empty
+    }
+
+    @State private var slots = [Slot(), Slot()]
+    /// Index of the slot that holds the newest selection.
+    @State private var current = 0
 
     private var isVisible: Bool { boundingBox != nil && !isInteracting }
 
     /// Live center for the *current* selection — `nil` when there's nothing
-    /// selected. Kept independent of `lastCenter` to avoid a self-dependency:
-    /// `onChange` watches the bounding box, not a value that depends on its
-    /// own cached output.
+    /// selected.
     private var liveCenter: CGPoint? {
         guard let box = boundingBox else { return nil }
         return CGPoint(x: box.midX * scale + offset.width,
                        y: box.maxY * scale + offset.height + 32)
-    }
-
-    /// While hidden, the bar stays at `lastCenter` instead of tracking the
-    /// live bbox, so a fade-out happens where the bar was last seen rather
-    /// than following a selection that's gone or mid-gesture.
-    private var displayCenter: CGPoint {
-        isVisible ? (liveCenter ?? lastCenter) : lastCenter
-    }
-
-    /// Fade on selection appear/disappear, and when a gesture ends, but
-    /// **snap** hidden the moment a gesture starts. Without this gate, the
-    /// gesture-start moment
-    /// kicks off a 0.2s opacity animation on the (invisible) bar, which eats
-    /// frame budget for the drag's first ~0.2s and shows up as visible
-    /// jitter in the element being dragged.
-    ///
-    /// Ease-out rather than a spring: a spring's overshoot is clipped at
-    /// opacity 1, so the fade-in ended abruptly. The fade-out is a little
-    /// shorter, because things leaving should get out of the way.
-    private var transitionAnimation: Animation? {
-        if isInteracting { return nil }
-        return .easeOut(duration: isVisible ? 0.2 : 0.15)
     }
 
     private var liveControls: Controls {
@@ -95,16 +92,70 @@ struct SelectionActionBarLayer: View {
         )
     }
 
-    /// Live controls while visible, the frozen set while hidden. A hidden
-    /// bar takes no taps, so the frozen buttons get do-nothing actions when
-    /// the live ones are gone.
-    private var displayControls: Controls {
-        isVisible ? liveControls : lastControls
+    /// True when slot `i` belongs to the current selection and the bar
+    /// should be showing. Only that slot tracks live values and takes taps;
+    /// the other shows its saved copy.
+    ///
+    /// On the update where the selection changes, *neither* slot matches
+    /// yet: the old one starts fading, and the new one is assigned by the
+    /// `onChange` right after, so its fade-in starts one update later.
+    private func isLive(_ i: Int) -> Bool {
+        isVisible && slots[i].key == selectionKey
+    }
+
+    /// Fade on selection appear/disappear, and when a gesture ends, but
+    /// **snap** hidden the moment a gesture starts. Without this gate, the
+    /// gesture-start moment kicks off a 0.2s opacity animation on the
+    /// (invisible) bar, which eats frame budget for the drag's first ~0.2s
+    /// and shows up as visible jitter in the element being dragged.
+    ///
+    /// Ease-out rather than a spring: a spring's overshoot is clipped at
+    /// opacity 1, so the fade-in ended abruptly. The fade-out is a little
+    /// shorter, because things leaving should get out of the way.
+    private func fadeAnimation(live: Bool) -> Animation? {
+        if isInteracting { return nil }
+        return .easeOut(duration: live ? 0.2 : 0.15)
     }
 
     var body: some View {
-        let controls = displayControls
-        CanvasSelectionActionBar(
+        ZStack {
+            ForEach(slots.indices, id: \.self) { i in
+                slotBar(i)
+            }
+        }
+        // A new selection takes the slot that isn't in use, starting at its
+        // live spot and controls.
+        .onChange(of: selectionKey, initial: true) { _, new in
+            guard !new.isEmpty, slots[current].key != new else { return }
+            current = 1 - current
+            slots[current] = Slot(
+                key: new,
+                center: liveCenter ?? slots[current].center,
+                controls: liveControls
+            )
+        }
+        // Save the live spot and controls only while the current slot is
+        // showing, so a hidden or fading bar keeps where it was last seen.
+        // Watching while visible also catches the moment the bar *becomes*
+        // visible: a pan moves the selection while the bar is hidden, then
+        // ends without moving it again, and without this the next fade-out
+        // would jump back to the pre-pan spot.
+        .onChange(of: isLive(current) ? liveCenter : nil, initial: true) { _, new in
+            if let new { slots[current].center = new }
+        }
+        .onChange(of: isLive(current) ? liveControls : nil, initial: true) { _, new in
+            if let new { slots[current].controls = new }
+        }
+    }
+
+    /// One bar. Live, it shows the current selection's spot and controls
+    /// with their real actions. Otherwise it shows its saved copy, with
+    /// do-nothing actions for buttons that are gone — it takes no taps then.
+    private func slotBar(_ i: Int) -> some View {
+        let live = isLive(i)
+        let controls = live ? liveControls : slots[i].controls
+        let center = live ? (liveCenter ?? slots[i].center) : slots[i].center
+        return CanvasSelectionActionBar(
             textColorHex: controls.textColorHex,
             onPickTextColor: onPickTextColor,
             frameFillHex: controls.frameFillHex,
@@ -113,32 +164,19 @@ struct SelectionActionBarLayer: View {
             onRemoveFrame: controls.showsRemoveFrame ? (onRemoveFrame ?? {}) : nil,
             onDelete: onDelete
         )
-            .position(displayCenter)
+            .position(center)
             // Moves always land instantly, even when they happen in the same
             // update as the fade-in, or inside someone else's `withAnimation`.
-            // A plain `.animation(_:value: isVisible)` would also animate this
-            // position, which is the slide from the old selection we don't want.
-            .animation(nil, value: displayCenter)
+            // A plain `.animation(_:value:)` on visibility would also animate
+            // this position, which is the slide we don't want.
+            .animation(nil, value: center)
             // Scoped so the fade animates opacity and nothing else.
-            .animation(transitionAnimation) { content in
-                content.opacity(isVisible ? 1 : 0)
+            .animation(fadeAnimation(live: live)) { content in
+                content.opacity(live ? 1 : 0)
             }
-            .allowsHitTesting(isVisible)
+            .allowsHitTesting(live)
             // An invisible bar still holds a Delete button. Keep VoiceOver
             // and keyboard focus from landing on it.
-            .accessibilityHidden(!isVisible)
-            // Watch the live center only while the bar is visible, so the
-            // value also changes when the bar *becomes* visible. Watching
-            // `liveCenter` alone missed this: a pan moves the selection while
-            // the bar is hidden, then the pan ends without moving it again,
-            // so `lastCenter` kept the pre-pan spot and the next fade-out
-            // jumped back there.
-            .onChange(of: isVisible ? liveCenter : nil, initial: true) { _, new in
-                if let new { lastCenter = new }
-            }
-            // Same pattern for the controls: remember them only while visible.
-            .onChange(of: isVisible ? liveControls : nil, initial: true) { _, new in
-                if let new { lastControls = new }
-            }
+            .accessibilityHidden(!live)
     }
 }

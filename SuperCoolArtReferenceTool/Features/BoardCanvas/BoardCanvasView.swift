@@ -807,6 +807,7 @@ struct BoardCanvasView: View {
             scale: camera.scale,
             offset: camera.offset,
             isInteracting: isSelectionActionBarInteracting,
+            selectionKey: selection.selectedIDs,
             textColorHex: selectionTextColorHex(),
             onPickTextColor: applyTextColor(hex:),
             frameFillHex: selectionFrameFillHex(),
