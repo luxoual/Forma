@@ -58,6 +58,16 @@ extension Color {
     }
 }
 
+/// Opacity stored in a hex string: the last two digits of `#RRGGBBAA`, or
+/// 1 (solid) for `#RRGGBB` or anything that doesn't parse.
+nonisolated func hexOpacity(_ hex: String) -> Double {
+    var s = hex
+    if s.hasPrefix("#") { s.removeFirst() }
+    guard s.count == 8, s.allSatisfy(\.isHexDigit),
+          let a = UInt8(s.suffix(2), radix: 16) else { return 1 }
+    return Double(a) / 255
+}
+
 /// Hex string for a resolved color. Resolving requires an
 /// `EnvironmentValues`, so this is split from the `Color` extension above:
 /// the call site has the environment, this helper just formats.

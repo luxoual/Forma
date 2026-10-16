@@ -24,7 +24,7 @@ struct SelectionOverlay: View {
     /// left/right edges for wrap width).
     var handles: Set<HandlePosition> = Set(HandlePosition.allCases)
     /// The handle the user is currently dragging. While non-nil, only that
-    /// handle is shown — the other seven hide so they don't visually
+    /// handle is shown — the others hide so they don't visually
     /// compete with the active gesture. `nil` means "not resizing", and
     /// every handle in `handles` is rendered.
     var activeHandle: HandlePosition? = nil

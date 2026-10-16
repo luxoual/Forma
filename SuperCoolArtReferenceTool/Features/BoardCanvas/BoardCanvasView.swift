@@ -640,7 +640,7 @@ struct BoardCanvasView: View {
 
             CanvasPlacedFrameView(
                 screenRect: screenRect,
-                fill: Color(hex: frame.fillHex ?? defaultFill) ?? .clear,
+                fillHex: frame.fillHex ?? defaultFill,
                 isSelected: isSelected,
                 zIndex: frame.zIndex
             )
@@ -1020,6 +1020,9 @@ struct BoardCanvasView: View {
            let selectedID = selection.selectedIDs.first,
            textIDs.contains(selectedID),
            let text = placedTexts.first(where: { $0.id == selectedID }) {
+            // While editing, the handles are hidden
+            // (`selectedTextChromeLayer`), so they mustn't be grabbable.
+            if editingTextID == selectedID { return nil }
             let textScreenRect = CGRect(
                 x: text.worldRect.origin.x * camera.scale + camera.offset.width,
                 y: text.worldRect.origin.y * camera.scale + camera.offset.height,
@@ -1399,12 +1402,10 @@ struct BoardCanvasView: View {
         // Text uses a different render path (font size + frame), so mutate
         // its state directly and let onGeometryChange re-derive worldRect.size.
         if let startTextStates = selection.groupResizeTextStartStates {
-            // Geometric mean of width and height ratios so text scales
-            // for any axis change, not just width. Corner drags are
-            // aspect-ratio-locked (widthRatio == heightRatio → factor
-            // equals either ratio); top/bottom-edge drags only change
-            // height, so a width-only factor would leave text unchanged
-            // even though the bbox visibly grew or shrank.
+            // Geometric mean of width and height ratios. Multi-selections
+            // only resize from aspect-locked corners, so the two ratios
+            // match and this equals either one; the mean just keeps text
+            // scaling sensibly if the box ever changes on one axis only.
             let widthRatio = bboxStart.width > 0.001 ? newBBox.width / bboxStart.width : 1
             let heightRatio = bboxStart.height > 0.001 ? newBBox.height / bboxStart.height : 1
             let factor = sqrt(max(widthRatio * heightRatio, 0))
@@ -2993,10 +2994,17 @@ struct BoardCanvasView: View {
             height: canvasSize.height / 2 - bounds.midY * targetScale
         )
         if animated && !reduceMotion {
+            // Count the glide as an interaction, like a pan. The selection
+            // action bar never animates its position, so without this it
+            // would land on the end spot at once while the items it belongs
+            // to are still gliding there. Instead it hides, then fades back
+            // in once the camera stops.
+            startInteraction()
             withAnimation(.easeInOut(duration: 0.4)) {
                 camera.scale = targetScale
                 camera.offset = target
             } completion: {
+                endInteraction()
                 scheduleRefreshVisibleElements()
             }
         } else {

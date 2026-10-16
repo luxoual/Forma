@@ -5,11 +5,12 @@ import SwiftUI
 /// and the pill sits just *outside* the box, where that clip would hide it.
 struct CanvasPlacedFrameView: View {
     let screenRect: CGRect
-    let fill: Color
+    /// `#RRGGBB`, or `#RRGGBBAA` for a see-through fill.
+    let fillHex: String
     let isSelected: Bool
     let zIndex: Int
 
-    @Environment(\.self) private var environment
+    private var fill: Color { Color(hex: fillHex) ?? .clear }
 
     /// Opacity of the unselected border. A solid fill already shows where
     /// the frame is, so the border can stay faint (0.55). A see-through fill
@@ -17,8 +18,10 @@ struct CanvasPlacedFrameView: View {
     /// up to 0.9 at a fully clear fill. It changes smoothly with the fill,
     /// so dragging the opacity slider doesn't make the border jump.
     private var idleStrokeOpacity: Double {
-        let fillOpacity = Double(fill.resolve(in: environment).opacity)
-        return 0.55 + 0.35 * (1 - fillOpacity)
+        // Read from the hex, not by resolving `fill`: resolving needs
+        // `@Environment(\.self)`, which would redraw every frame on any
+        // environment change.
+        0.55 + 0.35 * (1 - hexOpacity(fillHex))
     }
 
     var body: some View {

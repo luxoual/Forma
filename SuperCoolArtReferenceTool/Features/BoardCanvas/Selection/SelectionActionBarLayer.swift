@@ -45,17 +45,16 @@ struct SelectionActionBarLayer: View {
                        y: box.maxY * scale + offset.height + 32)
     }
 
-    /// While `isInteracting` is true the bar parks at `lastCenter` instead
-    /// of tracking the live bbox. Re-publishing a moving position every
-    /// gesture frame was spawning a fresh `.snappy` animation per frame —
-    /// invisible (opacity 0), but the animation churn ate frame budget and
-    /// caused visible jitter in the dragged element (text resize especially).
+    /// While hidden, the bar stays at `lastCenter` instead of tracking the
+    /// live bbox, so a fade-out happens where the bar was last seen rather
+    /// than following a selection that's gone or mid-gesture.
     private var displayCenter: CGPoint {
         isVisible ? (liveCenter ?? lastCenter) : lastCenter
     }
 
-    /// Fade on selection appear/disappear, but **snap** on transitions into
-    /// or out of interaction. Without this gate, the gesture-start moment
+    /// Fade on selection appear/disappear, and when a gesture ends, but
+    /// **snap** hidden the moment a gesture starts. Without this gate, the
+    /// gesture-start moment
     /// kicks off a 0.2s opacity animation on the (invisible) bar, which eats
     /// frame budget for the drag's first ~0.2s and shows up as visible
     /// jitter in the element being dragged.
@@ -98,7 +97,7 @@ struct SelectionActionBarLayer: View {
             // the bar is hidden, then the pan ends without moving it again,
             // so `lastCenter` kept the pre-pan spot and the next fade-out
             // jumped back there.
-            .onChange(of: isVisible ? liveCenter : nil) { _, new in
+            .onChange(of: isVisible ? liveCenter : nil, initial: true) { _, new in
                 if let new { lastCenter = new }
             }
     }

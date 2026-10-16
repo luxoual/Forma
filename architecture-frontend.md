@@ -562,7 +562,7 @@ Reading that Shift state is the awkward part. SwiftUI's `.onTapGesture` reports 
 
 **Handles hide while you're dragging one:**
 
-Both overlays take an `activeHandle: HandlePosition?`. While you drag one handle, the other seven disappear so they don't compete with what you're doing; the border stays. `CanvasSelectionState.resizeHandle` is the one source of "which handle is live" across single-image, single-text, and group resize — all three call sites in `BoardCanvasView` pass `selection.resizeHandle`. `nil` means "not resizing" and everything renders.
+Both overlays take an `activeHandle: HandlePosition?`. While you drag one handle, the others disappear so they don't compete with what you're doing; the border stays. `CanvasSelectionState.resizeHandle` is the one source of "which handle is live" across single-image, single-text, and group resize — all three call sites in `BoardCanvasView` pass `selection.resizeHandle`. `nil` means "not resizing" and everything renders.
 
 `HandlePosition` (in its own file, to keep `CanvasSelectionState` free of view concerns) defines `.topLeft`, `.topCenter`, `.topRight`, `.leftCenter`, `.rightCenter`, `.bottomLeft`, `.bottomCenter`, `.bottomRight`, plus helpers: `anchorPosition` (the opposite handle), `isCorner`, `isLeftSide`, `isTopSide`, and the `corners` set.
 
@@ -714,11 +714,12 @@ The reason is a Liquid Glass quirk. A glass view that's freshly inserted at the 
 So the layer's job is to show, hide, and move a view that already exists. It fades but never slides: the bar appears already sitting under the new selection.
 
 - **Show/hide** — opacity 1 or 0, driven by `isVisible = boundingBox != nil && !isInteracting`, where `isInteracting = isDragging || isResizing || isGroupResizing || isMarqueeing`
-- **Position** — `displayCenter = isVisible ? liveCenter : lastCenter`. Parking at `lastCenter` during interaction matters: publishing a moving position every frame would start a fresh animation every frame on an invisible view. Invisible, but still spending real frame budget — it showed up as jitter while resizing text
+- **Position** — `displayCenter = isVisible ? liveCenter : lastCenter`. Staying at `lastCenter` while hidden means a fade-out happens where you last saw the bar, not wherever a vanished or mid-gesture selection is
 - **Position tracking** — `@State private var lastCenter` updates via `.onChange(of: isVisible ? liveCenter : nil)`. It ignores moves while hidden, and also refreshes the moment the bar reappears — otherwise a pan left it at the pre-pan spot, and the next fade-out jumped back there. Live center is `boundingBox.midX/maxY * scale + offset`, plus a 32pt gap
 - **Hidden from VoiceOver when invisible** — `.accessibilityHidden(!isVisible)`. Opacity 0 doesn't remove a view from the accessibility tree, and the hidden bar still holds a Delete button
+- **Animated camera moves** — `zoomCamera(toFit:)` (home button, outliner jump-to-item) glides the camera for 0.4s. It calls `startInteraction()` first and `endInteraction()` when the glide finishes. The bar never animates its position, so without this it would sit at the end spot while the items were still on their way there
 - **Fade curve** — `.easeOut`, 0.2s in and 0.15s out. It used to be `.snappy`, a spring whose overshoot gets clipped at opacity 1, so the fade-in ended abruptly
-- **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar appears and disappears instantly at drag start and end. Animating for 0.2s on top of a starting gesture was the cause of "the first fraction of every drag feels rough"
+- **Animation gating** — `transitionAnimation` returns `nil` while interacting, so the bar vanishes instantly when a gesture starts, then fades back in when it ends. Animating for 0.2s on top of a starting gesture was the cause of "the first fraction of every drag feels rough"
 - **No slide** — the bar used to glide from the last selection to the new one, because `.animation(_:value: isVisible)` animates *every* change in the same update, position included. Now the fade is scoped with `.animation(transitionAnimation) { $0.opacity(...) }`, and `.animation(nil, value: displayCenter)` sits right after `.position`, so a move always lands instantly — even inside someone else's `withAnimation`
 
 **Host wiring:** `BoardCanvasView.selectionActionBarLayer()` builds the layer with the selection's bounding box, the camera, an `isInteracting` flag (any pan, zoom, drag, resize, or marquee), and the actions. A nil action (`onCreateFrame`, `onRemoveFrame`) or nil color (`textColorHex`, `frameFillHex`) hides that control.
