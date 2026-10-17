@@ -3010,8 +3010,15 @@ struct BoardCanvasView: View {
             // its position, so otherwise it would land on the end spot at
             // once while the items it belongs to are still gliding there.
             // Instead it hides, then fades back in once the camera stops.
-            isCameraGliding = true
+            //
+            // The flag is set *inside* `withAnimation`, not before it. The
+            // home button runs this from `.onChange(of: homeTrigger)`, in the
+            // middle of a view update, and there a plain state change made
+            // just before the animated one stripped the animation from the
+            // camera move too: the glide became a teleport. (The outliner
+            // calls this from a tap handler, so it kept gliding.)
             withAnimation(.easeInOut(duration: 0.4)) {
+                isCameraGliding = true
                 camera.scale = targetScale
                 camera.offset = target
             } completion: {

@@ -11,6 +11,26 @@ struct FrameClipShape: Shape {
     var boundary: CGRect?
     var clipsToBounds = true
 
+    /// Lets the clip move with its item during an animated camera move (the
+    /// home button's glide). Without it, the item glided but its clip jumped
+    /// straight to the end spot, so the item was cut away for the whole glide
+    /// and popped in at the end.
+    ///
+    /// Only a real rectangle animates. A nil boundary (no clip) or a null one
+    /// (fully hidden) has nothing sensible to blend toward, so it snaps.
+    var animatableData: CGRect.AnimatableData {
+        get {
+            guard let boundary, !boundary.isNull else { return CGRect.zero.animatableData }
+            return boundary.animatableData
+        }
+        set {
+            guard let current = boundary, !current.isNull else { return }
+            var next = current
+            next.animatableData = newValue
+            boundary = next
+        }
+    }
+
     func path(in rect: CGRect) -> Path {
         let visible: CGRect
         if clipsToBounds {
