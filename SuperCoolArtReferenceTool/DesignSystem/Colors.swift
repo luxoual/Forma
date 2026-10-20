@@ -24,7 +24,37 @@ extension DesignSystem{
         /// Destructive color - #FE8686 (matches tertiary's saturation and lightness,
         /// but with a red hue). Used for delete actions and other destructive UI.
         static let destructive = Color(red: 254/255, green: 134/255, blue: 134/255)
+
+        /// Accent for small text on a dark canvas - #7FA8FB. `tertiary` is
+        /// only about 4.3:1 against #191919, below the 4.5:1 that small text
+        /// needs. This lighter blue is about 7.4:1 there.
+        static let accentTextOnDark = Color(red: 127/255, green: 168/255, blue: 251/255)
+
+        /// Accent for small text on a light canvas - #2558C8. `tertiary` is
+        /// only about 4.1:1 against white. This darker blue is about 6.4:1.
+        static let accentTextOnLight = Color(red: 37/255, green: 88/255, blue: 200/255)
+
+        /// The accent for small text, picked for the canvas behind it.
+        static func accentText(onDarkCanvas isDark: Bool) -> Color {
+            isDark ? accentTextOnDark : accentTextOnLight
+        }
+
+        /// Whether `color` counts as dark: the W3C relative-luminance
+        /// crossover (0.179), where black and white text contrast equally.
+        static func isDark(_ color: Color.Resolved) -> Bool {
+            let luminance = 0.2126 * Double(color.linearRed)
+                + 0.7152 * Double(color.linearGreen)
+                + 0.0722 * Double(color.linearBlue)
+            return luminance <= 0.179
+        }
     }
+}
+
+extension EnvironmentValues {
+    /// True when the board's canvas color is dark (`DesignSystem.Colors.isDark`).
+    /// `BoardCanvasView` sets it, so canvas views can pick colors that
+    /// stand out against the canvas without each resolving the color.
+    @Entry var canvasIsDark: Bool = false
 }
 
 // MARK: - Hex coding

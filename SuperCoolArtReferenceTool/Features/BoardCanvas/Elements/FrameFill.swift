@@ -18,10 +18,7 @@ enum FrameFill {
     static func defaultHex(onCanvas background: Color.Resolved) -> String {
         // Same W3C relative-luminance crossover TextColorMemory uses to
         // decide whether a canvas counts as light or dark.
-        let luminance = 0.2126 * Double(background.linearRed)
-            + 0.7152 * Double(background.linearGreen)
-            + 0.0722 * Double(background.linearBlue)
-        let isLight = luminance > 0.179
+        let isLight = !DesignSystem.Colors.isDark(background)
         let target: Float = isLight ? 0 : 1
         let amount = isLight ? lightCanvasShift : darkCanvasShift
         func blend(_ c: Float) -> Float { c + (target - c) * amount }

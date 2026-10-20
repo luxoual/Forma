@@ -25,7 +25,11 @@ enum CanvasCommand {
     /// A drag changes position and membership together. Undo supplies the
     /// exact old parents instead of guessing from geometry again.
     case move(elementIDs: Set<UUID>, delta: CGSize, memberships: [FrameMembership]? = nil)
-    case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect)
+    /// `memberships` works the same way for every resize case: the frame
+    /// changes the gesture caused, applied after the new geometry. The
+    /// reverse carries the exact parents those items had before, so one
+    /// undo restores both the bounds and the frames.
+    case resize(elementID: UUID, fromRect: CGRect, toRect: CGRect, memberships: [FrameMembership]? = nil)
     /// Resize of a multi-element selection. `fromRects`/`toRects` cover
     /// image elements (which use a worldRect as authoritative state).
     /// `fromTextStates`/`toTextStates` cover text elements (which use
@@ -37,7 +41,8 @@ enum CanvasCommand {
         fromRects: [UUID: CGRect],
         toRects: [UUID: CGRect],
         fromTextStates: [UUID: TextResizeSnapshot],
-        toTextStates: [UUID: TextResizeSnapshot]
+        toTextStates: [UUID: TextResizeSnapshot],
+        memberships: [FrameMembership]? = nil
     )
     case insert(snapshots: [PlacedElementSnapshot])
     case delete(snapshots: [PlacedElementSnapshot])
@@ -77,7 +82,8 @@ enum CanvasCommand {
         elementID: UUID,
         fromFontSize: CGFloat, toFontSize: CGFloat,
         fromWrapWidth: CGFloat?, toWrapWidth: CGFloat?,
-        fromOrigin: CGPoint, toOrigin: CGPoint
+        fromOrigin: CGPoint, toOrigin: CGPoint,
+        memberships: [FrameMembership]? = nil
     )
     /// Text color was changed from the selection action bar. Unlike the
     /// other cases this carries only one side — "put these elements in

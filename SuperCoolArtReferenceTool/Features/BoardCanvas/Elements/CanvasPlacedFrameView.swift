@@ -8,7 +8,16 @@ struct CanvasPlacedFrameView: View {
     /// `#RRGGBB`, or `#RRGGBBAA` for a see-through fill.
     let fillHex: String
     let isSelected: Bool
+    /// True while a drag is about to land in this frame. It gets its own
+    /// look, heavier than selection, so the dragged frame (selected) and
+    /// the frame it will land in never look the same.
+    var isDropTarget: Bool = false
+    /// Rank among frames only. Frames draw in their own stack, below every
+    /// image and text, so this never competes with item `zIndex` values.
     let zIndex: Int
+    /// Live tint while another frame's resize or drag is about to change this
+    /// frame's parent.
+    var hint: FrameMembershipHint? = nil
 
     private var fill: Color { Color(hex: fillHex) ?? .clear }
 
@@ -24,16 +33,25 @@ struct CanvasPlacedFrameView: View {
         0.55 + 0.35 * (1 - hexOpacity(fillHex))
     }
 
+    /// Drop target: a 3pt accent border. Selected: 2pt accent. Otherwise
+    /// a faint 1pt gray.
+    private var border: (color: Color, width: CGFloat) {
+        if isDropTarget { return (DesignSystem.Colors.tertiary, 3) }
+        if isSelected { return (DesignSystem.Colors.tertiary, 2) }
+        return (DesignSystem.Colors.secondary.opacity(idleStrokeOpacity), 1)
+    }
+
     var body: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        shape
             .fill(fill)
-            .strokeBorder(
-                isSelected
-                    ? DesignSystem.Colors.tertiary
-                    : DesignSystem.Colors.secondary.opacity(idleStrokeOpacity),
-                lineWidth: isSelected ? 2 : 1
-            )
+            // The drop target also gets a 10% accent wash over its fill.
+            .overlay { shape.fill(DesignSystem.Colors.tertiary.opacity(isDropTarget ? 0.1 : 0)) }
+            .overlay { shape.strokeBorder(border.color, lineWidth: border.width) }
+            // The box holds no state, so the leaving effect can wrap it.
+            .frameMembershipLeavingEffect(hint == .leaving)
             .frame(width: screenRect.width, height: screenRect.height)
+            .frameMembershipOutline(hint, in: shape)
             // The body never selects the frame (Figma convention): taps fall
             // through to the canvas, and only the name pill picks the frame.
             .allowsHitTesting(false)
@@ -50,8 +68,14 @@ struct CanvasPlacedFrameView: View {
 struct FrameTitlePill: View {
     let title: String
     let isSelected: Bool
+    /// True while a drag is about to land in this frame. The name then
+    /// shows the accent color, without the frame being selected (which
+    /// would end a rename in progress).
+    var isDropTarget: Bool = false
     let onSelect: () -> Void
     let onRename: (String) -> Void
+
+    @Environment(\.canvasIsDark) private var canvasIsDark
 
     @State private var isEditing = false
     @State private var draft = ""
@@ -98,10 +122,14 @@ struct FrameTitlePill: View {
         // Same trick as `EmptyCanvasOverlay`: `.difference` inverts against
         // whatever is behind, so the name stays readable on any canvas or
         // frame color. Selected names drop the blend and show the accent,
-        // which would otherwise invert to a different hue.
-        .foregroundStyle(isSelected ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary)
+        // which would otherwise invert to a different hue. The accent is a
+        // lighter or darker blue depending on the canvas, because plain
+        // `tertiary` is under 4.5:1 for small text on both black and white.
+        .foregroundStyle(isHighlighted
+                         ? DesignSystem.Colors.accentText(onDarkCanvas: canvasIsDark)
+                         : DesignSystem.Colors.secondary)
         .compositingGroup()
-        .blendMode(isSelected ? .normal : .difference)
+        .blendMode(isHighlighted ? .normal : .difference)
         // The row has a fixed height, so stop the text growing past it at
         // the largest accessibility sizes. Same cap as `CanvasHUDView`.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -148,6 +176,9 @@ struct FrameTitlePill: View {
             isEditing = true
         }
     }
+
+    /// Selected, or the target of a drag in progress: both show the accent.
+    private var isHighlighted: Bool { isSelected || isDropTarget }
 
     private func commit() {
         guard isEditing else { return }

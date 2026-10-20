@@ -82,6 +82,10 @@ struct BoardCanvasView: View {
     // Image sizing constraints in world units (adjust as desired)
     private let maxImageDimensionWorld: CGFloat = 512
     private let minImageDimensionWorld: CGFloat = 64
+    /// How far (in screen points) the finger must come back past the anchor
+    /// before a flipped resize flips back. Stops the box flickering when
+    /// the finger rests on the anchor.
+    private let resizeFlipMarginPoints: CGFloat = 6
     private let insertionChunkSize = 48
     private let denseVisibleImageThreshold = 150
     private let maxDetailedImagesWhileInteracting = 120
@@ -138,6 +142,21 @@ struct BoardCanvasView: View {
     @State private var selection = CanvasSelectionState()
     @State private var currentDragMode: DragMode? = nil
     @State private var dragStartWorldPos: CGPoint? = nil
+    /// What a frame resize in progress will do to frame membership on
+    /// release. Recomputed once per drag update by `updateMembershipPreview`;
+    /// nil when no frame is being resized.
+    @State private var membershipPreview: MembershipPreview? = nil
+    /// The frame a dragged selection will land in, drawn in the drop-target
+    /// style while the finger moves. Nil when the drop changes no one's
+    /// frame. Set by `updateMoveDropPreview`, only when it changes.
+    @State private var dropTargetHighlightID: UUID? = nil
+    /// Membership-pass inputs that stay fixed for a whole drag or resize
+    /// (see `MembershipPassCache`).
+    @State private var membershipPassCache = MembershipPassCache()
+    /// True while the canvas drag gesture is live. SwiftUI resets it when
+    /// the gesture ends *or is cancelled*. `onEnded` doesn't run on a
+    /// cancel, so this is the only signal for that path.
+    @GestureState private var isCanvasDragActive = false
 
     // Undo/redo. `commandHistory` registers into the window's `UndoManager`
     // (found by `WindowUndoManagerReader` below), which is what gives us the
@@ -210,16 +229,24 @@ struct BoardCanvasView: View {
                     }
                     toolBehavior(for: activeTool).tappedEmpty(selection: selection)
                 }
+                .zIndex(CanvasLayerZ.grid)
+
+                // Frames sit in their own stack, below everything else, so
+                // no `zIndex` a frame carries can lift it over an image,
+                // text, or overview placeholder (see `CanvasLayerZ`).
+                ZStack { frameLayer() }
+                    .zIndex(CanvasLayerZ.frames)
 
                 if !renderPlan.overviewItems.isEmpty {
                     CanvasOverviewLayer(
                         items: overviewItems(renderPlan.overviewItems),
                         scale: camera.scale,
-                        offset: camera.offset
+                        offset: camera.offset,
+                        hints: membershipPreview?.hints ?? [:]
                     )
+                    .zIndex(CanvasLayerZ.overview)
                 }
 
-                frameLayer()
                 imageLayer(renderPlan: renderPlan)
                 textLayer()
                 frameTitleLayer()
@@ -251,6 +278,7 @@ struct BoardCanvasView: View {
                 // Group bounding box with resize handles
                 groupSelectionOverlayLayer()
             }
+            .environment(\.canvasIsDark, isCanvasDark)
             .overlay {
                 if placedImages.isEmpty && placedTexts.isEmpty && placedFrames.isEmpty {
                     EmptyCanvasOverlay()
@@ -273,6 +301,7 @@ struct BoardCanvasView: View {
                 canvasColor.ignoresSafeArea()
             }
             .background { outlinerSync }
+            .background { membershipPreviewSync }
             .onAppear {
                 canvasSize = geo.size
                 // Center the canvas on world origin (0, 0) on first appearance
@@ -420,6 +449,7 @@ struct BoardCanvasView: View {
             // Drag: routed through active tool behavior
             .gesture(
                 DragGesture(minimumDistance: 8)
+                    .updating($isCanvasDragActive) { _, active, _ in active = true }
                     .onChanged { value in
                         startInteraction()
                         if currentDragMode == nil {
@@ -548,26 +578,32 @@ struct BoardCanvasView: View {
                         } else if currentDragMode == .marqueeSelect {
                             commitMarqueeSelect()
                         }
-                        currentDragMode = nil
-                        dragStartOffset = nil
-                        dragStartWorldPos = nil
-                        selection.isDragging = false
-                        selection.dragOffset = .zero
-                        endInteraction()
+                        finishDrag()
                     }
             )
             .background(KeyModifierObserverView(monitor: keyModifiers))
             .background(TwoFingerPanView(onPan: handleTwoFingerPan))
             .background(PinchGestureView(onPinch: handlePinch))
             .background(WindowUndoManagerReader { commandHistory.attach($0) })
+            // A tap on Apple Pencil Pro each time a resize flips across its
+            // anchor. `.alignment` is Apple's canvas feedback (the SwiftUI
+            // side of `UICanvasFeedbackGenerator`); the system decides
+            // whether the hardware can play it, so on a finger it's silent.
+            .sensoryFeedback(.alignment, trigger: selection.resizeFlipCount)
         }
     }
 
     /// During a drag, lift the selected roots out of their old containers.
     /// Descendants still clip to the moving frame they travel with.
+    ///
+    /// During a frame resize, items about to join or leave clip as they
+    /// will after release (`membershipPreview`). Otherwise a leaving member
+    /// would be cut away by the shrinking frame, then pop back on release.
     private func frameClipRect(for id: UUID) -> CGRect? {
         let moving = selection.isDragging ? expandedElementIDs(for: selection.selectedIDs) : []
-        let ancestors = FrameGeometry.ancestors(of: parentFrameID(for: id), in: placedFrames)
+        let overrides = membershipPreview?.parents ?? [:]
+        let parentID = overrides[id] ?? parentFrameID(for: id)
+        let ancestors = FrameGeometry.ancestors(of: parentID, in: placedFrames, parentOverrides: overrides)
         var clip: CGRect?
         for frame in ancestors {
             if moving.contains(id) && !moving.contains(frame.id) { break }
@@ -612,6 +648,41 @@ struct BoardCanvasView: View {
     /// The tree is rebuilt only when the board's contents change, not on
     /// every redraw: pans, zooms, and drags redraw constantly but don't touch
     /// these arrays.
+    /// Clears the live join/leave tints whenever a resize stops, however it
+    /// stops. They used to be cleared only in `commitGroupResize`, so a
+    /// resize that ended any other way left tints and preview clips stuck on
+    /// screen. The paths:
+    ///
+    /// - The resize commits or is abandoned: `clearGroupResize` flips
+    ///   `isGroupResizing` to false.
+    /// - The drag is cancelled (the system takes the touch): `onEnded` never
+    ///   runs, but `isCanvasDragActive` resets.
+    /// - An undo or redo lands mid-drag: `perform` clears the preview, and
+    ///   the next drag update rebuilds it against the changed board.
+    ///
+    /// The cancelled-drag path also rolls the whole drag back
+    /// (`rollBackCancelledDrag`). It waits one main-actor turn first. A
+    /// normal release runs `onEnded` and resets `isCanvasDragActive` in the
+    /// same event, and `onEnded` must commit before anything is rolled
+    /// back. By the time the deferred check runs, `onEnded` has cleared
+    /// `currentDragMode`, so the rollback finds nothing to do. If a new drag
+    /// has started by then, `isCanvasDragActive` is true again and the
+    /// check stands down.
+    private var membershipPreviewSync: some View {
+        Color.clear
+            .onChange(of: selection.isGroupResizing) { _, resizing in
+                if !resizing { setMembershipPreview(nil) }
+            }
+            .onChange(of: isCanvasDragActive) { _, active in
+                guard !active else { return }
+                Task { @MainActor in
+                    guard !isCanvasDragActive else { return }
+                    rollBackCancelledDrag()
+                }
+            }
+            .accessibilityHidden(true)
+    }
+
     private var outlinerSync: some View {
         Color.clear
             .onChange(of: placedImages) { scheduleOutlineRebuild() }
@@ -630,14 +701,23 @@ struct BoardCanvasView: View {
             .accessibilityHidden(true)
     }
 
+    /// Whether the canvas color is dark. Drives `\.canvasIsDark` for the
+    /// views drawn on the canvas.
+    private var isCanvasDark: Bool {
+        DesignSystem.Colors.isDark(canvasColor.resolve(in: environment))
+    }
+
     @ViewBuilder
     private func frameLayer() -> some View {
         // Unpicked frames follow the canvas color (see `FrameFill`).
         let defaultFill = FrameFill.defaultHex(onCanvas: canvasColor.resolve(in: environment))
-        let sortedFrames = placedFrames.sorted { $0.zIndex < $1.zIndex }
+        // Parents below children (`FrameGeometry.drawOrder`). The position in
+        // that order is the frame's rank inside the frames-only stack.
+        let orderedFrames = Array(framesInDrawOrder().enumerated())
         let highlightedIDs = expandedElementIDs(for: selection.selectedIDs)
         let movingIDs = selection.isDragging ? expandedElementIDs(for: selection.selectedIDs) : []
-        ForEach(sortedFrames, id: \.id) { frame in
+        let hints = membershipPreview?.hints ?? [:]
+        ForEach(orderedFrames, id: \.element.id) { rank, frame in
             let isSelected = highlightedIDs.contains(frame.id)
             let liveDX = (movingIDs.contains(frame.id)) ? selection.dragOffset.width * camera.scale : 0
             let liveDY = (movingIDs.contains(frame.id)) ? selection.dragOffset.height * camera.scale : 0
@@ -652,7 +732,11 @@ struct BoardCanvasView: View {
                 screenRect: screenRect,
                 fillHex: frame.fillHex ?? defaultFill,
                 isSelected: isSelected,
-                zIndex: frame.zIndex
+                // The frame a drag is about to land in gets its own,
+                // heavier look, so it never matches the dragged frame.
+                isDropTarget: frame.id == dropTargetHighlightID,
+                zIndex: rank,
+                hint: hints[frame.id]
             )
             // `CanvasPlacedFrameView` ends in `.position`, which fills the
             // canvas, so this mask is in canvas coordinates, the same space
@@ -671,13 +755,13 @@ struct BoardCanvasView: View {
     ///
     /// Two pills can overlap, such as a nested frame near its parent's top
     /// edge. A tap goes to the pill drawn last, and `frameTitleLayer` draws
-    /// them in `zIndex` order. So the hit items rank the same way: the
-    /// frame with the highest `zIndex` gets the highest rank. Before, every
+    /// them in draw order (`framesInDrawOrder`). So the hit items rank the
+    /// same way: the frame drawn last gets the highest rank. Before, every
     /// pill had the same rank, so a drag could grab a different frame from
     /// the one a tap on the same spot selected.
     private func frameTitleHitItems() -> [HitTestItem] {
         let scale = camera.scale
-        let frames = framesInTitleOrder()
+        let frames = framesInDrawOrder()
         return frames.enumerated().compactMap { index, frame in
             guard let width = frameTitleWidths[frame.id], scale > 0 else { return nil }
             let rect = CGRect(
@@ -691,9 +775,10 @@ struct BoardCanvasView: View {
         }
     }
 
-    /// Frames in the order their name pills are drawn, bottom to top.
-    private func framesInTitleOrder() -> [PlacedFrame] {
-        placedFrames.sorted { $0.zIndex < $1.zIndex }
+    /// Frames bottom to top: each parent before its children, siblings by
+    /// `zIndex`. Frame boxes and their name pills both draw in this order.
+    private func framesInDrawOrder() -> [PlacedFrame] {
+        FrameGeometry.drawOrder(placedFrames)
     }
 
     /// Height of the strip above each frame that holds its name pill. It
@@ -708,7 +793,7 @@ struct BoardCanvasView: View {
     @ViewBuilder
     private func frameTitleLayer() -> some View {
         let movingIDs = selection.isDragging ? expandedElementIDs(for: selection.selectedIDs) : []
-        ForEach(framesInTitleOrder()) { frame in
+        ForEach(framesInDrawOrder()) { frame in
             let liveDX = movingIDs.contains(frame.id) ? selection.dragOffset.width * camera.scale : 0
             let liveDY = movingIDs.contains(frame.id) ? selection.dragOffset.height * camera.scale : 0
             let minX = frame.worldRect.minX * camera.scale + camera.offset.width + liveDX
@@ -718,6 +803,7 @@ struct BoardCanvasView: View {
             FrameTitlePill(
                 title: frame.title,
                 isSelected: selection.selectedIDs.contains(frame.id),
+                isDropTarget: frame.id == dropTargetHighlightID,
                 onSelect: { handleItemTap(frame.id, refreshAfterSelection: false) },
                 onRename: { renameAsset(id: frame.id, title: $0) }
             )
@@ -729,7 +815,7 @@ struct BoardCanvasView: View {
             // past the frame.
             .frame(width: rowWidth, height: frameTitleRowHeight, alignment: .bottomLeading)
             .position(x: minX + rowWidth / 2, y: minY - frameTitleRowHeight / 2)
-            .zIndex(Double(Int.max - 3))
+            .zIndex(CanvasLayerZ.frameTitles)
         }
     }
 
@@ -772,8 +858,9 @@ struct BoardCanvasView: View {
                 clipRect: screenFrameClipRect(for: item.id),
                 isSelected: isSelected,
                 isMultiSelected: multiSelected,
-                activeHandle: selection.resizeHandle,
+                activeHandle: selection.displayedResizeHandle,
                 zIndex: item.zIndex,
+                hint: membershipPreview?.hints[item.id],
                 onTap: { handleItemTap(item.id, refreshAfterSelection: true) }
             )
         }
@@ -802,6 +889,7 @@ struct BoardCanvasView: View {
                 scale: camera.scale,
                 position: position,
                 clipRect: screenFrameClipRect(for: placed.id),
+                hint: membershipPreview?.hints[id],
                 isEditing: isEditing,
                 isSelected: isSelected,
                 isMultiSelected: isMultiSelected,
@@ -826,7 +914,7 @@ struct BoardCanvasView: View {
             onRemoveFrame: selectedFrameID == nil ? nil : { removeSelectedFrame() },
             onDelete: { deleteSelection() }
         )
-        .zIndex(Double(Int.max - 1))
+        .zIndex(CanvasLayerZ.actionBar)
     }
 
     private var selectionActionBarCreateFrameAction: (() -> Void)? {
@@ -859,12 +947,12 @@ struct BoardCanvasView: View {
             )
             SelectionOverlay(
                 handles: TextElementView.textHandles,
-                activeHandle: selection.resizeHandle
+                activeHandle: selection.displayedResizeHandle
             )
             .frame(width: screenRect.width, height: screenRect.height)
             .position(x: screenRect.midX, y: screenRect.midY)
             .allowsHitTesting(false)
-            .zIndex(Double(Int.max - 2))
+            .zIndex(CanvasLayerZ.selectionChrome)
         }
     }
 
@@ -883,7 +971,7 @@ struct BoardCanvasView: View {
                 lineWidth: 1.5,
                 color: DesignSystem.Colors.tertiary
             )
-            .zIndex(Double(Int.max - 2))
+            .zIndex(CanvasLayerZ.selectionChrome)
         }
     }
 
@@ -903,11 +991,11 @@ struct BoardCanvasView: View {
                 width: worldRect.width * camera.scale,
                 height: worldRect.height * camera.scale
             )
-            GroupSelectionOverlay(activeHandle: selection.resizeHandle)
+            GroupSelectionOverlay(activeHandle: selection.displayedResizeHandle)
                 .frame(width: screenRect.width, height: screenRect.height)
                 .position(x: screenRect.midX, y: screenRect.midY)
                 .allowsHitTesting(false)
-                .zIndex(Double(Int.max - 2))
+                .zIndex(CanvasLayerZ.selectionChrome)
         }
     }
 
@@ -922,7 +1010,7 @@ struct BoardCanvasView: View {
             )
             MarqueeOverlayView(screenRect: screenRect)
                 .allowsHitTesting(false)
-                .zIndex(Double(Int.max - 1))
+                .zIndex(CanvasLayerZ.marquee)
         }
     }
 
@@ -941,12 +1029,12 @@ struct BoardCanvasView: View {
                 )
                 GroupSelectionOverlay(
                     handles: HandlePosition.corners,
-                    activeHandle: selection.resizeHandle
+                    activeHandle: selection.displayedResizeHandle
                 )
                     .frame(width: screenRect.width, height: screenRect.height)
                     .position(x: screenRect.midX, y: screenRect.midY)
                     .allowsHitTesting(false)
-                    .zIndex(Double(Int.max))
+                    .zIndex(CanvasLayerZ.groupSelection)
             }
         }
     }
@@ -1233,6 +1321,7 @@ struct BoardCanvasView: View {
             let worldDY = value.translation.height / camera.scale
             selection.dragOffset = CGSize(width: worldDX, height: worldDY)
             selection.isDragging = true
+            updateMoveDropPreview()
         case .resizeItem:
             if selection.isTextResizing {
                 applyTextResize(translation: value.translation)
@@ -1254,89 +1343,42 @@ struct BoardCanvasView: View {
 
     // MARK: - Resize Logic
 
-    /// Pure function: compute a new rect from a handle drag on a reference rect.
-    /// Pure resize-rect math. `minDimension` lets text resize use its
-    /// own (smaller) floor — for images the default `minImageDimensionWorld`
-    /// (64) prevents ugly tiny photos; for text we want the rect to be
-    /// allowed to shrink down to whatever world width corresponds to the
-    /// text's own minimum font size.
-    private func computeResizedRect(
+    /// Runs `ResizeGeometry.resizedRect` with the live drag's flip state,
+    /// saves the new state, and bumps `resizeFlipCount` when either axis
+    /// flipped so the Pencil Pro haptic plays.
+    ///
+    /// `minDimension` lets text resize use its own (smaller) floor. For
+    /// images the default `minImageDimensionWorld` (64) prevents ugly tiny
+    /// photos. For text the rect may shrink down to whatever world width
+    /// matches the text's own minimum font size.
+    private func resizedRectTrackingFlip(
         handle: HandlePosition,
         startRect: CGRect,
         translation: CGSize,
         minDimension: CGFloat? = nil,
         lockAspectRatio: Bool = true
-    ) -> CGRect? {
-        let worldDX = translation.width / camera.scale
-        let worldDY = translation.height / camera.scale
-        let minDim = minDimension ?? minImageDimensionWorld
-
-        let anchorPos = handle.anchorPosition
-        let anchorPt = anchorPos.point(in: startRect.size)
-        let anchorWorld = CGPoint(
-            x: startRect.origin.x + anchorPt.x,
-            y: startRect.origin.y + anchorPt.y
+    ) -> CGRect {
+        let result = ResizeGeometry.resizedRect(
+            handle: handle, startRect: startRect, translation: translation,
+            flipped: (selection.resizeFlippedX, selection.resizeFlippedY),
+            scale: camera.scale, flipMarginPoints: resizeFlipMarginPoints,
+            minDimension: minDimension ?? minImageDimensionWorld,
+            lockAspectRatio: lockAspectRatio
         )
-
-        let handlePt = handle.point(in: startRect.size)
-        let draggedWorld = CGPoint(
-            x: startRect.origin.x + handlePt.x + worldDX,
-            y: startRect.origin.y + handlePt.y + worldDY
-        )
-
-        if handle.isCorner {
-            let aspect = startRect.width / max(startRect.height, 0.001)
-            var rawW = abs(draggedWorld.x - anchorWorld.x)
-            var rawH = abs(draggedWorld.y - anchorWorld.y)
-
-            if lockAspectRatio {
-                if rawW / max(aspect, 0.001) > rawH {
-                    rawH = rawW / aspect
-                } else {
-                    rawW = rawH * aspect
-                }
-            }
-
-            rawW = max(rawW, minDim)
-            rawH = max(rawH, lockAspectRatio ? minDim / max(aspect, 0.001) : minDim)
-
-            let originX = handle.isLeftSide ? anchorWorld.x - rawW : anchorWorld.x
-            let originY = handle.isTopSide ? anchorWorld.y - rawH : anchorWorld.y
-            return CGRect(x: originX, y: originY, width: rawW, height: rawH)
-        } else {
-            var newOrigin = startRect.origin
-            var newSize = startRect.size
-
-            switch handle {
-            case .topCenter:
-                let newTop = min(draggedWorld.y, anchorWorld.y - minDim)
-                newSize.height = anchorWorld.y - newTop
-                newOrigin.y = newTop
-            case .bottomCenter:
-                let newBottom = max(draggedWorld.y, anchorWorld.y + minDim)
-                newSize.height = newBottom - anchorWorld.y
-                newOrigin.y = anchorWorld.y
-            case .leftCenter:
-                let newLeft = min(draggedWorld.x, anchorWorld.x - minDim)
-                newSize.width = anchorWorld.x - newLeft
-                newOrigin.x = newLeft
-            case .rightCenter:
-                let newRight = max(draggedWorld.x, anchorWorld.x + minDim)
-                newSize.width = newRight - anchorWorld.x
-                newOrigin.x = anchorWorld.x
-            default:
-                return nil
-            }
-
-            return CGRect(origin: newOrigin, size: newSize)
+        if result.flipped.x != selection.resizeFlippedX || result.flipped.y != selection.resizeFlippedY {
+            selection.resizeFlippedX = result.flipped.x
+            selection.resizeFlippedY = result.flipped.y
+            selection.resizeFlipCount &+= 1
         }
+        return result.rect
     }
 
     private func applyResize(translation: CGSize) {
         guard let handle = selection.resizeHandle,
-              let startRect = selection.resizeStartRect,
-              let newRect = computeResizedRect(handle: handle, startRect: startRect, translation: translation) else { return }
-        selection.resizeCurrentRect = newRect
+              let startRect = selection.resizeStartRect else { return }
+        selection.resizeCurrentRect = resizedRectTrackingFlip(
+            handle: handle, startRect: startRect, translation: translation
+        )
     }
 
     private func commitResize() {
@@ -1353,7 +1395,17 @@ struct BoardCanvasView: View {
             return
         }
 
-        execute(.resize(elementID: elementID, fromRect: startRect, toRect: newRect))
+        // The image's center moved, so its frame is checked again.
+        let memberships = membershipCandidate(for: elementID).map { candidate in
+            FrameGeometry.reassign(
+                changed: [MembershipCandidate(id: elementID, rect: newRect,
+                                              parentID: candidate.parentID, isFrame: candidate.isFrame)],
+                frames: placedFrames
+            )
+        }
+        let previous = previousParents(for: memberships ?? [])
+        execute(.resize(elementID: elementID, fromRect: startRect, toRect: newRect, memberships: memberships))
+        announceMembershipChanges(memberships ?? [], previousParents: previous)
         selection.clearResize()
     }
 
@@ -1391,8 +1443,13 @@ struct BoardCanvasView: View {
 
     private func applyGroupResize(translation: CGSize) {
         guard let handle = selection.resizeHandle,
-              let bboxStart = selection.groupResizeBBoxStart,
-              let newBBox = computeResizedRect(handle: handle, startRect: bboxStart, translation: translation, lockAspectRatio: selectedFrameID == nil) else { return }
+              let bboxStart = selection.groupResizeBBoxStart else { return }
+        // A flipped bbox is still a normal positive rect, so `scaledRect`
+        // keeps each item's place in the group without mirroring it.
+        let newBBox = resizedRectTrackingFlip(
+            handle: handle, startRect: bboxStart, translation: translation,
+            lockAspectRatio: selectedFrameID == nil
+        )
         selection.groupResizeBBoxCurrent = newBBox
 
         // Only explicitly selected elements resize. A frame never scales its descendants.
@@ -1436,9 +1493,126 @@ struct BoardCanvasView: View {
                 placedTexts[idx].worldRect.origin = newOrigin
             }
         }
+
+        updateMembershipPreview()
+    }
+
+    /// Recomputes the live join/leave tint once per drag update, after the
+    /// live rects above are in place. Only a resize that includes a frame
+    /// shows it; resizing images alone can't pull anything in.
+    private func updateMembershipPreview() {
+        // Skip the pass when no frame is part of this resize.
+        guard selection.isGroupResizing, !groupResizeCache().resizedFrameIDs.isEmpty else {
+            setMembershipPreview(nil)
+            return
+        }
+        let input = groupResizeMembershipInput()
+        setMembershipPreview(FrameGeometry.membershipPreview(
+            changed: input.changed, touched: input.touched,
+            resizedFrameIDs: input.resizedFrameIDs, frames: placedFrames
+        ))
+    }
+
+    /// Stores `preview` only when it differs. Most drag updates leave every
+    /// item's frame as it was, and writing an equal value would still redraw
+    /// every view that reads `membershipPreview`.
+    private func setMembershipPreview(_ preview: MembershipPreview?) {
+        if membershipPreview != preview { membershipPreview = preview }
+    }
+
+    /// The membership pass for the group resize in progress, read from the
+    /// live board (`applyGroupResize` has already moved everything).
+    ///
+    /// Every resized item had its geometry change, so each gets the full
+    /// rule. Each resized frame also re-checks every item its old or new
+    /// bounds touch, frames included (see `FrameGeometry.reassign`). The
+    /// pass runs once, after all rects are final, so overlapping resized
+    /// frames settle ties by the innermost-frame rule.
+    private func groupResizeMemberships() -> [FrameMembership] {
+        let input = groupResizeMembershipInput()
+        return FrameGeometry.reassign(
+            changed: input.changed, touched: input.touched,
+            resizedFrameIDs: input.resizedFrameIDs, frames: placedFrames
+        )
+    }
+
+    /// The items the group-resize pass looks at: the resized items
+    /// themselves (`changed`), and everything a resized frame's old or new
+    /// bounds overlap (`touched`).
+    ///
+    /// This runs on every finger move, and Apple Pencil can send 240 a
+    /// second, so it doesn't sweep the board. What stays fixed for the
+    /// whole resize comes from `groupResizeCache()`. Per update it only
+    /// works out the resized items' current rects and tests the cached
+    /// still items against the touch areas.
+    private func groupResizeMembershipInput() -> (
+        changed: [MembershipCandidate], touched: [MembershipCandidate], resizedFrameIDs: Set<UUID>
+    ) {
+        let cache = groupResizeCache()
+        let bboxStart = selection.groupResizeBBoxStart
+        let bboxCurrent = selection.groupResizeBBoxCurrent
+        // The same rect `applyGroupResize` wrote to the board.
+        func currentRect(_ start: CGRect) -> CGRect {
+            guard let bboxStart, let bboxCurrent else { return start }
+            return scaledRect(original: start, bboxStart: bboxStart, bboxCurrent: bboxCurrent)
+        }
+
+        var changed: [MembershipCandidate] = []
+        var touchAreas: [CGRect] = []
+        for item in cache.rectItems {
+            let rect = currentRect(item.rect)
+            changed.append(MembershipCandidate(id: item.id, rect: rect, parentID: item.parentID, isFrame: item.isFrame))
+            if item.isFrame {
+                touchAreas.append(item.rect)
+                touchAreas.append(rect)
+            }
+        }
+        // A text's size is measured after layout, so read it from the board.
+        // The cached index is checked first; a search is only the fallback.
+        for text in cache.texts {
+            let index = placedTexts.indices.contains(text.index) && placedTexts[text.index].id == text.id
+                ? text.index
+                : placedTexts.firstIndex(where: { $0.id == text.id })
+            guard let index else { continue }
+            changed.append(MembershipCandidate(id: text.id, rect: placedTexts[index].worldRect,
+                                               parentID: text.parentID, isFrame: false))
+        }
+
+        let touched = touchAreas.isEmpty ? [] : cache.others.filter { candidate in
+            touchAreas.contains { $0.intersects(candidate.rect) }
+        }
+        return (changed, touched, cache.resizedFrameIDs)
+    }
+
+    /// The fixed part of the group-resize pass, built from one sweep of the
+    /// board on the first update and reused until `finishDrag` or `perform`
+    /// clears it. Nothing in it changes while the finger moves: the start
+    /// rects are snapshots, items that aren't resized stay put, and parents
+    /// only change on commit or undo.
+    private func groupResizeCache() -> MembershipPassCache.GroupResize {
+        if let cached = membershipPassCache.groupResize { return cached }
+        let startRects = selection.groupResizeStartRects ?? [:]
+        let textIDs = Set((selection.groupResizeTextStartStates ?? [:]).keys)
+
+        var built = MembershipPassCache.GroupResize()
+        for (index, text) in placedTexts.enumerated() where textIDs.contains(text.id) {
+            built.texts.append((id: text.id, parentID: text.parentFrameID, index: index))
+        }
+        forEachMembershipCandidate { candidate in
+            if let start = startRects[candidate.id] {
+                built.rectItems.append(MembershipCandidate(id: candidate.id, rect: start,
+                                                           parentID: candidate.parentID, isFrame: candidate.isFrame))
+                if candidate.isFrame { built.resizedFrameIDs.insert(candidate.id) }
+            } else if !textIDs.contains(candidate.id) {
+                built.others.append(candidate)
+            }
+        }
+        membershipPassCache.groupResize = built
+        return built
     }
 
     private func commitGroupResize() {
+        defer { membershipPreview = nil }
         guard let bboxStart = selection.groupResizeBBoxStart,
               let bboxCurrent = selection.groupResizeBBoxCurrent,
               bboxStart != bboxCurrent else {
@@ -1465,10 +1639,16 @@ struct BoardCanvasView: View {
             )
         }
 
+        // Read before `execute`: the live drag already put every rect at
+        // its final spot, which is what the pass needs.
+        let memberships = groupResizeMemberships()
+        let previous = previousParents(for: memberships)
         execute(.groupResize(
             fromRects: startRects, toRects: toRects,
-            fromTextStates: startTextStates, toTextStates: toTextStates
+            fromTextStates: startTextStates, toTextStates: toTextStates,
+            memberships: memberships
         ))
+        announceMembershipChanges(memberships, previousParents: previous)
         selection.clearGroupResize()
     }
 
@@ -1483,11 +1663,20 @@ struct BoardCanvasView: View {
     /// in-memory mutations synchronously and batch every store write into
     /// one `enqueueStoreMutation`, so cancellation only kills work that
     /// hasn't been fully prepared yet.
+    ///
+    /// Frame changes from the same gesture (`memberships`) ride in that same
+    /// write, for the same reason. They can name items that didn't resize,
+    /// such as an image a growing frame pulled in.
     private func applyGroupResizeApply(
         rects: [UUID: CGRect],
-        textStates: [UUID: TextResizeSnapshot]
+        textStates: [UUID: TextResizeSnapshot],
+        memberships: [FrameMembership] = []
     ) {
-        guard !rects.isEmpty || !textStates.isEmpty else { return }
+        guard !rects.isEmpty || !textStates.isEmpty || !memberships.isEmpty else { return }
+        // Parents first, so the text elements built below carry them.
+        applyParentsInMemory(memberships)
+        let parentByID = Dictionary(memberships.map { ($0.elementID, $0.parentID) },
+                                    uniquingKeysWith: { _, last in last })
 
         // ── In-memory mutations (sync) ─────────────────────────────
         // Rect-backed elements: images and frames. Text is handled via
@@ -1521,17 +1710,21 @@ struct BoardCanvasView: View {
         }
 
         // ── Single batched store mutation ──────────────────────────
-        let rectBackedIDs = Array(rectBackedRects.keys)
+        // Everything not covered by a pre-built text element is fetched:
+        // resized images and frames, plus any item whose frame changed.
+        let prebuiltTextIDs = Set(textElements.map(\.id))
+        let fetchIDs = Array(Set(rectBackedRects.keys).union(parentByID.keys).subtracting(prebuiltTextIDs))
         enqueueStoreMutation { store in
             var updated: [CMCanvasElement] = []
-            updated.reserveCapacity(rectBackedIDs.count + textElements.count)
+            updated.reserveCapacity(fetchIDs.count + textElements.count)
 
             // Images/frames: fetch authoritative elements, mutate bounds
-            // and, for images, payload size.
-            if !rectBackedIDs.isEmpty {
-                let fetched = await store.elements(for: rectBackedIDs)
-                for (id, rect) in rectBackedRects {
-                    if var element = fetched[id] {
+            // and, for images, payload size. Then the new parent, if any.
+            if !fetchIDs.isEmpty {
+                let fetched = await store.elements(for: fetchIDs)
+                for id in fetchIDs {
+                    guard var element = fetched[id] else { continue }
+                    if let rect = rectBackedRects[id] {
                         element.header.bounds = CMWorldRect(
                             origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
                             size: SIMD2<Double>(Double(rect.width), Double(rect.height))
@@ -1542,8 +1735,11 @@ struct BoardCanvasView: View {
                                 size: SIMD2<Double>(Double(rect.width), Double(rect.height))
                             )
                         }
-                        updated.append(element)
                     }
+                    if let parentID = parentByID[id] {
+                        element.header.parentID = parentID
+                    }
+                    updated.append(element)
                 }
             }
 
@@ -1598,10 +1794,10 @@ struct BoardCanvasView: View {
             // own floor, producing a visible "snap" when the user tries
             // to shrink small text past ~64 world units.
             let minDimForText = startRect.width * (minTextFontSize / max(startFontSize, 0.001))
-            guard let newRect = computeResizedRect(
+            let newRect = resizedRectTrackingFlip(
                 handle: handle, startRect: startRect, translation: translation,
                 minDimension: minDimForText
-            ) else { return }
+            )
             let factor = newRect.width / max(startRect.width, 0.001)
             placedTexts[idx].fontSize = max(minTextFontSize, startFontSize * factor)
             if let startWrap = startWrapWidth {
@@ -1652,14 +1848,23 @@ struct BoardCanvasView: View {
             return
         }
 
+        // The text's center moved, so its frame is checked again. Its size
+        // is the last measured one, at most one layout pass behind.
+        let memberships = membershipCandidate(for: id).map {
+            FrameGeometry.reassign(changed: [$0], frames: placedFrames)
+        }
+
         // The live drag already mutated `placedTexts`; running the command
         // re-applies the same values and does the store upsert.
+        let previous = previousParents(for: memberships ?? [])
         execute(.resizeText(
             elementID: id,
             fromFontSize: startFontSize, toFontSize: toFontSize,
             fromWrapWidth: startWrapWidth, toWrapWidth: toWrapWidth,
-            fromOrigin: startRect.origin, toOrigin: toOrigin
+            fromOrigin: startRect.origin, toOrigin: toOrigin,
+            memberships: memberships
         ))
+        announceMembershipChanges(memberships ?? [], previousParents: previous)
     }
 
     /// Restore a text element's resize-affected state (used by undo/redo
@@ -1669,12 +1874,16 @@ struct BoardCanvasView: View {
         elementID: UUID,
         fontSize: CGFloat,
         wrapWidth: CGFloat?,
-        origin: CGPoint
+        origin: CGPoint,
+        memberships: [FrameMembership] = []
     ) {
         guard let idx = placedTexts.firstIndex(where: { $0.id == elementID }) else { return }
         placedTexts[idx].fontSize = fontSize
         placedTexts[idx].wrapWidth = wrapWidth
         placedTexts[idx].worldRect.origin = origin
+        // Only this text resized, so the only change can be its own frame,
+        // which the element built below then carries.
+        applyParentsInMemory(memberships)
         let placed = placedTexts[idx]
         let element = fallbackTextElement(for: placed)
         enqueueStoreMutation { store in
@@ -1717,35 +1926,198 @@ struct BoardCanvasView: View {
     }
 
     private func commitMove() {
-        let dx = selection.dragOffset.width
-        let dy = selection.dragOffset.height
-        guard dx != 0 || dy != 0 else { return }
+        let delta = selection.dragOffset
+        guard delta.width != 0 || delta.height != 0 else { return }
 
         let idsToMove = selection.selectedIDs
+        let memberships = moveDrop(for: idsToMove, delta: delta)?.memberships ?? []
+        let previous = previousParents(for: memberships)
         execute(.move(
             elementIDs: idsToMove,
-            delta: CGSize(width: dx, height: dy),
-            memberships: dropMemberships(for: idsToMove, delta: CGSize(width: dx, height: dy))
+            delta: delta,
+            memberships: memberships
         ))
+        announceMembershipChanges(memberships, previousParents: previous)
     }
 
-    /// Which frame a dragged selection lands in. The whole selection moves
-    /// as one, so it gets one answer: the innermost frame under the finger
-    /// where the drag ended (Figma's rule). Deciding per item split a
-    /// selection that straddled a frame edge, with some items leaving the
-    /// frame and others staying.
+    /// Each changed item's frame right now, read before a commit applies
+    /// `changes`, so the announcement can say what each item left.
+    private func previousParents(for changes: [FrameMembership]) -> [UUID: UUID?] {
+        var result: [UUID: UUID?] = [:]
+        for candidate in membershipCandidates(for: Set(changes.map(\.elementID))) {
+            result[candidate.id] = candidate.parentID
+        }
+        return result
+    }
+
+    /// Tells VoiceOver which frames gained or lost items, after a commit
+    /// that changed them (`FrameMembershipAnnouncement`). The on-screen
+    /// hints only reach people who can see them. Says nothing when no
+    /// frame changed.
+    private func announceMembershipChanges(_ changes: [FrameMembership], previousParents: [UUID: UUID?]) {
+        guard !changes.isEmpty else { return }
+        let names = Dictionary(placedFrames.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+        guard let message = FrameMembershipAnnouncement.message(
+            for: changes, previousParents: previousParents, frameNames: names
+        ) else { return }
+        AccessibilityNotification.Announcement(message).post()
+    }
+
+    /// What dropping the dragged selection at `delta` does to frame
+    /// membership (`FrameGeometry.moveDrop`). Two things can change:
+    ///
+    /// - The dragged roots get one answer for the whole selection, from the
+    ///   finger's drop point, so a selection dropped across a frame edge
+    ///   stays together. Their contents travel with them and keep their frames.
+    /// - Each dragged frame captures still items centered inside its final
+    ///   rect, if it is now the innermost frame around them.
+    ///
+    /// Frames being dragged can't be the target, which stops a frame
+    /// landing inside itself. Every other frame stays put, so its current
+    /// rect is where it will be after the drop.
     ///
     /// Nil when there's no finger position (shouldn't happen for a drag),
-    /// which falls back to `applyMoveDelta`'s per-item check.
-    private func dropMemberships(for ids: Set<UUID>, delta: CGSize) -> [FrameMembership]? {
+    /// which leaves every frame as it was.
+    ///
+    /// This runs on every finger move, and Apple Pencil can send 240 a
+    /// second. The parts that don't change during a drag come from
+    /// `moveDropCache(for:)`, so each update only shifts the dragged rects
+    /// by `delta`.
+    private func moveDrop(for ids: Set<UUID>, delta: CGSize) -> FrameGeometry.MoveDrop? {
         guard let start = dragStartWorldPos else { return nil }
         let finger = CGPoint(x: start.x + delta.width, y: start.y + delta.height)
-        // Frames being dragged can't receive the drop. Every other frame
-        // stays put, so their current rects are where they'll be after.
-        let target = FrameGeometry.dropTarget(
-            at: finger, frames: placedFrames, excluding: expandedElementIDs(for: ids)
+        let cache = moveDropCache(for: ids)
+
+        var frames = cache.frames
+        for index in cache.movingFrameIndices {
+            frames[index].worldRect = frames[index].worldRect.offsetBy(dx: delta.width, dy: delta.height)
+        }
+        let roots = cache.roots.map { root in
+            MembershipCandidate(id: root.id, rect: root.rect.offsetBy(dx: delta.width, dy: delta.height),
+                                parentID: root.parentID, isFrame: root.isFrame)
+        }
+        return FrameGeometry.moveDrop(
+            roots: roots, stationary: cache.stationary,
+            finger: finger, frames: frames, moving: cache.moving
         )
-        return selectionRoots(ids).map { FrameMembership(elementID: $0, parentID: target) }
+    }
+
+    /// The fixed part of `moveDrop`, built from one sweep of the board on
+    /// the first update of a drag and reused until `finishDrag` or
+    /// `perform` clears it. During a drag nothing moves on the board itself
+    /// (only `selection.dragOffset` changes), so the moving set, the roots'
+    /// start rects, the still items, and the frames all stay the same.
+    /// Rebuilt if the selection changes mid-drag.
+    private func moveDropCache(for ids: Set<UUID>) -> MembershipPassCache.Move {
+        if let cached = membershipPassCache.move, cached.ids == ids { return cached }
+        let moving = expandedElementIDs(for: ids)
+        let rootIDs = selectionRoots(ids)
+        let frames = placedFrames
+        let movingFrameIndices = frames.indices.filter { moving.contains(frames[$0].id) }
+
+        // Still items are only collected when a frame moves, since nothing
+        // else can capture them.
+        var roots: [MembershipCandidate] = []
+        var stationary: [MembershipCandidate] = []
+        forEachMembershipCandidate { candidate in
+            if rootIDs.contains(candidate.id) {
+                roots.append(candidate)
+            } else if !movingFrameIndices.isEmpty, !moving.contains(candidate.id) {
+                stationary.append(candidate)
+            }
+        }
+        let built = MembershipPassCache.Move(
+            ids: ids, moving: moving, roots: roots, stationary: stationary,
+            frames: frames, movingFrameIndices: movingFrameIndices
+        )
+        membershipPassCache.move = built
+        return built
+    }
+
+    /// Recomputes, once per finger move, what the drop would do right now:
+    /// the joining tint on items a dragged frame would capture, and the
+    /// highlight on the frame the selection would land in. Each is stored
+    /// only when it changed, so a drag that changes nobody's frame doesn't
+    /// redraw the views that read them.
+    private func updateMoveDropPreview() {
+        let drop = moveDrop(for: selection.selectedIDs, delta: selection.dragOffset)
+        setMembershipPreview(drop?.capturePreview)
+        setDropTargetHighlight(drop?.highlightedTarget)
+    }
+
+    private func setDropTargetHighlight(_ id: UUID?) {
+        if dropTargetHighlightID != id { dropTargetHighlightID = id }
+    }
+
+    /// Clears the per-drag state. Runs when a drag ends, after any commit,
+    /// and when a cancelled drag is rolled back.
+    private func finishDrag() {
+        currentDragMode = nil
+        dragStartOffset = nil
+        dragStartWorldPos = nil
+        selection.isDragging = false
+        selection.dragOffset = .zero
+        setMembershipPreview(nil)
+        setDropTargetHighlight(nil)
+        membershipPassCache.clear()
+        endInteraction()
+    }
+
+    /// Puts the board back the way it was before a drag the system
+    /// cancelled, and records no undo step.
+    ///
+    /// A cancel (for example a system gesture taking the touch) never runs
+    /// `onEnded`, so no commit cleans up. Without this, resize handles,
+    /// start rects, flip flags, the drag offset, or a marquee stayed set,
+    /// and the next drag started from that leftover state.
+    ///
+    /// Moves, single-image resizes, and marquees only change selection
+    /// state while live, so clearing that state is enough. Two kinds of
+    /// resize change the board itself as the finger moves, so their start
+    /// values are written back first:
+    ///
+    /// - Text resize changes the text's font size, wrap width, and origin.
+    /// - Group resize (and a single frame's resize) changes rects in
+    ///   `placedImages`, `visibleImages`, and `placedFrames`, and text
+    ///   font sizes, wrap widths, and origins.
+    ///
+    /// Live edits never reach the store, so nothing is written there.
+    private func rollBackCancelledDrag() {
+        guard currentDragMode != nil else { return }
+
+        if let id = selection.textResizeElementID,
+           let fontSize = selection.textResizeStartFontSize,
+           let startRect = selection.textResizeStartWorldRect,
+           let index = placedTexts.firstIndex(where: { $0.id == id }) {
+            placedTexts[index].fontSize = fontSize
+            placedTexts[index].wrapWidth = selection.textResizeStartWrapWidth
+            placedTexts[index].worldRect.origin = startRect.origin
+        }
+        if let startRects = selection.groupResizeStartRects {
+            for index in placedImages.indices {
+                if let rect = startRects[placedImages[index].id] { placedImages[index].worldRect = rect }
+            }
+            for index in visibleImages.indices {
+                if let rect = startRects[visibleImages[index].id] { visibleImages[index].worldRect = rect }
+            }
+            for index in placedFrames.indices {
+                if let rect = startRects[placedFrames[index].id] { placedFrames[index].worldRect = rect }
+            }
+        }
+        if let startTexts = selection.groupResizeTextStartStates {
+            for index in placedTexts.indices {
+                guard let snapshot = startTexts[placedTexts[index].id] else { continue }
+                placedTexts[index].fontSize = snapshot.fontSize
+                placedTexts[index].wrapWidth = snapshot.wrapWidth
+                placedTexts[index].worldRect.origin = snapshot.origin
+            }
+        }
+
+        selection.clearResize()
+        selection.clearTextResize()
+        selection.clearGroupResize()
+        selection.clearMarquee()
+        finishDrag()
     }
 
     // MARK: - Undo / Redo
@@ -1780,20 +2152,28 @@ struct BoardCanvasView: View {
         // it rather than racing the debounce.
         commitTextColorEdit()
         commitFrameFillEdit()
+        // An undo mid-resize changes the board under the live preview. Drop
+        // it and the cached pass inputs; the next drag update rebuilds both
+        // from the new board.
+        setMembershipPreview(nil)
+        membershipPassCache.clear()
         switch command {
         case .move(let ids, let delta, let memberships):
             let previous = applyMoveDelta(
                 elementIDs: ids, dx: delta.width, dy: delta.height, memberships: memberships
             )
             return .move(elementIDs: ids, delta: CGSize(width: -delta.width, height: -delta.height), memberships: previous)
-        case .resize(let id, let fromRect, let toRect):
-            applyResizeRect(elementID: id, rect: toRect)
-            return .resize(elementID: id, fromRect: toRect, toRect: fromRect)
-        case .groupResize(let fromRects, let toRects, let fromTextStates, let toTextStates):
-            applyGroupResizeApply(rects: toRects, textStates: toTextStates)
+        case .resize(let id, let fromRect, let toRect, let memberships):
+            let previous = currentMemberships(for: memberships)
+            applyResizeRect(elementID: id, rect: toRect, memberships: memberships ?? [])
+            return .resize(elementID: id, fromRect: toRect, toRect: fromRect, memberships: previous)
+        case .groupResize(let fromRects, let toRects, let fromTextStates, let toTextStates, let memberships):
+            let previous = currentMemberships(for: memberships)
+            applyGroupResizeApply(rects: toRects, textStates: toTextStates, memberships: memberships ?? [])
             return .groupResize(
                 fromRects: toRects, toRects: fromRects,
-                fromTextStates: toTextStates, toTextStates: fromTextStates
+                fromTextStates: toTextStates, toTextStates: fromTextStates,
+                memberships: previous
             )
         case .insert(let snapshots):
             addElements(snapshots: snapshots)
@@ -1822,18 +2202,21 @@ struct BoardCanvasView: View {
         case .editTextContent(let id, let fromContent, let toContent):
             applyTextContent(elementID: id, content: toContent)
             return .editTextContent(elementID: id, fromContent: toContent, toContent: fromContent)
-        case .resizeText(let id, let fromFontSize, let toFontSize, let fromWrapWidth, let toWrapWidth, let fromOrigin, let toOrigin):
+        case .resizeText(let id, let fromFontSize, let toFontSize, let fromWrapWidth, let toWrapWidth, let fromOrigin, let toOrigin, let memberships):
+            let previous = currentMemberships(for: memberships)
             applyTextResizeState(
                 elementID: id,
                 fontSize: toFontSize,
                 wrapWidth: toWrapWidth,
-                origin: toOrigin
+                origin: toOrigin,
+                memberships: memberships ?? []
             )
             return .resizeText(
                 elementID: id,
                 fromFontSize: toFontSize, toFontSize: fromFontSize,
                 fromWrapWidth: toWrapWidth, toWrapWidth: fromWrapWidth,
-                fromOrigin: toOrigin, toOrigin: fromOrigin
+                fromOrigin: toOrigin, toOrigin: fromOrigin,
+                memberships: previous
             )
         case .renameAsset(let id, let name):
             // A frame's name is its payload title, not a header label, so it
@@ -1894,10 +2277,22 @@ struct BoardCanvasView: View {
         elementIDs: Set<UUID>, dx: CGFloat, dy: CGFloat,
         memberships: [FrameMembership]? = nil
     ) -> [FrameMembership] {
-        let expandedIDs = expandedElementIDs(for: elementIDs)
+        // Nil means "leave every frame as it is". Commands built since
+        // center-based membership always pass the list, even when empty.
+        let assignments = memberships ?? []
+        // Items named in `memberships` but not dragged are ones a dragged
+        // frame captured. They stayed still, so they never move here. On
+        // undo they are still inside the dragged frame when this runs, so
+        // the walk that collects the frame's contents must skip them, or
+        // undo would drag them back along with it.
+        let captured = Set(assignments.map(\.elementID)).subtracting(elementIDs)
+        let expandedIDs = expandedElementIDs(for: elementIDs, skipping: captured)
         // Children travelling with a selected ancestor keep that relationship.
         let roots = selectionRoots(elementIDs)
+        // The reverse restores the roots' parents and the captured items'
+        // parents, read before anything changes, so undo is exact.
         let previous = roots.map { FrameMembership(elementID: $0, parentID: parentFrameID(for: $0)) }
+            + captured.map { FrameMembership(elementID: $0, parentID: parentFrameID(for: $0)) }
         for i in placedImages.indices where expandedIDs.contains(placedImages[i].id) {
             placedImages[i].worldRect.origin.x += dx
             placedImages[i].worldRect.origin.y += dy
@@ -1914,35 +2309,18 @@ struct BoardCanvasView: View {
             placedFrames[i].worldRect.origin.x += dx
             placedFrames[i].worldRect.origin.y += dy
         }
-        let assignments = memberships ?? roots.compactMap { id -> FrameMembership? in
-            let rect = placedImages.first(where: { $0.id == id })?.worldRect ??
-                placedTexts.first(where: { $0.id == id })?.worldRect ??
-                placedFrames.first(where: { $0.id == id })?.worldRect
-            guard let rect else { return nil }
-            return FrameMembership(elementID: id, parentID: FrameGeometry.dropTarget(
-                at: CGPoint(x: rect.midX, y: rect.midY), frames: placedFrames, excluding: expandedIDs
-            ))
-        }
-        for assignment in assignments {
-            if let i = placedImages.firstIndex(where: { $0.id == assignment.elementID }) {
-                placedImages[i].parentFrameID = assignment.parentID
-            }
-            if let i = visibleImages.firstIndex(where: { $0.id == assignment.elementID }) {
-                visibleImages[i].parentFrameID = assignment.parentID
-            }
-            if let i = placedTexts.firstIndex(where: { $0.id == assignment.elementID }) {
-                placedTexts[i].parentFrameID = assignment.parentID
-            }
-            if let i = placedFrames.firstIndex(where: { $0.id == assignment.elementID }) {
-                placedFrames[i].parentFrameID = assignment.parentID
-            }
-        }
+        applyParentsInMemory(assignments)
+        // Captured items aren't moving, but their new parent rides in the
+        // same store write as the move.
+        let writeIDs = expandedIDs.union(assignments.map(\.elementID))
         enqueueStoreMutation { store in
-            let fetched = await store.elements(for: Array(expandedIDs))
+            let fetched = await store.elements(for: Array(writeIDs))
             let updated = fetched.values.map { stored in
                 var element = stored
-                element.header.bounds.origin.x += Double(dx)
-                element.header.bounds.origin.y += Double(dy)
+                if expandedIDs.contains(element.id) {
+                    element.header.bounds.origin.x += Double(dx)
+                    element.header.bounds.origin.y += Double(dy)
+                }
                 if let assignment = assignments.first(where: { $0.elementID == element.id }) {
                     element.header.parentID = assignment.parentID
                 }
@@ -1953,7 +2331,7 @@ struct BoardCanvasView: View {
         return previous
     }
 
-    private func applyResizeRect(elementID: UUID, rect: CGRect) {
+    private func applyResizeRect(elementID: UUID, rect: CGRect, memberships: [FrameMembership] = []) {
         // Text elements don't support resize in v1; their world size is
         // re-derived from screen rendering each frame, so any rect we wrote
         // here would be overwritten on next layout.
@@ -1964,22 +2342,113 @@ struct BoardCanvasView: View {
         if let idx = visibleImages.firstIndex(where: { $0.id == elementID }) {
             visibleImages[idx].worldRect = rect
         }
+        // The image's frame change rides in the same store write as its new
+        // bounds. Two writes could cancel each other (`enqueueStoreMutation`).
+        applyParentsInMemory(memberships)
+        let parentByID = Dictionary(memberships.map { ($0.elementID, $0.parentID) },
+                                    uniquingKeysWith: { _, last in last })
 
         enqueueStoreMutation { store in
-            let fetched = await store.elements(for: [elementID])
-            if var element = fetched[elementID] {
-                element.header.bounds = CMWorldRect(
-                    origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
-                    size: SIMD2<Double>(Double(rect.width), Double(rect.height))
-                )
-                if case .image(let url, _) = element.payload {
-                    element.payload = .image(
-                        url: url,
+            let ids = Array(Set(parentByID.keys).union([elementID]))
+            let fetched = await store.elements(for: ids)
+            var updated: [CMCanvasElement] = []
+            for id in ids {
+                guard var element = fetched[id] else { continue }
+                if id == elementID {
+                    element.header.bounds = CMWorldRect(
+                        origin: SIMD2<Double>(Double(rect.origin.x), Double(rect.origin.y)),
                         size: SIMD2<Double>(Double(rect.width), Double(rect.height))
                     )
+                    if case .image(let url, _) = element.payload {
+                        element.payload = .image(
+                            url: url,
+                            size: SIMD2<Double>(Double(rect.width), Double(rect.height))
+                        )
+                    }
                 }
-                await store.upsert(elements: [element])
+                if let parentID = parentByID[id] {
+                    element.header.parentID = parentID
+                }
+                updated.append(element)
             }
+            await store.upsert(elements: updated)
+        }
+    }
+
+    /// The parents `memberships`' items have right now. Captured before a
+    /// command changes them, so its reverse can put back the exact same ones.
+    private func currentMemberships(for memberships: [FrameMembership]?) -> [FrameMembership]? {
+        memberships.map { list in
+            list.map { FrameMembership(elementID: $0.elementID, parentID: parentFrameID(for: $0.elementID)) }
+        }
+    }
+
+    /// Set each listed item's frame on the canvas copies. The caller writes
+    /// the same change to the store inside its own single store write.
+    private func applyParentsInMemory(_ memberships: [FrameMembership]) {
+        guard !memberships.isEmpty else { return }
+        let parentByID = Dictionary(memberships.map { ($0.elementID, $0.parentID) },
+                                    uniquingKeysWith: { _, last in last })
+        for i in placedImages.indices {
+            if let parent = parentByID[placedImages[i].id] { placedImages[i].parentFrameID = parent }
+        }
+        for i in visibleImages.indices {
+            if let parent = parentByID[visibleImages[i].id] { visibleImages[i].parentFrameID = parent }
+        }
+        for i in placedTexts.indices {
+            if let parent = parentByID[placedTexts[i].id] { placedTexts[i].parentFrameID = parent }
+        }
+        for i in placedFrames.indices {
+            if let parent = parentByID[placedFrames[i].id] { placedFrames[i].parentFrameID = parent }
+        }
+    }
+
+    /// One item as the membership pass sees it: its current rect and frame.
+    /// Text rects are the last measured size.
+    private func membershipCandidate(for id: UUID) -> MembershipCandidate? {
+        if let image = placedImages.first(where: { $0.id == id }) {
+            return MembershipCandidate(id: id, rect: image.worldRect, parentID: image.parentFrameID, isFrame: false)
+        }
+        if let text = placedTexts.first(where: { $0.id == id }) {
+            return MembershipCandidate(id: id, rect: text.worldRect, parentID: text.parentFrameID, isFrame: false)
+        }
+        if let frame = placedFrames.first(where: { $0.id == id }) {
+            return MembershipCandidate(id: id, rect: frame.worldRect, parentID: frame.parentFrameID, isFrame: true)
+        }
+        return nil
+    }
+
+    /// Every item on the board whose rect passes `test`. Reads all images,
+    /// not just the visible ones, because a frame can reach off screen.
+    private func membershipCandidates(where test: (CGRect) -> Bool) -> [MembershipCandidate] {
+        var result: [MembershipCandidate] = []
+        forEachMembershipCandidate { candidate in
+            if test(candidate.rect) { result.append(candidate) }
+        }
+        return result
+    }
+
+    /// The candidates for `ids`, found in one sweep of the board rather than
+    /// one search per id.
+    private func membershipCandidates(for ids: Set<UUID>) -> [MembershipCandidate] {
+        guard !ids.isEmpty else { return [] }
+        var result: [MembershipCandidate] = []
+        forEachMembershipCandidate { candidate in
+            if ids.contains(candidate.id) { result.append(candidate) }
+        }
+        return result
+    }
+
+    /// Calls `body` with every image, text, and frame on the board, in that order.
+    private func forEachMembershipCandidate(_ body: (MembershipCandidate) -> Void) {
+        for image in placedImages {
+            body(MembershipCandidate(id: image.id, rect: image.worldRect, parentID: image.parentFrameID, isFrame: false))
+        }
+        for text in placedTexts {
+            body(MembershipCandidate(id: text.id, rect: text.worldRect, parentID: text.parentFrameID, isFrame: false))
+        }
+        for frame in placedFrames {
+            body(MembershipCandidate(id: frame.id, rect: frame.worldRect, parentID: frame.parentFrameID, isFrame: true))
         }
     }
 
@@ -3196,7 +3665,10 @@ struct BoardCanvasView: View {
         return FrameGeometry.selectionRoots(ids, parents: parents, frames: placedFrames)
     }
 
-    private func expandedElementIDs(for ids: Set<UUID>) -> Set<UUID> {
+    /// `ids` plus everything nested inside them. The walk doesn't enter
+    /// `skipping`: those items and their contents are left out, unless
+    /// `ids` names them directly.
+    private func expandedElementIDs(for ids: Set<UUID>, skipping: Set<UUID> = []) -> Set<UUID> {
         let frameLookup = Dictionary(uniqueKeysWithValues: placedFrames.map { ($0.id, $0) })
         guard !frameLookup.isEmpty else { return ids }
 
@@ -3205,7 +3677,7 @@ struct BoardCanvasView: View {
         while let nextID = queue.popLast() {
             guard frameLookup[nextID] != nil else { continue }
             let childIDs = directChildIDs(of: nextID)
-            for childID in childIDs where expanded.insert(childID).inserted {
+            for childID in childIDs where !skipping.contains(childID) && expanded.insert(childID).inserted {
                 queue.append(childID)
             }
         }
@@ -3236,22 +3708,6 @@ struct BoardCanvasView: View {
         let selectedFrames = placedFrames.filter { selectedIDs.contains($0.id) }
         let selectedImages = placedImages.filter { selectedIDs.contains($0.id) }
         let selectedTexts = placedTexts.filter { selectedIDs.contains($0.id) }
-        let beforeChildSnapshots =
-            selectedImages.map(snapshot(for:)) +
-            selectedTexts.map(snapshot(for:)) +
-            selectedFrames.map(snapshot(for:))
-        let parentCandidates = Set(
-            selectedFrames.map(\.parentFrameID) +
-            selectedImages.map(\.parentFrameID) +
-            selectedTexts.map(\.parentFrameID)
-        )
-        // If everything selected sits in the same frame, the new frame goes
-        // inside that frame too, so grouping items within a frame nests
-        // instead of pulling them out. A mixed selection lands at top level.
-        let commonParentFrameID = parentCandidates.count == 1 ? parentCandidates.first ?? nil : nil
-        let parentFrameID = commonParentFrameID.flatMap { parentID in
-            placedFrames.contains(where: { $0.id == parentID }) ? parentID : nil
-        }
 
         let frameRect = contentBounds.insetBy(dx: -defaultFramePadding, dy: -defaultFramePadding)
         let minSelectedZ = rects.isEmpty
@@ -3261,31 +3717,52 @@ struct BoardCanvasView: View {
                 selectedImages.map(\.zIndex) +
                 selectedTexts.map(\.zIndex)
             ).min() ?? nextZIndex
-        let frame = PlacedFrame(
+        var frame = PlacedFrame(
             id: UUID(),
             title: "Frame \(placedFrames.count + 1)",
             worldRect: frameRect,
-            zIndex: minSelectedZ - 1,
-            parentFrameID: parentFrameID
+            zIndex: minSelectedZ - 1
         )
 
+        // A new frame is a frame that grew from nothing, so it follows the
+        // resize rule. The selection joins it outright: that's what the user
+        // asked for. The new frame takes the innermost frame around its own
+        // center as parent. And any other item it now covers joins it if
+        // the new frame is the innermost frame around that item's center.
+        var framesAfter = placedFrames.map { existing in
+            var existing = existing
+            if selectedIDs.contains(existing.id) { existing.parentFrameID = frame.id }
+            return existing
+        }
+        framesAfter.append(frame)
+        let joiningSelection = expandedElementIDs(for: selectedIDs)
+        let covered = membershipCandidates { $0.intersects(frameRect) }
+            .filter { !joiningSelection.contains($0.id) }
+        let pass = FrameGeometry.reassign(
+            changed: [MembershipCandidate(id: frame.id, rect: frameRect, parentID: nil, isFrame: true)],
+            touched: covered,
+            resizedFrameIDs: [frame.id],
+            frames: framesAfter
+        )
+        frame.parentFrameID = pass.first(where: { $0.elementID == frame.id })?.parentID
+        let memberships = selectedIDs.map { FrameMembership(elementID: $0, parentID: frame.id) } +
+            pass.filter { $0.elementID != frame.id }
+        let childIDs = Set(memberships.map(\.elementID))
+        func childSnapshots() -> [PlacedElementSnapshot] {
+            placedImages.filter { childIDs.contains($0.id) }.map(snapshot(for:)) +
+            placedTexts.filter { childIDs.contains($0.id) }.map(snapshot(for:)) +
+            placedFrames.filter { childIDs.contains($0.id) }.map(snapshot(for:))
+        }
+        let beforeChildSnapshots = childSnapshots()
+        let previous = previousParents(for: memberships)
+
         placedFrames.append(frame)
-        for index in placedFrames.indices where selectedIDs.contains(placedFrames[index].id) {
-            placedFrames[index].parentFrameID = frame.id
-        }
-        for index in placedImages.indices where selectedIDs.contains(placedImages[index].id) {
-            placedImages[index].parentFrameID = frame.id
-        }
-        for index in placedTexts.indices where selectedIDs.contains(placedTexts[index].id) {
-            placedTexts[index].parentFrameID = frame.id
-        }
+        applyParentsInMemory(memberships)
+        announceMembershipChanges(memberships, previousParents: previous)
 
         let frameElement = fallbackFrameElement(for: frame)
         let frameSnapshot = snapshot(for: frame)
-        let afterChildSnapshots =
-            placedImages.filter { selectedIDs.contains($0.id) }.map(snapshot(for:)) +
-            placedTexts.filter { selectedIDs.contains($0.id) }.map(snapshot(for:)) +
-            placedFrames.filter { selectedIDs.contains($0.id) }.map(snapshot(for:))
+        let afterChildSnapshots = childSnapshots()
         selection.selectedIDs = [frame.id]
         nextZIndex = max(nextZIndex, frame.zIndex + 1)
         recordUndo(reverse: .dissolveFrame(
@@ -3496,6 +3973,74 @@ struct BoardCanvasView: View {
     }
 
     // MARK: - Models
+
+    /// Stacking bands in the canvas's top-level `ZStack`.
+    ///
+    /// Images and text use their own `zIndex`, which can be any `Int`,
+    /// including negative ones. Frames used to share that range, so a frame
+    /// whose number was higher drew over images, and an opaque frame always
+    /// covered the overview placeholders (which had none). These bands sit
+    /// below every `Int`, so frames are always under all other items, with
+    /// the overview placeholders between the two. Order among frames is set
+    /// inside the frames' own stack (`FrameGeometry.drawOrder`).
+    /// Fixed stacking bands for the canvas's top-level `ZStack`. Items draw
+    /// at their own `zIndex`, which is an `Int`, so every band sits a whole
+    /// `Int.max` away from it: the bottom three below any item, the rest
+    /// above. They used to be `Double(Int.max - 1)`, `- 2`, and `- 3`, but a
+    /// `Double` can't tell those apart (its step size up there is 2048), so
+    /// they all tied and fell back to declaration order.
+    private enum CanvasLayerZ {
+        static let grid = -4 * Double(Int.max)
+        static let frames = -3 * Double(Int.max)
+        static let overview = -2 * Double(Int.max)
+        static let frameTitles = 2 * Double(Int.max)
+        static let selectionChrome = 3 * Double(Int.max)
+        static let actionBar = 4 * Double(Int.max)
+        static let marquee = 4 * Double(Int.max)
+        static let groupSelection = 5 * Double(Int.max)
+    }
+
+    /// Inputs to the membership pass that stay the same for a whole drag
+    /// or resize, so the per-update work skips the board sweep. See
+    /// `moveDropCache(for:)` and `groupResizeCache()`.
+    ///
+    /// It is a class held in `@State` so that filling or clearing it
+    /// doesn't redraw the canvas: SwiftUI only sees the reference, which
+    /// never changes.
+    private final class MembershipPassCache {
+        struct Move {
+            /// The selection the cache was built for.
+            let ids: Set<UUID>
+            /// Every dragged item and everything inside them.
+            let moving: Set<UUID>
+            /// The dragged roots, at their rects before the drag.
+            let roots: [MembershipCandidate]
+            /// Items that don't move. Empty when no frame moves.
+            let stationary: [MembershipCandidate]
+            /// Every frame, before the drag.
+            let frames: [PlacedFrame]
+            /// Where the dragged frames sit in `frames`.
+            let movingFrameIndices: [Int]
+        }
+
+        struct GroupResize {
+            /// Resized images and frames, at their rects before the resize.
+            var rectItems: [MembershipCandidate] = []
+            /// Resized texts, with where each sat in `placedTexts`.
+            var texts: [(id: UUID, parentID: UUID?, index: Int)] = []
+            var resizedFrameIDs: Set<UUID> = []
+            /// Everything not resized. These don't move during a resize.
+            var others: [MembershipCandidate] = []
+        }
+
+        var move: Move?
+        var groupResize: GroupResize?
+
+        func clear() {
+            move = nil
+            groupResize = nil
+        }
+    }
 
     private struct ImageRenderPlan {
         let detailItems: [PlacedImage]

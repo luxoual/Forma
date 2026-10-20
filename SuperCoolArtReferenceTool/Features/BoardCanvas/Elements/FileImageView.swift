@@ -6,6 +6,9 @@ struct FileImageView: View {
     let url: URL
     let targetMaxPixelSize: Int
     let isInteracting: Bool
+    /// Grays out the image while a frame resize is about to drop it from
+    /// its frame (`frameMembershipLeavingEffect`).
+    var isLeavingFrame = false
     @State private var uiImage: UIImage?
     private var requestKey: String { "\(url.path)|\(targetMaxPixelSize)" }
 
@@ -16,6 +19,7 @@ struct FileImageView: View {
                     .resizable()
                     .interpolation(isInteracting ? .low : .medium)
                     .antialiased(true)
+                    .frameMembershipLeavingEffect(isLeavingFrame)
             } else {
                 ZStack {
                     Rectangle().fill(Color.secondary.opacity(0.15))
