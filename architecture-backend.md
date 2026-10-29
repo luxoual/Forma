@@ -207,7 +207,7 @@ Both end at `BoardArchiver.importElements(...)`. After that:
 - **Outside path:** `AppOpenHandler` holds each piece separately (`importedElements`, `importedCanvasColorHex`, `importedLastTextColorHex`). `RootView` passes them into `ContentView` as `initialElements`, `initialCanvasColorHex`, and `initialLastTextColorHex`.
 - **In-app path:** `FilePickerView.onBoardSelected: (BoardArchiver.ImportResult, URL) -> Void` passes the whole `ImportResult` along instead of splitting it up. Two `String?` hex values side by side in a closure signature are easy to swap by accident; passing the struct avoids that and lets board settings grow without touching every hop.
 
-`ContentView` then hands the elements to `BoardCanvasView` through `loadElements`. It sets its `canvasColor` from the hex, falling back to `Color(uiColor: .systemBackground)` when there isn't one. It binds `lastTextColorHex` into the canvas so a color pick writes straight into the state that gets saved.
+`ContentView` then hands the elements to `BoardCanvasView` through `loadElements`. It sets its `canvasColor` from the hex, falling back to `ContentView.defaultCanvasColor` (the system background, fixed to its fullscreen shade) when there isn't one. It binds `lastTextColorHex` into the canvas so a color pick writes straight into the state that gets saved.
 
 ## Changing the manifest safely
 

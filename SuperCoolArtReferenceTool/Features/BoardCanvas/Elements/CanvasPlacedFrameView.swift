@@ -46,6 +46,19 @@ struct FrameTitlePill: View {
     /// truncates long ones within it.
     static let minWidth: CGFloat = 64
 
+    /// Narrowest tap target, per Apple's 44pt touch-target guideline. A
+    /// short name like "A" would otherwise be a sliver that's hard to hit.
+    static let minTapWidth: CGFloat = 44
+
+    /// Height of the tap target, measured up from the frame's top edge,
+    /// with the name centered in it. It stops short of 44pt on purpose:
+    /// everything in this strip goes to the name, so a taller strip would
+    /// take taps and drags away from items sitting just above the frame.
+    /// It's in screen points, so the strip doesn't shrink when you zoom
+    /// out, while the gaps between items do. At 36pt the default-size name
+    /// lands about 10pt above the frame, where it sat before.
+    static let tapHeight: CGFloat = 36
+
     var body: some View {
         Group {
             if isEditing {
@@ -72,10 +85,16 @@ struct FrameTitlePill: View {
         .foregroundStyle(isSelected ? DesignSystem.Colors.tertiary : DesignSystem.Colors.secondary)
         .compositingGroup()
         .blendMode(isSelected ? .normal : .difference)
+        // The row has a fixed height, so stop the text growing past it at
+        // the largest accessibility sizes. Same cap as `CanvasHUDView`.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         // No leading padding, so the text starts flush with the frame's
-        // left edge. The rest only pads the tap target.
+        // left edge. The trailing padding only pads the tap target.
         .padding(.trailing, 10)
-        .padding(.vertical, 6)
+        // Grow short names to the minimum width, and center the name
+        // vertically in the full tap height. The bottom of the strip is the
+        // frame's top edge, so there's no dead gap between the two.
+        .frame(minWidth: Self.minTapWidth, minHeight: Self.tapHeight, alignment: .leading)
         .contentShape(Rectangle())
         .gesture(
             TapGesture(count: 2).exclusively(before: TapGesture())

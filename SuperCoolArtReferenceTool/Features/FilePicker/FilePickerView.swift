@@ -82,7 +82,10 @@ struct FilePickerView: View {
             HStack(spacing: 16) {
                 // Primary action: prominent glass with brand tint.
                 Button("New Board") {
-                    newBoardDocument = BoardExportDocument(elements: [])
+                    newBoardDocument = BoardExportDocument(
+                        elements: [],
+                        filename: Self.nextNewBoardName(taken: recentsManager.entries.map(\.name))
+                    )
                     showingNewBoardExporter = true
                 }
                 .buttonStyle(.glassProminent)
@@ -122,7 +125,7 @@ struct FilePickerView: View {
             isPresented: $showingNewBoardExporter,
             document: newBoardDocument,
             contentType: .refboard,
-            defaultFilename: "Untitled Board"
+            defaultFilename: newBoardDocument.filename
         ) { result in
             switch result {
             case .success(let url):
@@ -133,6 +136,24 @@ struct FilePickerView: View {
                 showImportError = true
             }
         }
+    }
+
+    /// The name the save sheet suggests for a new board: "New Board", or
+    /// "New Board (1)", "New Board (2)", … if that's already taken.
+    ///
+    /// The sheet lets the user save into any folder, and we can't look
+    /// inside it beforehand. So "taken" means a board in the recents list.
+    /// If the folder they pick still has a clash, the system's save sheet
+    /// asks them to replace or keep both.
+    static func nextNewBoardName(taken: [String]) -> String {
+        let base = BoardExportDocument.newBoardName
+        let takenNames = Set(taken.map { $0.lowercased() })
+        guard takenNames.contains(base.lowercased()) else { return base }
+        var number = 1
+        while takenNames.contains("\(base) (\(number))".lowercased()) {
+            number += 1
+        }
+        return "\(base) (\(number))"
     }
 
     private func openBoard(at url: URL) {
