@@ -137,7 +137,8 @@ public enum CMCanvasElementPayload: Codable, Hashable {
     /// load with `wrapWidth = nil` and behave identically to before.
     case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
     case image(url: URL, size: SIMD2<Double>)
-    /// Frame payload. `fillColor` is `#RRGGBB`, or nil when the user hasn't
+    /// Frame payload. `fillColor` is `#RRGGBB`, `#RRGGBBAA` for a see-through
+    /// fill (the last two digits are opacity), or nil when the user hasn't
     /// picked one, in which case the canvas derives a fill from the board's
     /// canvas color. Optional via `decodeIfPresent` / `encodeIfPresent`, so
     /// files saved before this field existed load with `fillColor = nil`.

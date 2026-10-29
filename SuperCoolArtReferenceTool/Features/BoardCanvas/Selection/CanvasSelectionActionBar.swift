@@ -22,7 +22,8 @@ struct CanvasSelectionActionBar: View {
     /// selection contains no text elements (color controls hide then).
     let textColorHex: String?
     let onPickTextColor: (String) -> Void
-    /// Current fill of the selected frame(s) as `#RRGGBB`, or nil when no
+    /// Current fill of the selected frame(s) as `#RRGGBB` or `#RRGGBBAA`
+    /// (see-through fills), or nil when no
     /// frame is selected (the frame color well hides then).
     var frameFillHex: String? = nil
     var onPickFrameFill: (String) -> Void = { _ in }
@@ -51,7 +52,8 @@ struct CanvasSelectionActionBar: View {
                 TextColorWell(
                     currentHex: frameFillHex,
                     onPick: onPickFrameFill,
-                    label: "Frame color"
+                    label: "Frame color",
+                    supportsOpacity: true
                 )
             }
 

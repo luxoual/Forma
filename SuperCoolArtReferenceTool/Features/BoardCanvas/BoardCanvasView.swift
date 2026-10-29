@@ -13,6 +13,11 @@ struct BoardCanvasView: View {
     // Gesture state
     @State private var dragStartOffset: CGSize? = nil
     @State private var isInteracting: Bool = false
+    /// True while `zoomCamera(toFit:)` glides the camera. Only the selection
+    /// action bar reads it. It's kept apart from `isInteracting` because
+    /// that flag also switches images to low detail, which rebuilds some of
+    /// them mid-glide so they jump to the end spot instead of gliding.
+    @State private var isCameraGliding: Bool = false
     @State private var interactionEndTask: Task<Void, Never>? = nil
 
     // Grid options
@@ -383,6 +388,11 @@ struct BoardCanvasView: View {
                 }
             }
             .onChange(of: selection.selectedIDs) { _, newIDs in
+                // Save any color pick in progress before it can drift onto
+                // the new selection. A pick remembers which items it started
+                // on, and only those get saved and undone.
+                commitTextColorEdit()
+                commitFrameFillEdit()
                 // Tapping or marquee-selecting any other element while a text
                 // is being edited should commit the edit — TextField's
                 // `@FocusState` only fires on focus changes between focusable
@@ -640,7 +650,7 @@ struct BoardCanvasView: View {
 
             CanvasPlacedFrameView(
                 screenRect: screenRect,
-                fill: Color(hex: frame.fillHex ?? defaultFill) ?? .clear,
+                fillHex: frame.fillHex ?? defaultFill,
                 isSelected: isSelected,
                 zIndex: frame.zIndex
             )
@@ -807,6 +817,7 @@ struct BoardCanvasView: View {
             scale: camera.scale,
             offset: camera.offset,
             isInteracting: isSelectionActionBarInteracting,
+            selectionKey: selection.selectedIDs,
             textColorHex: selectionTextColorHex(),
             onPickTextColor: applyTextColor(hex:),
             frameFillHex: selectionFrameFillHex(),
@@ -824,6 +835,7 @@ struct BoardCanvasView: View {
 
     private var isSelectionActionBarInteracting: Bool {
         isInteracting ||
+        isCameraGliding ||
         selection.isDragging ||
         selection.isResizing ||
         selection.isTextResizing ||
@@ -927,7 +939,10 @@ struct BoardCanvasView: View {
                     width: bbox.width * camera.scale,
                     height: bbox.height * camera.scale
                 )
-                GroupSelectionOverlay(activeHandle: selection.resizeHandle)
+                GroupSelectionOverlay(
+                    handles: HandlePosition.corners,
+                    activeHandle: selection.resizeHandle
+                )
                     .frame(width: screenRect.width, height: screenRect.height)
                     .position(x: screenRect.midX, y: screenRect.midY)
                     .allowsHitTesting(false)
@@ -1011,21 +1026,26 @@ struct BoardCanvasView: View {
         let textIDs = Set(placedTexts.map(\.id))
         let frameIDs = Set(placedFrames.map(\.id))
         // Solo text selection — corners scale font (Freeform-style),
-        // left/right edges set wrap width. Top/bottom never hit since
-        // the visual overlay doesn't render those handles for text, but
-        // the gesture drag also rejects them defensively below.
+        // left/right edges set wrap width. Top/bottom never hit, matching
+        // the overlay, which doesn't draw them for text.
         if selection.selectedIDs.count == 1,
            let selectedID = selection.selectedIDs.first,
            textIDs.contains(selectedID),
            let text = placedTexts.first(where: { $0.id == selectedID }) {
+            // While editing, the handles are hidden
+            // (`selectedTextChromeLayer`), so they mustn't be grabbable.
+            if editingTextID == selectedID { return nil }
             let textScreenRect = CGRect(
                 x: text.worldRect.origin.x * camera.scale + camera.offset.width,
                 y: text.worldRect.origin.y * camera.scale + camera.offset.height,
                 width: text.worldRect.width * camera.scale,
                 height: text.worldRect.height * camera.scale
             )
-            if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: textScreenRect),
-               handle != .topCenter && handle != .bottomCenter {
+            if let handle = hitTestHandleOnRect(
+                screenPoint: screenPoint,
+                screenRect: textScreenRect,
+                allowed: TextElementView.textHandles
+            ) {
                 return .singleTextItem(handle: handle, text: text)
             }
             return nil
@@ -1059,29 +1079,45 @@ struct BoardCanvasView: View {
                 width: item.worldRect.width * camera.scale,
                 height: item.worldRect.height * camera.scale
             )
-            if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: itemScreenRect) {
+            if let handle = hitTestHandleOnRect(
+                screenPoint: screenPoint,
+                screenRect: itemScreenRect,
+                allowed: HandlePosition.corners
+            ) {
                 return .singleItem(handle: handle, item: item)
             }
         } else if selection.selectedIDs.count > 1, let bbox = groupBoundingBox() {
+            // Multi-selections resize from the corners only. An edge drag
+            // would stretch everything inside along one axis.
             let bboxScreenRect = CGRect(
                 x: bbox.origin.x * camera.scale + camera.offset.width,
                 y: bbox.origin.y * camera.scale + camera.offset.height,
                 width: bbox.width * camera.scale,
                 height: bbox.height * camera.scale
             )
-            if let handle = hitTestHandleOnRect(screenPoint: screenPoint, screenRect: bboxScreenRect) {
+            if let handle = hitTestHandleOnRect(
+                screenPoint: screenPoint,
+                screenRect: bboxScreenRect,
+                allowed: HandlePosition.corners
+            ) {
                 return .group(handle: handle, bbox: bbox)
             }
         }
         return nil
     }
 
-    /// Shared helper: hit-test a screen point against 8 handles on a screen-space rect.
-    private func hitTestHandleOnRect(screenPoint: CGPoint, screenRect: CGRect) -> HandlePosition? {
+    /// Shared helper: find the handle on a screen-space rect closest to a
+    /// screen point, among the `allowed` ones. Leaving a handle out of
+    /// `allowed` makes it ungrabbable, so pass the same set the overlay draws.
+    private func hitTestHandleOnRect(
+        screenPoint: CGPoint,
+        screenRect: CGRect,
+        allowed: Set<HandlePosition> = Set(HandlePosition.allCases)
+    ) -> HandlePosition? {
         var bestHandle: HandlePosition?
         var bestDist: CGFloat = .greatestFiniteMagnitude
 
-        for handle in HandlePosition.allCases {
+        for handle in HandlePosition.allCases where allowed.contains(handle) {
             let handleScreenPt = handle.point(in: screenRect.size)
             let handleAbsolute = CGPoint(
                 x: screenRect.origin.x + handleScreenPt.x,
@@ -1378,12 +1414,10 @@ struct BoardCanvasView: View {
         // Text uses a different render path (font size + frame), so mutate
         // its state directly and let onGeometryChange re-derive worldRect.size.
         if let startTextStates = selection.groupResizeTextStartStates {
-            // Geometric mean of width and height ratios so text scales
-            // for any axis change, not just width. Corner drags are
-            // aspect-ratio-locked (widthRatio == heightRatio → factor
-            // equals either ratio); top/bottom-edge drags only change
-            // height, so a width-only factor would leave text unchanged
-            // even though the bbox visibly grew or shrank.
+            // Geometric mean of width and height ratios. Multi-selections
+            // only resize from aspect-locked corners, so the two ratios
+            // match and this equals either one; the mean just keeps text
+            // scaling sensibly if the box ever changes on one axis only.
             let widthRatio = bboxStart.width > 0.001 ? newBBox.width / bboxStart.width : 1
             let heightRatio = bboxStart.height > 0.001 ? newBBox.height / bboxStart.height : 1
             let factor = sqrt(max(widthRatio * heightRatio, 0))
@@ -2972,10 +3006,23 @@ struct BoardCanvasView: View {
             height: canvasSize.height / 2 - bounds.midY * targetScale
         )
         if animated && !reduceMotion {
+            // Hide the selection action bar for the glide. It never animates
+            // its position, so otherwise it would land on the end spot at
+            // once while the items it belongs to are still gliding there.
+            // Instead it hides, then fades back in once the camera stops.
+            //
+            // The flag is set *inside* `withAnimation`, not before it. The
+            // home button runs this from `.onChange(of: homeTrigger)`, in the
+            // middle of a view update, and there a plain state change made
+            // just before the animated one stripped the animation from the
+            // camera move too: the glide became a teleport. (The outliner
+            // calls this from a tap handler, so it kept gliding.)
             withAnimation(.easeInOut(duration: 0.4)) {
+                isCameraGliding = true
                 camera.scale = targetScale
                 camera.offset = target
             } completion: {
+                isCameraGliding = false
                 scheduleRefreshVisibleElements()
             }
         } else {

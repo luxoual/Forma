@@ -433,8 +433,9 @@ nonisolated enum BoardArchiver {
         /// `encodeIfPresent` for forward-compat with files written before
         /// the wrap-width field existed.
         case text(content: String, fontName: String, fontSize: Double, color: String, wrapWidth: Double?)
-        /// `fillColor` is optional for the same reason as `text.wrapWidth`:
-        /// frames saved before it existed have no key and decode as nil.
+        /// `fillColor` is `#RRGGBB`, or `#RRGGBBAA` for a see-through fill.
+        /// It's optional for the same reason as `text.wrapWidth`: frames
+        /// saved before it existed have no key and decode as nil.
         case frame(title: String, fillColor: String?)
 
         private enum CodingKeys: String, CodingKey {
