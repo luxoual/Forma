@@ -22,6 +22,30 @@ final class CanvasSelectionState {
 
     var isResizing: Bool { resizeHandle != nil }
 
+    /// Whether the drag has carried the box past its anchor on each axis.
+    /// `resizeHandle` stays the handle the finger grabbed, because the
+    /// resize math finds the fixed anchor from it. These flags record which
+    /// side of that anchor the box sits on now. They also remember the
+    /// previous answer, which the crossing margin (hysteresis) needs.
+    var resizeFlippedX: Bool = false
+    var resizeFlippedY: Bool = false
+
+    /// Goes up by one every time a resize flips. The canvas watches it to
+    /// play a haptic tap on Apple Pencil Pro.
+    var resizeFlipCount: Int = 0
+
+    /// The handle to highlight: the grabbed handle, mirrored to wherever
+    /// the box has flipped. Drag `.topRight` past the anchor and this
+    /// reads `.bottomLeft`.
+    var displayedResizeHandle: HandlePosition? {
+        resizeHandle?.flipped(horizontally: resizeFlippedX, vertically: resizeFlippedY)
+    }
+
+    private func clearResizeFlip() {
+        resizeFlippedX = false
+        resizeFlippedY = false
+    }
+
     // MARK: - Text-specific resize state
     //
     // Text elements use fontSize (and optionally wrapWidth + origin) as
@@ -42,6 +66,7 @@ final class CanvasSelectionState {
         textResizeStartWorldRect = nil
         textResizeElementID = nil
         resizeHandle = nil
+        clearResizeFlip()
     }
 
     func select(_ id: UUID, extending: Bool = false) {
@@ -65,6 +90,7 @@ final class CanvasSelectionState {
         resizeStartRect = nil
         resizeCurrentRect = nil
         resizeElementID = nil
+        clearResizeFlip()
     }
 
     // MARK: - Marquee state
@@ -115,5 +141,6 @@ final class CanvasSelectionState {
         groupResizeBBoxStart = nil
         groupResizeBBoxCurrent = nil
         resizeHandle = nil
+        clearResizeFlip()
     }
 }

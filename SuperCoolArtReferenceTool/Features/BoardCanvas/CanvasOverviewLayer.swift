@@ -8,6 +8,9 @@ struct CanvasOverviewLayer: View {
     let items: [PlacedImage]
     let scale: CGFloat
     let offset: CGSize
+    /// Live join/leave tints during a frame resize, keyed by image id. Same
+    /// meaning as `FrameMembershipHintStyle`, drawn into the one canvas pass.
+    var hints: [UUID: FrameMembershipHint] = [:]
 
     var body: some View {
         Canvas { ctx, _ in
@@ -23,13 +26,36 @@ struct CanvasOverviewLayer: View {
                     roundedRect: fillRect,
                     cornerRadius: min(3, min(fillRect.width, fillRect.height) * 0.2)
                 )
-                ctx.fill(fillPath, with: .color(DesignSystem.Colors.secondary.opacity(0.18)))
-                if fillRect.width >= 6, fillRect.height >= 6 {
-                    ctx.stroke(
-                        fillPath,
-                        with: .color(DesignSystem.Colors.secondary.opacity(0.32)),
-                        lineWidth: 0.75
-                    )
+                let hint = hints[item.id]
+                let fillColor: Color = switch hint {
+                case .joining: FrameMembershipHintStyle.joiningTint
+                case .leaving: DesignSystem.Colors.secondary.opacity(0.18 * FrameMembershipHintStyle.leavingOpacity)
+                case nil: DesignSystem.Colors.secondary.opacity(0.18)
+                }
+                ctx.fill(fillPath, with: .color(fillColor))
+                // The hint outline replaces the idle border, so a hint never
+                // relies on the fill color alone (see `FrameMembershipHintStyle`).
+                // A white line under the accent keeps it visible on blue.
+                if hint != nil {
+                    ctx.stroke(fillPath, with: .color(FrameMembershipHintStyle.contrastLine),
+                               lineWidth: FrameMembershipHintStyle.outlineWidth + 2 * FrameMembershipHintStyle.contrastLineWidth)
+                }
+                switch hint {
+                case .joining:
+                    ctx.stroke(fillPath, with: .color(FrameMembershipHintStyle.accent),
+                               lineWidth: FrameMembershipHintStyle.outlineWidth)
+                case .leaving:
+                    ctx.stroke(fillPath, with: .color(FrameMembershipHintStyle.accent),
+                               style: StrokeStyle(lineWidth: FrameMembershipHintStyle.outlineWidth,
+                                                  dash: FrameMembershipHintStyle.leavingDash))
+                case nil:
+                    if fillRect.width >= 6, fillRect.height >= 6 {
+                        ctx.stroke(
+                            fillPath,
+                            with: .color(DesignSystem.Colors.secondary.opacity(0.32)),
+                            lineWidth: 0.75
+                        )
+                    }
                 }
             }
         }
