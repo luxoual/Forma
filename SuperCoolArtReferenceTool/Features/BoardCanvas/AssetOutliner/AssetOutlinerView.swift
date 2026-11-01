@@ -42,7 +42,8 @@ struct AssetOutlinerView: View {
         ScrollView {
             // Not lazy: a lazy stack only builds the rows on screen and
             // guesses the rest, and that guess made the first open overshoot.
-            VStack(alignment: .leading, spacing: 2) {
+            // No spacing: rows touch so there's no dead strip between them.
+            VStack(alignment: .leading, spacing: 0) {
                 if nodes.isEmpty {
                     Text("No assets yet")
                         .font(.subheadline)
@@ -91,7 +92,7 @@ struct AssetOutlinerView: View {
     }
 
     private func nodeRow(_ node: AssetOutlineNode, depth: Int) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: 2) {
+        AnyView(VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
                 // The row's tap gesture goes on each region as a sibling of
                 // the chevron, never on a view that contains it. A gesture on
@@ -175,7 +176,7 @@ struct AssetOutlinerView: View {
                 // element. This stays on the inner stack so the chevron
                 // remains a separate button for VoiceOver.
                 .accessibilityElement(children: editingAssetID == node.id ? .contain : .combine)
-                .accessibilityAddTraits(.isButton)
+                .accessibilityAddTraits(selectedIDs.contains(node.id) ? [.isButton, .isSelected] : .isButton)
                 .accessibilityAction {
                     commitRename()
                     onSelect(node.id)
@@ -188,8 +189,19 @@ struct AssetOutlinerView: View {
                     startRename(node)
                 }
             }
-            .background(rowBackground(for: node.id))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // The highlight is inset 1pt top and bottom, so two selected
+            // rows still show a 2pt gap. The tap areas run edge to edge.
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(rowBackground(for: node.id))
+                    .padding(.vertical, 1)
+            )
+            // A pointer hover lights up the whole row. These shapes only
+            // set how the hover and the menu preview look; they don't change
+            // where taps land.
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .hoverEffect(.highlight)
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 10, style: .continuous))
             // Rename lives here instead of on a double-tap of the name, so
             // a double-tap anywhere on the row always jumps the camera.
             .contextMenu {
