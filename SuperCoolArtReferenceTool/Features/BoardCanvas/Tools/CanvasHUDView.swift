@@ -67,6 +67,7 @@ struct CanvasHUDView: View {
                 AssetOutlinerView(
                     nodes: outliner.nodes,
                     selectedIDs: outliner.selectedIDs,
+                    directSelectedIDs: outliner.directSelectedIDs,
                     maxHeight: maxPanelHeight,
                     isVisible: isOutlinerOpen,
                     onSelect: outliner.onSelect,

@@ -611,6 +611,9 @@ struct BoardCanvasView: View {
             .onChange(of: expandedElementIDs(for: selection.selectedIDs), initial: true) { _, ids in
                 outliner.selectedIDs = ids
             }
+            .onChange(of: selection.selectedIDs, initial: true) { _, ids in
+                outliner.directSelectedIDs = ids
+            }
             .onAppear {
                 outliner.nodes = assetOutlineNodes()
                 outliner.onSelect = { selectAssetFromOutliner($0) }

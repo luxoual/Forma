@@ -21,7 +21,10 @@ struct AssetOutlineNode: Identifiable, Equatable {
 /// its rows, up to `maxHeight`, then it scrolls.
 struct AssetOutlinerView: View {
     let nodes: [AssetOutlineNode]
+    /// Selected items plus their descendants; drives the row highlight.
     let selectedIDs: Set<UUID>
+    /// Only what the user selected; drives VoiceOver's "Selected".
+    let directSelectedIDs: Set<UUID>
     let maxHeight: CGFloat
     /// False while the HUD has the panel collapsed. The list stays built
     /// (so its height is already measured when it opens), so this is how it
@@ -94,6 +97,10 @@ struct AssetOutlinerView: View {
     private func nodeRow(_ node: AssetOutlineNode, depth: Int) -> AnyView {
         AnyView(VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
+                // The side slots stretch to the row's full height (a row
+                // with a subtitle is taller than 44pt), so there's no dead
+                // strip above or below them.
+                //
                 // The row's tap gesture goes on each region as a sibling of
                 // the chevron, never on a view that contains it. A gesture on
                 // an ancestor beats a child Button (even a high-priority child
@@ -105,7 +112,8 @@ struct AssetOutlinerView: View {
                 // 28pt slot toggles; a tap on the indent selects the row.
                 if node.kind == .frame {
                     Color.clear
-                        .frame(width: rowInset(depth: depth), height: 44)
+                        .frame(width: rowInset(depth: depth))
+                        .frame(minHeight: 44, maxHeight: .infinity)
                         .contentShape(Rectangle())
                         .gesture(rowTapGesture(for: node))
                     Button {
@@ -113,14 +121,16 @@ struct AssetOutlinerView: View {
                     } label: {
                         Image(systemName: expandedFrameIDs.contains(node.id) ? "chevron.down" : "chevron.right")
                             .font(.caption2.weight(.bold))
-                            .frame(width: HUDLayout.chevronColumn, height: 44, alignment: .leading)
+                            .frame(width: HUDLayout.chevronColumn, alignment: .leading)
+                            .frame(minHeight: 44, maxHeight: .infinity)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(expandedFrameIDs.contains(node.id) ? "Collapse \(node.title)" : "Expand \(node.title)")
                 } else {
                     Color.clear
-                        .frame(width: rowInset(depth: depth) + HUDLayout.chevronColumn, height: 44)
+                        .frame(width: rowInset(depth: depth) + HUDLayout.chevronColumn)
+                        .frame(minHeight: 44, maxHeight: .infinity)
                         .contentShape(Rectangle())
                         .gesture(rowTapGesture(for: node))
                 }
@@ -176,7 +186,7 @@ struct AssetOutlinerView: View {
                 // element. This stays on the inner stack so the chevron
                 // remains a separate button for VoiceOver.
                 .accessibilityElement(children: editingAssetID == node.id ? .contain : .combine)
-                .accessibilityAddTraits(selectedIDs.contains(node.id) ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAddTraits(directSelectedIDs.contains(node.id) ? [.isButton, .isSelected] : .isButton)
                 .accessibilityAction {
                     commitRename()
                     onSelect(node.id)
@@ -189,6 +199,10 @@ struct AssetOutlinerView: View {
                     startRename(node)
                 }
             }
+            // Sizes the row to its tallest piece and hands that height to
+            // every slot. Inside a ScrollView, `maxHeight: .infinity` alone
+            // doesn't reliably stretch them.
+            .fixedSize(horizontal: false, vertical: true)
             // The highlight is inset 1pt top and bottom, so two selected
             // rows still show a 2pt gap. The tap areas run edge to edge.
             .background(
