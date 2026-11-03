@@ -21,14 +21,17 @@ struct AssetOutlineNode: Identifiable, Equatable {
 /// its rows, up to `maxHeight`, then it scrolls.
 struct AssetOutlinerView: View {
     let nodes: [AssetOutlineNode]
+    /// Selected items plus their descendants; drives the row highlight.
     let selectedIDs: Set<UUID>
+    /// Only what the user selected; drives VoiceOver's "Selected".
+    let directSelectedIDs: Set<UUID>
     let maxHeight: CGFloat
     /// False while the HUD has the panel collapsed. The list stays built
     /// (so its height is already measured when it opens), so this is how it
     /// knows to close out an in-progress rename.
     let isVisible: Bool
     let onSelect: (UUID) -> Void
-    /// Double-tap on a row (outside its name): select and move the camera there.
+    /// Double-tap on a row: select and move the camera there.
     let onFocus: (UUID) -> Void
     let onRenameAsset: (UUID, String) -> Void
 
@@ -42,7 +45,8 @@ struct AssetOutlinerView: View {
         ScrollView {
             // Not lazy: a lazy stack only builds the rows on screen and
             // guesses the rest, and that guess made the first open overshoot.
-            VStack(alignment: .leading, spacing: 2) {
+            // No spacing: rows touch so there's no dead strip between them.
+            VStack(alignment: .leading, spacing: 0) {
                 if nodes.isEmpty {
                     Text("No assets yet")
                         .font(.subheadline)
@@ -91,28 +95,44 @@ struct AssetOutlinerView: View {
     }
 
     private func nodeRow(_ node: AssetOutlineNode, depth: Int) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: 2) {
+        AnyView(VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
-                // Disclosure and selection are siblings. The disclosure button
-                // must not sit inside the selection/rename gesture's hit area.
-                // The column carries the row's indent, so its chevron lines
-                // up with the bar's back button at the top level and under
-                // the parent's name when nested (see `HUDLayout`).
+                // The side slots stretch to the row's full height (a row
+                // with a subtitle is taller than 44pt), so there's no dead
+                // strip above or below them.
+                //
+                // The row's tap gesture goes on each region as a sibling of
+                // the chevron, never on a view that contains it. A gesture on
+                // an ancestor beats a child Button (even a high-priority child
+                // gesture), so wrapping the chevron would stop it toggling.
+                //
+                // The indent and chevron column line the chevron up with the
+                // bar's back button at the top level and under the parent's
+                // name when nested (see `HUDLayout`). Only the chevron's own
+                // 28pt slot toggles; a tap on the indent selects the row.
                 if node.kind == .frame {
+                    Color.clear
+                        .frame(width: rowInset(depth: depth))
+                        .frame(minHeight: 44, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(rowTapGesture(for: node))
                     Button {
                         toggleExpanded(node.id)
                     } label: {
                         Image(systemName: expandedFrameIDs.contains(node.id) ? "chevron.down" : "chevron.right")
                             .font(.caption2.weight(.bold))
-                            .frame(width: HUDLayout.chevronColumn, height: 44, alignment: .leading)
-                            .padding(.leading, rowInset(depth: depth))
+                            .frame(width: HUDLayout.chevronColumn, alignment: .leading)
+                            .frame(minHeight: 44, maxHeight: .infinity)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(expandedFrameIDs.contains(node.id) ? "Collapse \(node.title)" : "Expand \(node.title)")
                 } else {
                     Color.clear
-                        .frame(width: rowInset(depth: depth) + HUDLayout.chevronColumn, height: 44)
+                        .frame(width: rowInset(depth: depth) + HUDLayout.chevronColumn)
+                        .frame(minHeight: 44, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(rowTapGesture(for: node))
                 }
 
                 HStack(spacing: HUDLayout.iconGap) {
@@ -134,24 +154,9 @@ struct AssetOutlinerView: View {
                                     return .handled
                                 }
                         } else {
-                            // Only the name itself renames on double-tap;
-                            // the rest of the row uses double-tap to jump
-                            // the camera there. A child gesture wins over
-                            // the row's, so the two don't collide.
                             Text(node.title)
                                 .font(.subheadline.weight(.medium))
                                 .lineLimit(1)
-                                .gesture(
-                                    TapGesture(count: 2).exclusively(before: TapGesture())
-                                        .onEnded { gesture in
-                                            commitRename()
-                                            onSelect(node.id)
-                                            if case .first = gesture {
-                                                draftTitle = node.title
-                                                editingAssetID = node.id
-                                            }
-                                        }
-                                )
                         }
 
                         if let subtitle = node.subtitle {
@@ -166,24 +171,22 @@ struct AssetOutlinerView: View {
                 }
                 .padding(.vertical, 8)
                 .frame(minHeight: 44)
+                // Inside the tap area, so the trailing edge selects too.
+                .padding(.trailing, 10)
                 .contentShape(Rectangle())
+                // While renaming, only the text field takes touches here.
                 .gesture(
-                    TapGesture(count: 2).exclusively(before: TapGesture())
-                        .onEnded { gesture in
-                            commitRename()
-                            switch gesture {
-                            case .first: onFocus(node.id)
-                            case .second: onSelect(node.id)
-                            }
-                        },
+                    rowTapGesture(for: node),
                     including: editingAssetID == node.id ? .subviews : .all
                 )
                 // The row responds only to custom tap gestures, which
                 // VoiceOver can't reach. Expose it as one button whose
-                // activation selects, with named actions for the double-taps.
-                // While renaming, the text field stays its own element.
+                // activation selects, with named actions for the double-tap
+                // and the menu. While renaming, the text field stays its own
+                // element. This stays on the inner stack so the chevron
+                // remains a separate button for VoiceOver.
                 .accessibilityElement(children: editingAssetID == node.id ? .contain : .combine)
-                .accessibilityAddTraits(.isButton)
+                .accessibilityAddTraits(directSelectedIDs.contains(node.id) ? [.isButton, .isSelected] : .isButton)
                 .accessibilityAction {
                     commitRename()
                     onSelect(node.id)
@@ -193,15 +196,37 @@ struct AssetOutlinerView: View {
                     onFocus(node.id)
                 }
                 .accessibilityAction(named: "Rename") {
-                    commitRename()
-                    onSelect(node.id)
-                    draftTitle = node.title
-                    editingAssetID = node.id
+                    startRename(node)
                 }
             }
-            .padding(.trailing, 10)
-            .background(rowBackground(for: node.id))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // Sizes the row to its tallest piece and hands that height to
+            // every slot. Inside a ScrollView, `maxHeight: .infinity` alone
+            // doesn't reliably stretch them.
+            .fixedSize(horizontal: false, vertical: true)
+            // The highlight is inset 1pt top and bottom, so two selected
+            // rows still show a 2pt gap. The tap areas run edge to edge.
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(rowBackground(for: node.id))
+                    .padding(.vertical, 1)
+            )
+            // A pointer hover lights up the whole row. These shapes only
+            // set how the hover and the menu preview look; they don't change
+            // where taps land.
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .hoverEffect(.highlight)
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // Rename lives here instead of on a double-tap of the name, so
+            // a double-tap anywhere on the row always jumps the camera.
+            .contextMenu {
+                Button("Rename", systemImage: "pencil") {
+                    startRename(node)
+                }
+                Button("Show on Canvas", systemImage: "scope") {
+                    commitRename()
+                    onFocus(node.id)
+                }
+            }
 
             if node.kind == .frame, expandedFrameIDs.contains(node.id) {
                 ForEach(node.children) { child in
@@ -209,6 +234,18 @@ struct AssetOutlinerView: View {
                 }
             }
         })
+    }
+
+    /// Double-tap jumps the camera to the asset; single tap selects it.
+    private func rowTapGesture(for node: AssetOutlineNode) -> some Gesture {
+        TapGesture(count: 2).exclusively(before: TapGesture())
+            .onEnded { gesture in
+                commitRename()
+                switch gesture {
+                case .first: onFocus(node.id)
+                case .second: onSelect(node.id)
+                }
+            }
     }
 
     /// Space before a row's chevron column. The rows sit 8pt in from the
@@ -226,6 +263,15 @@ struct AssetOutlinerView: View {
         editingAssetID = nil
         focusedAssetID = nil
         if !title.isEmpty { onRenameAsset(id, title) }
+    }
+
+    /// Selects the row and swaps its name for a text field. The field
+    /// focuses itself when it appears.
+    private func startRename(_ node: AssetOutlineNode) {
+        commitRename()
+        onSelect(node.id)
+        draftTitle = node.title
+        editingAssetID = node.id
     }
 
     private func cancelRename() {

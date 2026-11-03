@@ -14,6 +14,10 @@ final class AssetOutlinerModel {
     /// Selected items plus their descendants, so a selected frame highlights
     /// its whole subtree in the list.
     var selectedIDs: Set<UUID> = []
+    /// What the user actually selected, as opposed to `selectedIDs`, which
+    /// also highlights a frame's descendants. VoiceOver says "Selected" only
+    /// for these.
+    var directSelectedIDs: Set<UUID> = []
 
     @ObservationIgnored var onSelect: (UUID) -> Void = { _ in }
     /// Select and move the camera to the item (double-tap on a row).
